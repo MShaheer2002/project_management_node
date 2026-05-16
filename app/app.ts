@@ -22,6 +22,7 @@ import cors from "cors";
 import helmet from "helmet";
 
 import swaggerUi from "swagger-ui-express";
+import { clerkMiddleware } from "@clerk/express";
 
 import { corsConfig } from "../config/cors.js";
 import { requestLogger } from "../shared/middleware/request-logger.js";
@@ -31,10 +32,15 @@ import { errorHandler } from "../shared/middleware/error-handler.js";
 import { sendSuccess } from "../shared/utils/api-response.js";
 import { prisma } from "../shared/utils/prisma.js";
 import { openApiSpec } from "../docs/api/openapi.js";
+import authRoutes from "../modules/auth/auth.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
 const app = express();
+
+// Trust proxy — required when behind reverse proxies (ngrok, Nginx, cloud load balancers).
+// Allows express-rate-limit to correctly identify clients via X-Forwarded-For header.
+app.set("trust proxy", 1);
 
 // ─── Global Middleware Stack (order matters) ─────────────────────────────────
 
@@ -53,6 +59,10 @@ app.use(globalRateLimiter);
 // 5. Request logging — logs method, URL, status, response time
 app.use(requestLogger);
 
+// 6. Clerk — parses session JWT from Authorization header (does NOT block unauthenticated requests)
+// This makes getAuth(req) available in downstream middleware. It's permissive (non-blocking).
+app.use(clerkMiddleware());
+
 // ─── API Documentation (Swagger UI) ──────────────────────────────────────────
 
 /**
@@ -63,7 +73,7 @@ app.use(requestLogger);
  * Visit http://localhost:8000/api-docs to browse the full API spec.
  */
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(openApiSpec, {
-  customSiteTitle: "Linearis API Docs",
+  customSiteTitle: "Project Management API Docs",
   customCss: ".swagger-ui .topbar { display: none }",
 }));
 
@@ -103,8 +113,9 @@ app.get("/health", async (_req, res, next) => {
 
 // ─── Feature Module Routes (mounted here as phases are built) ────────────────
 
-// Phase 1: app.use("/webhooks", authRoutes);
-// Phase 1: app.use("/me", meRoutes);
+// Phase 1: Auth (webhook + user profile)
+app.use(authRoutes);
+
 // Phase 2: app.use("/workspaces", workspaceRoutes);
 // Phase 3: app.use("/departments", departmentRoutes);
 // Phase 3: app.use("/teams", teamRoutes);

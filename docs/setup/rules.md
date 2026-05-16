@@ -359,6 +359,92 @@ Use `prisma.$transaction()` when:
 
 ---
 
+## 13. Documentation Rules
+
+### 13.1 Feature Documentation is Mandatory
+
+Every module MUST have a `docs/` folder inside it with integration guides. Documentation is written BEFORE and AFTER implementation — not skipped.
+
+```
+modules/auth/
+├── docs/
+│   ├── setup-guide.md         # How to set up Clerk dashboard, env vars, webhook URL
+│   ├── integration.md         # How the feature was implemented (architecture decisions, flow diagrams)
+│   └── api-reference.md       # Endpoint reference specific to this module
+├── auth.routes.ts
+├── auth.controller.ts
+├── auth.service.ts
+└── auth.schemas.ts
+```
+
+### 13.2 Documentation Types per Module
+
+Every module's `docs/` folder must contain:
+
+| File | Purpose | When Written |
+|------|---------|--------------|
+| `setup-guide.md` | External setup steps (dashboard configs, third-party setup, environment vars, webhook URLs) | BEFORE implementation — planning phase |
+| `integration.md` | How the feature was actually integrated (code architecture, data flow, edge cases handled, decisions made) | AFTER implementation — captures what was built and why |
+| `api-reference.md` | Endpoint details for this module (request/response examples, error cases, permission matrix) | DURING implementation — updated as routes are finalized |
+
+### 13.3 What Each Doc Must Cover
+
+**`setup-guide.md`** (pre-implementation):
+- Third-party dashboard setup (step-by-step with screenshots if needed)
+- Environment variables required and where to get them
+- External webhook/callback URL configuration
+- Dependencies to install
+- Prerequisite services or accounts needed
+
+**`integration.md`** (post-implementation):
+- Architecture overview (how the module fits into the system)
+- Request flow diagram (from client to DB and back)
+- Key decisions made and WHY (not just what)
+- Edge cases and how they're handled
+- Known limitations or future improvements
+- Dependencies on other modules
+
+**`api-reference.md`** (during implementation):
+- Every endpoint with method, path, and description
+- Request body examples (valid and invalid)
+- Response examples (success and each error case)
+- Permission requirements per endpoint
+- Rate limiting specifics if different from global
+
+### 13.4 Rules
+
+- Documentation is NOT optional — a phase is not "done" without its docs
+- Docs live WITH the module code (not in a separate top-level docs folder)
+- Keep docs up to date — if you change the code, update the docs
+- Write for a developer who has never seen this codebase
+- Include real examples, not abstract descriptions
+- NEVER document things that can be read directly from the code (like every line of a function)
+- DO document WHY decisions were made, external configs, and non-obvious flows
+
+### 13.5 Module Documentation Example (Auth)
+
+```
+modules/auth/docs/
+├── setup-guide.md
+│   → How to create a Clerk app
+│   → How to configure Google/GitHub OAuth in Clerk dashboard
+│   → How to set up the webhook endpoint in Clerk
+│   → Required env vars (CLERK_SECRET_KEY, CLERK_WEBHOOK_SECRET)
+│
+├── integration.md
+│   → Clerk webhook flow (user.created → User table sync)
+│   → Auth middleware implementation (JWT verify → req.user)
+│   → Race condition handling (JWT valid but user not in DB yet)
+│   → Why we use Clerk user_id as our User.id primary key
+│
+└── api-reference.md
+    → POST /webhooks/clerk — webhook receiver (signature verification)
+    → GET /me — returns authenticated user profile
+    → Error cases: 401, 403 (USER_NOT_SYNCED)
+```
+
+---
+
 ## Summary (Pin This)
 
 ```
@@ -372,4 +458,5 @@ Use `prisma.$transaction()` when:
 8. Never trust client input. Never expose internals.
 9. Never commit secrets. Never skip auth.
 10. Clean code. No dead code. No TODOs.
+11. Every module has docs/ (setup-guide, integration, api-reference).
 ```
