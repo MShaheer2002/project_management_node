@@ -1,0 +1,816 @@
+// ============================================================================
+// Linearis — Prisma Schema
+// A SaaS project management platform (Linear clone)
+//
+// Auth: Clerk (external) — our User table syncs via webhooks
+// DB: PostgreSQL
+// Multi-tenancy: All workspace-scoped entities have a workspaceId FK
+// ============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+/// Workspace membership roles — hierarchical: OWNER > ADMIN > MEMBER > GUEST
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  GUEST
+}
+
+/// Controls who can see a department, project, or other scoped entity
+enum Visibility {
+  PUBLIC
+  PRIVATE
+}
+
+/// The three types of work items in the system
+/// TASK = general work, BUG = defect, ISSUE = feature request/enhancement
+enum IssueType {
+  TASK
+  BUG
+  ISSUE
+}
+
+/// Kanban workflow statuses — issues move left to right
+/// BACKLOG → TODO → IN_PROGRESS → REVIEW → DONE
+enum IssueStatus {
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  REVIEW
+  DONE
+}
+
+/// Issue urgency level — used for sorting and filtering
+enum IssuePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+/// Bug-specific severity — only relevant when IssueType = BUG
+enum BugSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+/// Project lifecycle status
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+  COMPLETED
+}
+
+/// Sprint/cycle lifecycle — auto-transitions based on dates
+enum CycleStatus {
+  UPCOMING
+  CURRENT
+  COMPLETED
+}
+
+/// What triggered a notification for a user
+enum NotificationType {
+  MENTION
+  ASSIGNMENT
+  UPDATE
+}
+
+/// Categories of trackable actions in the activity feed
+enum ActivityType {
+  ISSUE_CREATED
+  ISSUE_COMPLETED
+  COMMENT_ADDED
+  MEMBER_JOINED
+  STATUS_CHANGED
+  ASSIGNMENT_CHANGED
+}
+
+/// What kind of entity an activity log entry refers to
+enum ActivityTargetType {
+  ISSUE
+  PROJECT
+  TEAM
+  DEPARTMENT
+}
+
+/// How two issues are related to each other
+enum IssueRelationType {
+  RELATED
+  BLOCKS
+  BLOCKED_BY
+  DUPLICATE
+}
+
+/// Subscription tiers — Free (default), Standard ($12/user/mo), Plus ($24/user/mo)
+enum SubscriptionPlan {
+  FREE
+  STANDARD
+  PLUS
+}
+
+/// Stripe subscription lifecycle states
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  TRIALING
+}
+
+/// How often the workspace is billed
+enum BillingCycle {
+  MONTHLY
+  ANNUAL
+}
+
+/// Invoice payment state
+enum InvoiceStatus {
+  PAID
+  UNPAID
+  VOID
+}
+
+/// Supported payment types for billing
+enum PaymentMethodType {
+  CARD
+  BANK_TRANSFER
+}
+
+/// Third-party services that can be connected to a workspace
+enum IntegrationProvider {
+  GITHUB
+  SLACK
+  DISCORD
+  FIGMA
+}
+
+// ============================================================================
+// CORE IDENTITY
+// ============================================================================
+
+/// User — synced from Clerk via webhooks (user.created / user.updated / user.deleted)
+///
+/// Clerk is the source of truth for auth (passwords, OAuth, 2FA, sessions).
+/// We only store profile data needed for relations and display.
+/// The `id` field IS the Clerk user_id (e.g., "user_2x..."), NOT a UUID.
+model User {
+  id           String    @id // Clerk user_id — set by webhook, not auto-generated
+  email        String    @unique
+  name         String
+  avatar       String?
+  lastActiveAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // -- Membership relations (User ↔ Workspace/Team/Department) --
+  workspaceMemberships  WorkspaceMembership[]
+  teamMemberships       TeamMembership[]
+  departmentMemberships DepartmentMembership[]
+
+  // -- Ownership/lead relations --
+  createdWorkspaces     Workspace[]    @relation("WorkspaceCreator") // Workspaces this user created
+  ledTeams              Team[]         @relation("TeamLead") // Teams where this user is the lead
+  headedDepartments     Department[]   @relation("DepartmentHead") // Departments where this user is head
+  ledProjects           Project[]      @relation("ProjectLead") // Projects where this user is lead
+
+  // -- Issue relations --
+  assignedIssues Issue[] @relation("IssueAssignee") // Issues assigned to this user
+  createdIssues  Issue[] @relation("IssueCreator") // Issues created by this user
+
+  // -- Collaboration --
+  comments Comment[]
+
+  // -- Notifications (recipient vs actor) --
+  notifications      Notification[] @relation("NotificationRecipient") // Notifications FOR this user
+  actedNotifications Notification[] @relation("NotificationActor") // Notifications triggered BY this user
+
+  // -- Other --
+  activities            Activity[] // Activity log entries by this user
+  createdTemplates      Template[] // Templates created by this user
+  createdApiKeys        ApiKey[] // API keys created by this user
+  connectedIntegrations Integration[] // Integrations connected by this user
+
+  @@index([email])
+}
+
+// ============================================================================
+// WORKSPACE & MULTI-TENANCY
+// ============================================================================
+
+/// Workspace — the top-level tenant boundary
+///
+/// ALL data is scoped to a workspace. One user can belong to multiple workspaces.
+/// The `slug` is globally unique and used in URLs: <slug>.linearis.app
+/// The `issueCounter` is atomically incremented to generate issue IDs (LIN-1, LIN-2, ...).
+model Workspace {
+  id           String @id @default(uuid())
+  name         String // Display name (e.g., "Acme Corp")
+  slug         String @unique // URL slug (e.g., "acme-corp") — must be globally unique
+  logo         String? // URL to workspace logo
+  issueCounter Int    @default(0) // Atomic counter for human-readable issue IDs (LIN-N)
+  createdById  String // FK → User who created this workspace (becomes OWNER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // -- Creator relation --
+  createdBy User @relation("WorkspaceCreator", fields: [createdById], references: [id])
+
+  // -- All workspace-scoped entities --
+  memberships    WorkspaceMembership[]
+  departments    Department[]
+  teams          Team[]
+  projects       Project[]
+  issues         Issue[]
+  labels         Label[]
+  cycles         Cycle[]
+  notifications  Notification[]
+  activities     Activity[]
+  templates      Template[]
+  integrations   Integration[]
+  apiKeys        ApiKey[]
+  subscriptions  Subscription[]
+  invoices       Invoice[]
+  paymentMethods PaymentMethod[]
+
+  @@index([slug])
+}
+
+/// WorkspaceMembership — join table linking User ↔ Workspace with a role
+///
+/// Every user in a workspace has exactly one role (OWNER, ADMIN, MEMBER, GUEST).
+/// A user + workspace combination must be unique (can't join the same workspace twice).
+model WorkspaceMembership {
+  id          String        @id @default(uuid())
+  userId      String
+  workspaceId String
+  role        WorkspaceRole @default(MEMBER)
+  joinedAt    DateTime      @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId]) // A user can only be in a workspace once
+  @@index([workspaceId])
+  @@index([userId])
+}
+
+// ============================================================================
+// ORGANIZATIONAL STRUCTURE
+// ============================================================================
+
+/// Department — an organizational division within a workspace
+///
+/// Departments group teams. Example: "Engineering", "Design", "Marketing".
+/// A department has an optional head (a user with edit permissions for this department).
+/// Visibility controls whether GUESTs can see it.
+/// If `isDefault = true`, new workspace members auto-join this department.
+model Department {
+  id          String     @id @default(uuid())
+  workspaceId String
+  name        String
+  description String?
+  headId      String? // FK → User who heads this department (contextual permission)
+  color       String? // Hex color for UI display
+  icon        String? // Icon identifier for UI
+  visibility  Visibility @default(PUBLIC)
+  isDefault   Boolean    @default(false) // New members auto-join if true
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // -- Relations --
+  workspace   Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  head        User?                  @relation("DepartmentHead", fields: [headId], references: [id], onDelete: SetNull)
+  teams       Team[] // Teams that belong to this department
+  memberships DepartmentMembership[] // Users in this department
+  projects    Project[] // Projects under this department (denormalized from team)
+  issues      Issue[] // Issues under this department (denormalized from team)
+
+  @@unique([workspaceId, name]) // Department names must be unique within a workspace
+  @@index([workspaceId])
+}
+
+/// DepartmentMembership — join table linking User ↔ Department
+///
+/// Uses composite primary key (userId + departmentId) — no separate id field.
+model DepartmentMembership {
+  userId       String
+  departmentId String
+  joinedAt     DateTime @default(now())
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@id([userId, departmentId]) // Composite PK — user can only be in a department once
+  @@index([departmentId])
+}
+
+/// Team — a group of members that owns projects and issues
+///
+/// Teams optionally belong to a department. Every team has a lead.
+/// Team names must be unique within a workspace.
+/// If the parent department is deleted, the team remains (departmentId → null).
+model Team {
+  id           String   @id @default(uuid())
+  workspaceId  String
+  departmentId String? // Optional — team can exist without a department
+  name         String
+  leadId       String // FK → User who leads this team (contextual edit permission)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // -- Relations --
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  department  Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  lead        User             @relation("TeamLead", fields: [leadId], references: [id])
+  memberships TeamMembership[] // Users in this team
+  projects    Project[] // Projects owned by this team
+  issues      Issue[] // Issues under this team
+  cycles      Cycle[] // Sprints scoped to this team
+
+  @@unique([workspaceId, name]) // Team names must be unique within a workspace
+  @@index([workspaceId])
+  @@index([departmentId])
+}
+
+/// TeamMembership — join table linking User ↔ Team
+///
+/// Uses composite primary key (userId + teamId) — no separate id field.
+model TeamMembership {
+  userId   String
+  teamId   String
+  joinedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@id([userId, teamId]) // Composite PK — user can only be in a team once
+  @@index([teamId])
+}
+
+// ============================================================================
+// PROJECTS
+// ============================================================================
+
+/// Project — a work container that groups related issues under a team
+///
+/// Every project belongs to exactly one team and one workspace.
+/// `departmentId` is denormalized from the team's department for query performance.
+/// Project names must be unique within a workspace.
+/// Status: ACTIVE (default) → ARCHIVED or COMPLETED.
+model Project {
+  id           String        @id @default(uuid())
+  workspaceId  String
+  teamId       String // FK → Team that owns this project
+  departmentId String? // Denormalized from team.departmentId for faster queries
+  name         String
+  description  String?
+  leadId       String? // FK → User who leads this project (contextual edit permission)
+  status       ProjectStatus @default(ACTIVE)
+  visibility   Visibility    @default(PUBLIC)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  // -- Relations --
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  team       Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  lead       User?       @relation("ProjectLead", fields: [leadId], references: [id], onDelete: SetNull)
+  issues     Issue[] // All issues in this project
+
+  @@unique([workspaceId, name]) // Project names must be unique within a workspace
+  @@index([workspaceId])
+  @@index([teamId])
+  @@index([departmentId])
+  @@index([status])
+}
+
+// ============================================================================
+// ISSUES — the core product entity
+// ============================================================================
+
+/// Issue — the atomic work unit of the system (the "Linear core")
+///
+/// Issues use a human-readable ID as the primary key (e.g., "LIN-101").
+/// The `number` field + `workspaceId` ensures uniqueness within a workspace.
+/// `internalId` is a UUID for internal references where the human ID is inconvenient.
+///
+/// Issue types share one table — type-specific fields are nullable:
+///   - BUG fields: stepsToReproduce, expectedBehavior, actualBehavior, severity
+///   - ISSUE (feature) fields: acceptanceCriteria, notes
+///   - TASK: uses only the common fields
+///
+/// Kanban flow: BACKLOG → TODO → IN_PROGRESS → REVIEW → DONE (any transition allowed)
+model Issue {
+  id           String        @id // Human-readable ID: "LIN-101" — generated from workspace.issueCounter
+  internalId   String        @unique @default(uuid()) // UUID for internal use
+  number       Int // Sequential number within workspace (used to build the ID)
+  workspaceId  String
+  projectId    String
+  teamId       String
+  departmentId String? // Denormalized from team for query performance
+
+  // -- Core fields --
+  title       String
+  description String?       @db.Text // Rich text (HTML/Markdown)
+  type        IssueType     @default(TASK)
+  status      IssueStatus   @default(BACKLOG)
+  priority    IssuePriority @default(MEDIUM)
+  assigneeId  String? // FK → User assigned to this issue (must be a workspace member)
+  creatorId   String // FK → User who created this issue
+  dueDate     DateTime?     @db.Date
+  dueTime     DateTime?     @db.Time()
+  estimate    Int? // Story points / complexity estimate
+  cycleId     String? // FK → Cycle (sprint) this issue belongs to
+
+  // -- Bug-specific fields (populated when type = BUG) --
+  stepsToReproduce String?     @db.Text
+  expectedBehavior String?     @db.Text
+  actualBehavior   String?     @db.Text
+  severity         BugSeverity?
+
+  // -- Feature/enhancement fields (populated when type = ISSUE) --
+  acceptanceCriteria String? @db.Text
+  notes              String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // -- Parent entity relations --
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project    Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  team       Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  assignee   User?       @relation("IssueAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  creator    User        @relation("IssueCreator", fields: [creatorId], references: [id])
+  cycle      Cycle?      @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+
+  // -- Child entity relations --
+  subtasks      IssueSubtask[] // Checklist items within this issue
+  comments      Comment[] // Discussion thread on this issue
+  labels        IssueLabel[] // Labels attached to this issue (many-to-many)
+  relationsFrom IssueRelation[] @relation("IssueRelationFrom") // Relations where this issue is the source
+  relationsTo   IssueRelation[] @relation("IssueRelationTo") // Relations where this issue is the target
+
+  @@unique([workspaceId, number]) // Issue numbers are unique within a workspace
+  @@index([workspaceId])
+  @@index([projectId])
+  @@index([teamId])
+  @@index([assigneeId])
+  @@index([status])
+  @@index([priority])
+  @@index([cycleId])
+  @@index([creatorId])
+  @@index([workspaceId, status]) // Dashboard: filter issues by status
+  @@index([workspaceId, assigneeId]) // "My Issues" page
+}
+
+/// IssueSubtask — checklist items within an issue
+///
+/// Subtasks have a drag-and-drop `order` field for reordering.
+/// Deleting the parent issue cascades all subtasks.
+model IssueSubtask {
+  id        String   @id @default(uuid())
+  issueId   String
+  title     String
+  completed Boolean  @default(false)
+  order     Int // Sort position for drag-and-drop reordering
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId])
+}
+
+// ============================================================================
+// LABELS & ISSUE RELATIONS
+// ============================================================================
+
+/// Label — workspace-scoped tags that can be attached to issues
+///
+/// Labels have a name and color (hex). Names must be unique within a workspace.
+/// Many-to-many with Issues via the IssueLabel join table.
+model Label {
+  id          String @id @default(uuid())
+  workspaceId String
+  name        String // e.g., "frontend", "bug", "design"
+  color       String // Hex color for UI display (e.g., "#ef4444")
+
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  issues    IssueLabel[] // Issues that have this label
+
+  @@unique([workspaceId, name]) // Label names must be unique within a workspace
+  @@index([workspaceId])
+}
+
+/// IssueLabel — join table for Issue ↔ Label (many-to-many)
+///
+/// Composite primary key (issueId + labelId) — an issue can't have the same label twice.
+model IssueLabel {
+  issueId String
+  labelId String
+
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  label Label @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@id([issueId, labelId]) // Composite PK
+  @@index([labelId])
+}
+
+/// IssueRelation — tracks dependencies and connections between issues
+///
+/// Types: RELATED, BLOCKS, BLOCKED_BY, DUPLICATE
+/// Creating BLOCKS on A→B should also create BLOCKED_BY on B→A (handled in service layer).
+/// An issue cannot be related to itself.
+model IssueRelation {
+  id        String            @id @default(uuid())
+  issueId   String // Source issue
+  relatedId String // Target issue
+  type      IssueRelationType
+
+  issue   Issue @relation("IssueRelationFrom", fields: [issueId], references: [id], onDelete: Cascade)
+  related Issue @relation("IssueRelationTo", fields: [relatedId], references: [id], onDelete: Cascade)
+
+  @@unique([issueId, relatedId, type]) // Prevent duplicate relations of same type
+  @@index([issueId])
+  @@index([relatedId])
+}
+
+// ============================================================================
+// COLLABORATION
+// ============================================================================
+
+/// Comment — discussion on an issue, supports threaded replies
+///
+/// If `parentId` is set, this comment is a reply to another comment.
+/// Self-referential relation: Comment → Comment (parent/replies).
+/// Deleting a parent comment cascades all its replies.
+model Comment {
+  id       String @id @default(uuid())
+  issueId  String
+  authorId String
+  body     String @db.Text // Rich text content
+  parentId String? // FK → Comment (for threaded replies, null = top-level)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // -- Relations --
+  issue   Issue     @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  author  User      @relation(fields: [authorId], references: [id])
+  parent  Comment?  @relation("CommentThread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies Comment[] @relation("CommentThread") // Child replies to this comment
+
+  @@index([issueId])
+  @@index([parentId])
+}
+
+// ============================================================================
+// CYCLES (SPRINTS)
+// ============================================================================
+
+/// Cycle — a time-boxed sprint for tracking issue progress
+///
+/// Cycles have start/end dates and a status that auto-transitions:
+///   UPCOMING → CURRENT (when startDate arrives) → COMPLETED (when endDate passes)
+/// A cycle can be scoped to a specific team, or be workspace-wide (teamId = null).
+/// Issues link to a cycle via Issue.cycleId (one cycle per issue at a time).
+model Cycle {
+  id          String      @id @default(uuid())
+  workspaceId String
+  teamId      String? // Optional — scope cycle to a specific team
+  name        String // e.g., "Sprint 12"
+  startDate   DateTime    @db.Date
+  endDate     DateTime    @db.Date
+  status      CycleStatus @default(UPCOMING)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // -- Relations --
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  team      Team?     @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  issues    Issue[] // Issues in this cycle
+
+  @@index([workspaceId])
+  @@index([teamId])
+  @@index([status])
+}
+
+// ============================================================================
+// ACTIVITY & NOTIFICATIONS
+// ============================================================================
+
+/// Notification — alerts for users about workspace events
+///
+/// Types: MENTION (@mentioned in comment), ASSIGNMENT (issue assigned), UPDATE (watched issue changed).
+/// Two user relations: `userId` = who receives it, `actorId` = who triggered it.
+model Notification {
+  id          String           @id @default(uuid())
+  workspaceId String
+  userId      String // FK → User who receives this notification
+  actorId     String // FK → User who triggered this notification
+  type        NotificationType
+  issueId     String? // FK → related Issue (if applicable)
+  description String // Human-readable summary (e.g., "John assigned LIN-42 to you")
+  read        Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+
+  // -- Relations --
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actor     User      @relation("NotificationActor", fields: [actorId], references: [id])
+
+  @@index([userId, read]) // Unread notification count query
+  @@index([workspaceId])
+}
+
+/// Activity — immutable audit log of all workspace actions
+///
+/// Every significant action (issue created, status changed, comment added, etc.)
+/// creates an Activity entry. Used for the activity feed and audit trail.
+/// `metadata` stores extra context as JSON (e.g., { oldStatus: "TODO", newStatus: "DONE" }).
+model Activity {
+  id          String             @id @default(uuid())
+  workspaceId String
+  actorId     String // FK → User who performed the action
+  type        ActivityType
+  targetId    String // ID of the affected entity (issue ID, project ID, etc.)
+  targetType  ActivityTargetType // What kind of entity was affected
+  description String // Human-readable summary
+  metadata    Json? // Extra context (old/new values, etc.)
+  createdAt   DateTime           @default(now())
+
+  // -- Relations --
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor     User      @relation(fields: [actorId], references: [id])
+
+  @@index([workspaceId])
+  @@index([workspaceId, targetType]) // Filter activity by entity type
+  @@index([actorId])
+  @@index([createdAt]) // Sort activity feed chronologically
+}
+
+// ============================================================================
+// TEMPLATES
+// ============================================================================
+
+/// Template — reusable issue templates for common work items
+///
+/// Templates pre-fill issue fields (priority, assignee, labels, subtasks).
+/// `defaultLabels` is an array of label IDs. `checklistItems` is JSON subtask titles.
+/// Template names must be unique within a workspace.
+/// Available on Standard and Plus plans only.
+model Template {
+  id              String         @id @default(uuid())
+  workspaceId     String
+  name            String
+  description     String?
+  content         String         @db.Text // Rich text template body
+  defaultPriority IssuePriority? // Pre-filled priority when using this template
+  defaultAssignee String? // "unassigned", "creator", or a specific user ID
+  defaultLabels   String[] // Array of Label IDs to auto-attach
+  checklistItems  Json? // Default subtask titles (e.g., ["Write tests", "Update docs"])
+  createdById     String
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  // -- Relations --
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User      @relation(fields: [createdById], references: [id])
+
+  @@unique([workspaceId, name]) // Template names must be unique within a workspace
+  @@index([workspaceId])
+}
+
+// ============================================================================
+// INTEGRATIONS & API KEYS
+// ============================================================================
+
+/// Integration — third-party service connections (GitHub, Slack, Discord, Figma)
+///
+/// Each provider can only be connected once per workspace (unique constraint).
+/// `config` stores provider-specific settings as JSON.
+model Integration {
+  id            String              @id @default(uuid())
+  workspaceId   String
+  provider      IntegrationProvider
+  connected     Boolean             @default(false)
+  config        Json? // Provider-specific configuration
+  connectedAt   DateTime?
+  connectedById String? // FK → User who connected this integration
+
+  // -- Relations --
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  connectedBy User?     @relation(fields: [connectedById], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, provider]) // One connection per provider per workspace
+  @@index([workspaceId])
+}
+
+/// ApiKey — workspace API keys for external integrations and MCP server
+///
+/// Keys are hashed before storage — the raw key is shown once on creation, never again.
+/// `keyPrefix` stores the first 8 chars for identification (e.g., "lin_live").
+/// Format: lin_live_* (production), lin_test_* (development).
+model ApiKey {
+  id          String    @id @default(uuid())
+  workspaceId String
+  name        String // Human-readable label (e.g., "CI/CD Pipeline")
+  keyHash     String // bcrypt hash of the full API key
+  keyPrefix   String // First 8 chars for identification without revealing the key
+  createdById String
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime? // Updated on each API request using this key
+  expiresAt   DateTime? // Optional expiration date
+
+  // -- Relations --
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User      @relation(fields: [createdById], references: [id])
+
+  @@index([workspaceId])
+  @@index([keyPrefix]) // Look up API key by prefix for fast auth
+}
+
+// ============================================================================
+// BILLING & SUBSCRIPTION (Stripe)
+// ============================================================================
+
+/// Subscription — workspace billing plan managed via Stripe
+///
+/// Every workspace starts on FREE plan. Upgrades go through Stripe Checkout.
+/// Stripe webhooks update this table (invoice.paid, subscription.updated, etc.).
+model Subscription {
+  id                   String             @id @default(uuid())
+  workspaceId          String
+  plan                 SubscriptionPlan   @default(FREE)
+  status               SubscriptionStatus @default(ACTIVE)
+  billingCycle         BillingCycle       @default(MONTHLY)
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false) // If true, cancels at end of period
+  stripeCustomerId     String? // Stripe customer ID
+  stripeSubscriptionId String? // Stripe subscription ID
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  // -- Relations --
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([stripeCustomerId])
+}
+
+/// Invoice — billing invoice records synced from Stripe
+///
+/// `amount` is stored in cents (e.g., 1200 = $12.00).
+/// Invoice numbers are unique within a workspace.
+model Invoice {
+  id            String        @id @default(uuid())
+  workspaceId   String
+  invoiceNumber String // e.g., "INV-001"
+  amount        Int // Amount in cents
+  currency      String        @default("usd")
+  status        InvoiceStatus @default(UNPAID)
+  pdfUrl        String? // Link to downloadable invoice PDF
+  issuedAt      DateTime      @default(now())
+  paidAt        DateTime? // Set when payment is confirmed
+
+  // -- Relations --
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, invoiceNumber]) // Invoice numbers unique within workspace
+  @@index([workspaceId])
+}
+
+/// PaymentMethod — stored payment methods for a workspace (synced from Stripe)
+///
+/// Only the last 4 digits are stored — full card data lives in Stripe.
+model PaymentMethod {
+  id                    String            @id @default(uuid())
+  workspaceId           String
+  type                  PaymentMethodType
+  last4                 String // Last 4 digits of card/account
+  brand                 String? // e.g., "visa", "mastercard"
+  expiryMonth           Int
+  expiryYear            Int
+  isDefault             Boolean           @default(false) // Primary payment method
+  stripePaymentMethodId String? // Stripe payment method ID
+  createdAt             DateTime          @default(now())
+
+  // -- Relations --
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
