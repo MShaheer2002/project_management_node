@@ -1,0 +1,72 @@
+/**
+ * Centralized Error Codes
+ *
+ * All error codes used across the application are defined here.
+ * These are SCREAMING_SNAKE_CASE strings returned in the `error.code` field
+ * of API responses. The frontend uses these to show appropriate UI messages.
+ *
+ * Convention: <DOMAIN>_<REASON>
+ *   - UNAUTHORIZED: auth token missing/invalid
+ *   - FORBIDDEN: valid auth but insufficient permissions
+ *   - NOT_FOUND: resource doesn't exist
+ *   - CONFLICT: duplicate/unique constraint violation
+ *   - VALIDATION_ERROR: request body/params failed Zod validation
+ *
+ * Add new codes as features are built — but never remove existing ones
+ * without coordinating with the frontend team.
+ */
+
+export const ERROR_CODES = {
+  // ─── Generic ────────────────────────────────────────────────────────────
+  INTERNAL_ERROR: "INTERNAL_ERROR",
+  VALIDATION_ERROR: "VALIDATION_ERROR",
+  NOT_FOUND: "NOT_FOUND",
+  UNAUTHORIZED: "UNAUTHORIZED",
+  FORBIDDEN: "FORBIDDEN",
+  CONFLICT: "CONFLICT",
+  RATE_LIMITED: "RATE_LIMITED",
+
+  // ─── Auth (Phase 1) ────────────────────────────────────────────────────
+  USER_NOT_SYNCED: "USER_NOT_SYNCED", // Clerk JWT valid but user not in our DB yet
+  INVALID_WEBHOOK_SIGNATURE: "INVALID_WEBHOOK_SIGNATURE",
+
+  // ─── Workspace (Phase 2) ───────────────────────────────────────────────
+  WORKSPACE_NOT_FOUND: "WORKSPACE_NOT_FOUND",
+  WORKSPACE_SLUG_TAKEN: "WORKSPACE_SLUG_TAKEN",
+  NOT_WORKSPACE_MEMBER: "NOT_WORKSPACE_MEMBER",
+  INSUFFICIENT_ROLE: "INSUFFICIENT_ROLE",
+  CANNOT_DEMOTE_OWNER: "CANNOT_DEMOTE_OWNER",
+  CANNOT_REMOVE_OWNER: "CANNOT_REMOVE_OWNER",
+
+  // ─── Department (Phase 3) ──────────────────────────────────────────────
+  DEPARTMENT_NOT_FOUND: "DEPARTMENT_NOT_FOUND",
+  DEPARTMENT_NAME_TAKEN: "DEPARTMENT_NAME_TAKEN",
+
+  // ─── Team (Phase 3) ────────────────────────────────────────────────────
+  TEAM_NOT_FOUND: "TEAM_NOT_FOUND",
+  TEAM_NAME_TAKEN: "TEAM_NAME_TAKEN",
+
+  // ─── Project (Phase 4) ─────────────────────────────────────────────────
+  PROJECT_NOT_FOUND: "PROJECT_NOT_FOUND",
+  PROJECT_NAME_TAKEN: "PROJECT_NAME_TAKEN",
+
+  // ─── Issue (Phase 5) ───────────────────────────────────────────────────
+  ISSUE_NOT_FOUND: "ISSUE_NOT_FOUND",
+  INVALID_ASSIGNEE: "INVALID_ASSIGNEE", // assigneeId is not a workspace member
+
+  // ─── Comment (Phase 6) ─────────────────────────────────────────────────
+  COMMENT_NOT_FOUND: "COMMENT_NOT_FOUND",
+  NOT_COMMENT_AUTHOR: "NOT_COMMENT_AUTHOR",
+
+  // ─── Label (Phase 7) ───────────────────────────────────────────────────
+  LABEL_NOT_FOUND: "LABEL_NOT_FOUND",
+  LABEL_NAME_TAKEN: "LABEL_NAME_TAKEN",
+  SELF_RELATION_NOT_ALLOWED: "SELF_RELATION_NOT_ALLOWED",
+
+  // ─── Member (Phase 2) ──────────────────────────────────────────────────
+  MEMBER_NOT_FOUND: "MEMBER_NOT_FOUND",
+  MEMBER_ALREADY_EXISTS: "MEMBER_ALREADY_EXISTS",
+} as const;
+
+// Type-safe error code type (union of all values)
+export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];

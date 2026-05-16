@@ -38,58 +38,180 @@ Phase 11 → Intelligence    (MCP server, AI assistant — future scope)
 
 **Rule:** Zero feature code in this phase. Only infrastructure.
 
-### 0.1 Project Structure
+### 0.1 Architecture — Modular Monolith + Clean Layering
 
-Finalize folder layout:
+**Pattern:** Feature-based modules (vertical slices) with clean internal layering per module.
+
+**Flow (enforced everywhere):**
+```
+Route → Middleware chain → Controller → Service → DB (Prisma)
+```
+
+**Rules:**
+- Controllers are dumb — parse request, call service, send response
+- Services contain ALL business logic — receive typed params, return data or throw `AppError`
+- Services talk to Prisma directly (no repository layer unless query complexity warrants it)
+- Zod schemas are the single source of truth for validation + TypeScript types (no DTOs)
+- Prisma generated types ARE your models (no wrapper domain models)
+- `infra/` added only when needed (Phase 8+ for Redis, queues, email)
+
+### 0.2 Project Structure
 
 ```
 app/
-├── server.ts                # Entry point — starts HTTP server
-├── app.ts                   # Express app setup (middleware stack)
-├── generated/prisma/        # Prisma client (auto-generated)
+├── server.ts                  # Entry point — starts HTTP server
+├── app.ts                     # Express app setup (global middleware stack)
+├── generated/prisma/          # Prisma client (auto-generated, gitignored)
+
 config/
-├── env.ts                   # Typed env var loader (dotenv + zod validation)
-├── cors.ts                  # CORS configuration
-├── clerk.ts                 # Clerk SDK configuration
-modules/                     # Feature modules (Phase 1+)
+├── env.ts                     # Typed env var loader (dotenv + Zod validation)
+├── cors.ts                    # CORS configuration
+└── clerk.ts                   # Clerk SDK configuration
+
+modules/                       # Feature modules — one per domain entity
 ├── auth/
+│   ├── auth.routes.ts         # Route definitions + per-route middleware chain
+│   ├── auth.controller.ts     # Request handler (parse → delegate → respond)
+│   ├── auth.service.ts        # Business logic (user sync, lookup)
+│   ├── auth.schemas.ts        # Zod schemas (validation + types)
+│   └── webhook.handler.ts     # Clerk webhook signature verify + dispatch
 ├── workspace/
-├── ...
+│   ├── workspace.routes.ts
+│   ├── workspace.controller.ts
+│   ├── workspace.service.ts
+│   ├── workspace.schemas.ts
+│   └── membership.service.ts  # Sub-service when module has multiple concerns
+├── issue/
+│   ├── issue.routes.ts
+│   ├── issue.controller.ts
+│   ├── issue.service.ts
+│   ├── issue.schemas.ts
+│   ├── issue.repository.ts   # ONLY if queries become complex/reusable
+│   └── subtask.service.ts
+├── department/
+├── team/
+├── project/
+├── comment/
+├── label/
+├── cycle/
+├── notification/
+├── activity/
+├── template/
+├── integration/
+├── api-key/
+└── billing/
+
 shared/
 ├── middleware/
-│   ├── error-handler.ts     # Global error handler
-│   ├── not-found.ts         # 404 handler
-│   ├── request-logger.ts    # Morgan or custom request logging
-│   └── validate.ts          # Zod request validation middleware
+│   ├── authenticate.ts        # Verify Clerk JWT, attach req.user
+│   ├── require-workspace.ts   # Resolve workspaceId, verify membership, attach req.workspace
+│   ├── require-role.ts        # Role-based permission guard factory
+│   ├── require-ownership.ts   # Check if user owns the resource
+│   ├── validate.ts            # Zod schema validation (body/params/query)
+│   ├── rate-limiter.ts        # Rate limiting (express-rate-limit)
+│   ├── request-logger.ts      # Request logging (Morgan or custom)
+│   ├── not-found.ts           # 404 handler for unmatched routes
+│   └── error-handler.ts       # Global error catcher → standard response
 ├── utils/
-│   ├── api-response.ts      # Standardized { success, data, error } response helper
-│   ├── api-error.ts         # Custom AppError class with status codes
-│   └── prisma.ts            # Prisma client singleton
+│   ├── prisma.ts              # Prisma client singleton
+│   ├── api-response.ts        # Standardized { success, data, error } helper
+│   ├── api-error.ts           # Custom AppError class with status codes
+│   └── activity.ts            # Activity log helper (used across modules)
 ├── types/
-│   └── express.d.ts         # Extended Request type (user, workspace context)
-queues/                      # Background job queues (Phase 8+)
-workers/                     # Job workers (Phase 8+)
-socket/                      # Socket.IO handlers (Phase 9)
-tests/                       # Test files
+│   └── express.d.ts           # Extended Request type (user, workspace context)
+└── errors/
+    └── error-codes.ts         # Centralized error code constants
+
+infra/                          # Added in Phase 8+ when needed
+├── redis/                     # Cache + pub/sub
+├── queue/                     # Background job queue (BullMQ)
+├── email/                     # Email sending (SMTP/Resend)
+└── storage/                   # File uploads (S3/R2)
+
+socket/                         # Socket.IO handlers (Phase 9)
+├── index.ts                   # Server setup
+├── auth.ts                    # Socket auth middleware
+├── rooms.ts                   # Room join/leave
+└── events.ts                  # Event emitter integration
+
+tests/                          # Test files mirror module structure
+├── auth/
+├── workspace/
+├── issue/
+└── helpers/                   # Test utilities, fixtures, factories
+
 prisma/
-├── schema.prisma            # Database schema
-├── migrations/              # Migration history
+├── schema.prisma
+└── migrations/
+
+docs/
+├── product/
+└── setup/
 ```
 
-### 0.2 Express App Setup
+### 0.3 Middleware Architecture
+
+#### Global Middlewares (applied to ALL routes in `app.ts`, order matters)
 
 ```
-app.ts middleware stack (order matters):
-1. helmet()                  — security headers
-2. cors(corsConfig)          — CORS policy
-3. express.json()            — body parsing
-4. morgan / request logger   — request logging
-5. --- route mounting ---
-6. notFoundHandler           — 404 for unmatched routes
-7. globalErrorHandler        — catches all thrown/next(err) errors
+app.ts middleware stack:
+1. helmet()                    — security headers (XSS, clickjacking, MIME sniffing)
+2. cors(corsConfig)            — CORS policy (allow frontend origin)
+3. express.json()              — parse JSON request bodies
+4. rateLimiter                 — global rate limit (100 req/min per IP)
+5. requestLogger              — log method, path, status, duration
+6. --- route mounting ---      — modules register their routes here
+7. notFoundHandler             — 404 for unmatched routes (standard format)
+8. errorHandler                — catches all thrown/next(err) errors (standard format)
 ```
 
-### 0.3 Environment Config
+#### Route-Level Middlewares (per-route or per-module)
+
+| Middleware | Purpose | Signature |
+|---|---|---|
+| `authenticate` | Verify Clerk JWT, look up User in DB, attach `req.user = { id, email, name }` | Returns 401 if invalid |
+| `requireWorkspace` | Read `workspaceId` from header/param, verify membership, attach `req.workspace = { id, role }` | Returns 403 if not a member |
+| `requireRole(...roles)` | Check `req.workspace.role` against allowed roles | Returns 403 if insufficient |
+| `requireOwnership(getter)` | Check if authenticated user owns the resource (e.g., comment author) | Returns 403 if not owner |
+| `validate(schema)` | Validate `req.body`, `req.params`, `req.query` against Zod schema | Returns 422 with field errors |
+
+#### Middleware Composition per Route (examples)
+
+```typescript
+// Admin-only: invite a member
+router.post(
+  "/:workspaceId/members/invite",
+  authenticate,
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  validate(inviteMemberSchema),
+  controller.inviteMember
+);
+
+// Any member: create an issue
+router.post(
+  "/",
+  authenticate,
+  requireWorkspace,
+  requireRole("MEMBER", "ADMIN", "OWNER"),
+  validate(createIssueSchema),
+  controller.create
+);
+
+// Author or admin: delete a comment
+router.delete(
+  "/:id",
+  authenticate,
+  requireWorkspace,
+  requireOwnership(getCommentAuthor),  // checks author first
+  controller.delete                     // OR falls through if admin
+);
+
+// Webhook: no auth middleware (verified by signature internally)
+router.post("/webhooks/clerk", webhookHandler.handle);
+```
+
+### 0.4 Environment Config
 
 Typed env validation using Zod:
 
@@ -108,7 +230,7 @@ const envSchema = z.object({
 
 Fail-fast: server refuses to start if env is invalid.
 
-### 0.4 Error Handling
+### 0.5 Error Handling
 
 Standardized API response format:
 
@@ -135,13 +257,13 @@ class AppError extends Error {
 }
 ```
 
-### 0.5 Database Connection
+### 0.6 Database Connection
 
 - Prisma client singleton in `shared/utils/prisma.ts`
 - Connection verified on server start (before listening)
 - Graceful shutdown: `prisma.$disconnect()` on `SIGTERM`/`SIGINT`
 
-### 0.6 Health Check
+### 0.7 Health Check
 
 ```
 GET /health
@@ -150,7 +272,7 @@ GET /health
 
 Checks actual DB connectivity (runs `SELECT 1`), not just "server is up".
 
-### 0.7 Dev Tooling
+### 0.8 Dev Tooling
 
 | Tool        | Purpose                    | Config              |
 |-------------|----------------------------|---------------------|
@@ -1095,13 +1217,29 @@ Every module follows the same structure:
 
 ```
 modules/<name>/
-├── <name>.routes.ts          # Route definitions + middleware chain
+├── <name>.routes.ts          # Route definitions + per-route middleware chain
 ├── <name>.controller.ts      # Request parsing → service call → response
-├── <name>.service.ts         # Business logic (talks to Prisma)
-└── <name>.schemas.ts         # Zod schemas for validation
+├── <name>.service.ts         # Business logic (talks to Prisma directly)
+├── <name>.schemas.ts         # Zod schemas (validation + inferred types)
+└── <name>.repository.ts      # OPTIONAL — only when queries are complex/reusable
 ```
 
-- **Routes** define the middleware chain: `auth → workspace → validate → controller`
-- **Controllers** never contain business logic — they parse, delegate, respond
-- **Services** never touch `req`/`res` — they take typed params and return data or throw `AppError`
-- **Schemas** are the source of truth for request/response shapes
+**Layer rules:**
+
+| Layer | Responsibility | Can Access | Cannot Access |
+|---|---|---|---|
+| Routes | Define URL, attach middleware chain | Controller | Service, DB |
+| Controller | Parse `req`, call service, send `res` | Service, Schemas | DB, other controllers |
+| Service | Business logic, orchestration | Prisma (or Repository), other services | `req`, `res`, Express |
+| Repository | Complex/reusable queries | Prisma | Business logic, `req`/`res` |
+| Schemas | Validation + type inference | Zod | Nothing else |
+
+**When to add a repository:**
+- Query has complex joins, raw SQL, or aggregations
+- Same query is reused across multiple services
+- You need to cache query results
+
+**When NOT to add a repository:**
+- Simple CRUD (`prisma.issue.create(...)`)
+- Query is only used in one place
+- You're just wrapping Prisma with no added value
