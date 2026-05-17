@@ -22,6 +22,9 @@ const envSchema = z.object({
   CLERK_SECRET_KEY: z.string().min(1, "CLERK_SECRET_KEY is required"),
   CLERK_WEBHOOK_SECRET: z.string().min(1, "CLERK_WEBHOOK_SECRET is required"),
 
+  // Resend — email service (for workspace invitations, notifications)
+  RESEND_API_KEY: z.string().min(1, "RESEND_API_KEY is required"),
+
   // App settings
   PORT: z.coerce.number().default(8000),
   NODE_ENV: z

@@ -1,57 +1,97 @@
 /**
  * Request Logger Middleware
  *
- * Logs every incoming HTTP request with:
- *   - Timestamp
- *   - Method + URL
- *   - Status code (color-coded)
- *   - Response time
- *   - User ID (if authenticated)
- *   - Workspace ID (if present)
+ * Logs every HTTP request with:
+ *   - Timestamp, method, URL, status, response time
+ *   - User ID and workspace ID (if authenticated)
+ *   - Request body (for POST/PATCH — helps debug what the frontend sent)
+ *   - Error details (for 4xx/5xx responses)
  *
- * Development: Custom colored format with context
- * Production: Structured JSON format (for log aggregation)
+ * Color-coded by status: green=2xx, yellow=4xx, red=5xx
  *
- * Example dev output:
- *   [2026-05-16 12:30:45] POST /webhooks/clerk → 200 (4ms)
- *   [2026-05-16 12:30:46] GET /me → 401 (2ms)
- *   [2026-05-16 12:30:47] GET /issues → 200 (8ms) [user: user_2x1abc] [ws: abc-123]
- *   [2026-05-16 12:30:48] GET /nonexistent → 404 (0ms)
+ * Production: structured JSON (for log aggregation)
+ * Development: colored human-readable format
  */
 
-import morgan from "morgan";
-import type { Request, Response } from "express";
+import type { RequestHandler } from "express";
 import { env } from "../../config/env.js";
 
-// ─── Custom tokens ───────────────────────────────────────────────────────────
+export const requestLogger: RequestHandler = (req, res, next) => {
+  const start = Date.now();
 
-// Formatted timestamp: YYYY-MM-DD HH:MM:SS
-morgan.token("ts", () => new Date().toISOString().replace("T", " ").slice(0, 19));
+  // Capture the response body for error logging
+  const originalJson = res.json.bind(res);
+  let responseBody: unknown;
+  res.json = (body: unknown) => {
+    responseBody = body;
+    return originalJson(body);
+  };
 
-// User ID from req.user (set by authenticate middleware)
-morgan.token("uid", (req: Request) => req.user?.id ?? "");
+  res.on("finish", () => {
+    const duration = Date.now() - start;
+    const status = res.statusCode;
+    const timestamp = new Date().toISOString().replace("T", " ").slice(0, 19);
 
-// Workspace ID from req.workspace or X-Workspace-Id header
-morgan.token("wid", (req: Request) =>
-  req.workspace?.id ?? (req.headers["x-workspace-id"] as string) ?? "",
-);
+    if (env.NODE_ENV === "production") {
+      // Structured JSON for log aggregation (Datadog, CloudWatch, etc.)
+      process.stdout.write(
+        JSON.stringify({
+          timestamp,
+          method: req.method,
+          path: req.originalUrl,
+          status,
+          duration,
+          userId: req.user?.id,
+          workspaceId: req.workspace?.id,
+        }) + "\n",
+      );
+      return;
+    }
 
-// ─── Format strings ──────────────────────────────────────────────────────────
+    // ─── Development: colored, detailed logs ──────────────────────────────
 
-// Development: colored, human-readable
-const DEV_FORMAT =
-  "[:ts] \x1b[1m:method\x1b[0m :url → :status (:response-time ms) :uid :wid";
+    // ANSI color codes
+    const reset = "\x1b[0m";
+    const dim = "\x1b[2m";
+    const bold = "\x1b[1m";
+    const green = "\x1b[32m";
+    const yellow = "\x1b[33m";
+    const red = "\x1b[31m";
+    const cyan = "\x1b[36m";
 
-// Production: structured for log aggregation (JSON-like)
-const PROD_FORMAT =
-  '{"ts":":ts","method":":method","path":":url","status"::status,"duration":":response-time","userId":":uid","workspaceId":":wid"}';
+    let statusColor = green;
+    if (status >= 500) statusColor = red;
+    else if (status >= 400) statusColor = yellow;
 
-// ─── Export ──────────────────────────────────────────────────────────────────
+    // Main log line
+    let line = `${dim}${timestamp}${reset} ${bold}${req.method}${reset} ${req.originalUrl} ${statusColor}${status}${reset} ${dim}${duration}ms${reset}`;
 
-export const requestLogger = morgan(
-  env.NODE_ENV === "production" ? PROD_FORMAT : DEV_FORMAT,
-  {
-    // Write to stdout (default) — Morgan handles flushing
-    stream: process.stdout,
-  },
-);
+    // User context
+    if (req.user?.id) {
+      line += ` ${dim}[user:${req.user.id.slice(0, 15)}]${reset}`;
+    }
+
+    // Workspace context
+    const wsId = req.workspace?.id || (req.headers["x-workspace-id"] as string);
+    if (wsId) {
+      line += ` ${dim}[ws:${wsId.slice(0, 8)}]${reset}`;
+    }
+
+    console.log(line);
+
+    // Log request body for write operations (helps debug frontend issues)
+    if (["POST", "PATCH", "PUT"].includes(req.method) && req.body && Object.keys(req.body).length > 0) {
+      console.log(`  ${cyan}→ body:${reset}`, JSON.stringify(req.body));
+    }
+
+    // Log error details for failed requests
+    if (status >= 400 && responseBody && typeof responseBody === "object") {
+      const err = (responseBody as { error?: { code?: string; message?: string } }).error;
+      if (err) {
+        console.log(`  ${statusColor}← error:${reset} ${err.code} — ${err.message}`);
+      }
+    }
+  });
+
+  next();
+};

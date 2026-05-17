@@ -15,7 +15,7 @@
 
 // ─── Phase-specific path imports (uncomment as phases are built) ─────────────
 import { authPaths, authSchemas } from "./paths/auth.js";
-// import { workspacePaths, workspaceSchemas } from "./paths/workspace.js";
+import { workspacePaths, workspaceSchemas } from "./paths/workspace.js";
 // import { departmentPaths, departmentSchemas } from "./paths/department.js";
 // import { teamPaths, teamSchemas } from "./paths/team.js";
 // import { projectPaths, projectSchemas } from "./paths/project.js";
@@ -54,6 +54,8 @@ export const openApiSpec: Record<string, any> = {
   tags: [
     { name: "Health", description: "Server status and connectivity checks" },
     { name: "Auth", description: "Authentication webhooks and user profile" },
+    { name: "Workspaces", description: "Workspace CRUD and membership management" },
+    { name: "Invitations", description: "Workspace invitations — send, resolve, accept, revoke" },
   ],
 
   // ─── Paths: Only implemented routes ──────────────────────────────────────────
@@ -101,8 +103,10 @@ export const openApiSpec: Record<string, any> = {
     // Phase 1: Auth
     ...authPaths,
 
+    // Phase 2: Workspaces
+    ...workspacePaths,
+
     // As phases are built, spread their paths here:
-    // ...workspacePaths,
     // ...departmentPaths,
     // ...teamPaths,
     // ...projectPaths,
@@ -241,8 +245,10 @@ export const openApiSpec: Record<string, any> = {
       // Phase 1: Auth
       ...authSchemas,
 
+      // Phase 2: Workspaces
+      ...workspaceSchemas,
+
       // As phases are built, spread their schemas here:
-      // ...workspaceSchemas,
       // ...departmentSchemas,
       // ...teamSchemas,
       // ...projectSchemas,

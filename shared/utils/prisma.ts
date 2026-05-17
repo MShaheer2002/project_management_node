@@ -11,6 +11,7 @@
  * without creating new connections each time tsx restarts the module.
  */
 
+import "dotenv/config"; // Ensure env vars are loaded before accessing DATABASE_URL
 import { PrismaClient } from "../../app/generated/prisma/client.js";
 import { PrismaPg } from "@prisma/adapter-pg";
 

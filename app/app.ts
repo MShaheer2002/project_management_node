@@ -33,6 +33,8 @@ import { sendSuccess } from "../shared/utils/api-response.js";
 import { prisma } from "../shared/utils/prisma.js";
 import { openApiSpec } from "../docs/api/openapi.js";
 import authRoutes from "../modules/auth/auth.routes.js";
+import workspaceRoutes from "../modules/workspace/workspace.routes.js";
+import invitationRoutes from "../modules/workspace/invitation.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -116,7 +118,9 @@ app.get("/health", async (_req, res, next) => {
 // Phase 1: Auth (webhook + user profile)
 app.use(authRoutes);
 
-// Phase 2: app.use("/workspaces", workspaceRoutes);
+// Phase 2: Workspaces (multi-tenancy core)
+app.use("/workspaces", workspaceRoutes);
+app.use("/invitations", invitationRoutes);
 // Phase 3: app.use("/departments", departmentRoutes);
 // Phase 3: app.use("/teams", teamRoutes);
 // Phase 4: app.use("/projects", projectRoutes);

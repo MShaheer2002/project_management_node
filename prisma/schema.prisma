@@ -148,6 +148,23 @@ enum PaymentMethodType {
   BANK_TRANSFER
 }
 
+/// Team size range — selected during workspace onboarding
+/// Used for plan recommendations, onboarding flow, and analytics
+enum TeamSize {
+  SMALL       // 1-5 members
+  MEDIUM      // 6-20 members
+  LARGE       // 21-50 members
+  ENTERPRISE  // 50+ members
+}
+
+/// Invitation lifecycle — tracks the state of a workspace invite
+enum InvitationStatus {
+  PENDING   // Invite sent, waiting for acceptance
+  ACCEPTED  // Invitee accepted and joined the workspace
+  EXPIRED   // Invite passed its expiry date without being accepted
+  REVOKED   // Admin manually cancelled the invite
+}
+
 /// Third-party services that can be connected to a workspace
 enum IntegrationProvider {
   GITHUB
@@ -196,6 +213,9 @@ model User {
   notifications      Notification[] @relation("NotificationRecipient") // Notifications FOR this user
   actedNotifications Notification[] @relation("NotificationActor") // Notifications triggered BY this user
 
+  // -- Invitations --
+  sentInvitations WorkspaceInvitation[] @relation("InvitationSender") // Invites this user sent
+
   // -- Other --
   activities            Activity[] // Activity log entries by this user
   createdTemplates      Template[] // Templates created by this user
@@ -219,6 +239,7 @@ model Workspace {
   name         String // Display name (e.g., "Acme Corp")
   slug         String @unique // URL slug (e.g., "acme-corp") — must be globally unique
   logo         String? // URL to workspace logo
+  teamSize     TeamSize? // Selected during onboarding (1-5, 6-20, 21-50, 50+)
   issueCounter Int    @default(0) // Atomic counter for human-readable issue IDs (LIN-N)
   createdById  String // FK → User who created this workspace (becomes OWNER)
   createdAt    DateTime @default(now())
@@ -229,6 +250,7 @@ model Workspace {
 
   // -- All workspace-scoped entities --
   memberships    WorkspaceMembership[]
+  invitations    WorkspaceInvitation[]
   departments    Department[]
   teams          Team[]
   projects       Project[]
@@ -251,11 +273,13 @@ model Workspace {
 ///
 /// Every user in a workspace has exactly one role (OWNER, ADMIN, MEMBER, GUEST).
 /// A user + workspace combination must be unique (can't join the same workspace twice).
+/// `invitedById` tracks who brought this member in (null for the OWNER who created the workspace).
 model WorkspaceMembership {
   id          String        @id @default(uuid())
   userId      String
   workspaceId String
   role        WorkspaceRole @default(MEMBER)
+  invitedById String? // FK → User who invited this member (null for workspace creator)
   joinedAt    DateTime      @default(now())
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -264,6 +288,46 @@ model WorkspaceMembership {
   @@unique([userId, workspaceId]) // A user can only be in a workspace once
   @@index([workspaceId])
   @@index([userId])
+}
+
+/// WorkspaceInvitation — tracks pending, accepted, and revoked workspace invitations
+///
+/// Security design:
+///   - Token is HASHED before storage (sha256) — raw token only exists in the email link
+///   - Acceptance verifies authenticated_user.email === invitation.email (email-bound, not token-bound)
+///   - Prevents forwarded invite abuse (token alone is not enough)
+///   - Expired/revoked invites cannot be accepted
+///
+/// Lifecycle: PENDING → ACCEPTED / EXPIRED / REVOKED
+///   - Only one PENDING invite per (workspaceId, email) at a time
+///   - Resending an invite = revoke old + create new (clean audit trail)
+///   - Accept is idempotent (double-click safe)
+///
+/// Email is stored LOWERCASED for consistent matching (Jane@Example.com → jane@example.com)
+model WorkspaceInvitation {
+  id           String           @id @default(uuid())
+  workspaceId  String
+  email        String // Invitee's email — ALWAYS stored lowercase
+  role         WorkspaceRole    @default(MEMBER) // Role assigned on acceptance
+  teamId       String // FK → Team the invitee will be assigned to on acceptance (required)
+  departmentId String? // FK → Department the invitee will be assigned to (optional)
+  tokenHash    String           @unique // SHA-256 hash of the raw invite token (never store raw)
+  status       InvitationStatus @default(PENDING)
+  invitedById  String // FK → User who sent the invitation
+  expiresAt    DateTime // When this invite expires (default: 7 days from creation)
+  acceptedAt   DateTime? // Set when invitee accepts
+  revokedAt    DateTime? // Set when admin revokes
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy  User        @relation("InvitationSender", fields: [invitedById], references: [id])
+  team       Team        @relation(fields: [teamId], references: [id])
+  department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, email]) // Fast lookup: "does this email have a pending invite for this workspace?"
+  @@index([workspaceId, status]) // List pending/accepted invites for a workspace
+  @@index([tokenHash]) // Resolve invite by token hash (unique already indexed, but explicit for clarity)
 }
 
 // ============================================================================
@@ -296,6 +360,7 @@ model Department {
   memberships DepartmentMembership[] // Users in this department
   projects    Project[] // Projects under this department (denormalized from team)
   issues      Issue[] // Issues under this department (denormalized from team)
+  invitations WorkspaceInvitation[] // Invitations targeting this department
 
   @@unique([workspaceId, name]) // Department names must be unique within a workspace
   @@index([workspaceId])
@@ -338,6 +403,7 @@ model Team {
   projects    Project[] // Projects owned by this team
   issues      Issue[] // Issues under this team
   cycles      Cycle[] // Sprints scoped to this team
+  invitations WorkspaceInvitation[] // Invitations targeting this team
 
   @@unique([workspaceId, name]) // Team names must be unique within a workspace
   @@index([workspaceId])
