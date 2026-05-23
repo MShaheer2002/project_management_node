@@ -30,6 +30,7 @@ import {
   workspaceIdParamSchema,
   checkSlugSchema,
   inviteMemberSchema,
+  listWorkspaceMembersSchema,
   changeMemberRoleSchema,
   removeMemberSchema,
   resolveInvitationSchema,
@@ -133,7 +134,7 @@ router.delete(
 router.get(
   "/:workspaceId/members",
   authenticate,
-  validate(workspaceIdParamSchema),
+  validate(listWorkspaceMembersSchema),
   requireWorkspace,
   controller.listMembers,
 );

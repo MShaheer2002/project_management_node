@@ -5,8 +5,9 @@
  * Supports validating body, params, and query — individually or all at once.
  *
  * If validation fails, returns a 422 response with field-level error details.
- * If validation passes, the validated data replaces the raw request data,
- * so controllers receive clean, typed values.
+ * If validation passes, validated body/params replace raw request data.
+ * Query strings are validated but not reassigned because Express exposes
+ * req.query as a getter in recent versions.
  *
  * Usage in routes:
  *   router.post("/issues", validate(createIssueSchema), controller.create)
@@ -29,11 +30,12 @@ interface ValidationSchema {
 
 /**
  * Creates a middleware that validates the request against the provided Zod schemas.
- * Validated data replaces raw request data — services receive typed, safe values.
+ * Validated body/params replace raw request data. Query is validated in place.
  */
 export function validate(schema: ValidationSchema): RequestHandler {
   return (req, res, next) => {
     const errors: unknown[] = [];
+    req.validated = {};
 
     // Validate request body (POST/PATCH payloads)
     if (schema.body) {
@@ -48,6 +50,7 @@ export function validate(schema: ValidationSchema): RequestHandler {
         );
       } else {
         req.body = result.data;
+        req.validated.body = result.data;
       }
     }
 
@@ -64,6 +67,7 @@ export function validate(schema: ValidationSchema): RequestHandler {
         );
       } else {
         req.params = result.data as typeof req.params;
+        req.validated.params = result.data;
       }
     }
 
@@ -79,7 +83,7 @@ export function validate(schema: ValidationSchema): RequestHandler {
           })),
         );
       } else {
-        req.query = result.data as typeof req.query;
+        req.validated.query = result.data;
       }
     }
 

@@ -25,6 +25,7 @@ export const ERROR_CODES = {
   FORBIDDEN: "FORBIDDEN",
   CONFLICT: "CONFLICT",
   RATE_LIMITED: "RATE_LIMITED",
+  EMAIL_SEND_FAILED: "EMAIL_SEND_FAILED",
 
   // ─── Auth (Phase 1) ────────────────────────────────────────────────────
   USER_NOT_SYNCED: "USER_NOT_SYNCED", // Clerk JWT valid but user not in our DB yet
@@ -41,10 +42,18 @@ export const ERROR_CODES = {
   // ─── Department (Phase 3) ──────────────────────────────────────────────
   DEPARTMENT_NOT_FOUND: "DEPARTMENT_NOT_FOUND",
   DEPARTMENT_NAME_TAKEN: "DEPARTMENT_NAME_TAKEN",
+  HEAD_NOT_WORKSPACE_MEMBER: "HEAD_NOT_WORKSPACE_MEMBER",
+  MEMBER_ALREADY_IN_DEPARTMENT: "MEMBER_ALREADY_IN_DEPARTMENT",
+  MEMBER_NOT_IN_DEPARTMENT: "MEMBER_NOT_IN_DEPARTMENT",
+  PRIVATE_DEPARTMENT_FORBIDDEN: "PRIVATE_DEPARTMENT_FORBIDDEN",
 
   // ─── Team (Phase 3) ────────────────────────────────────────────────────
   TEAM_NOT_FOUND: "TEAM_NOT_FOUND",
   TEAM_NAME_TAKEN: "TEAM_NAME_TAKEN",
+  LEAD_NOT_WORKSPACE_MEMBER: "LEAD_NOT_WORKSPACE_MEMBER",
+  MEMBER_ALREADY_IN_TEAM: "MEMBER_ALREADY_IN_TEAM",
+  MEMBER_NOT_IN_TEAM: "MEMBER_NOT_IN_TEAM",
+  PRIVATE_TEAM_FORBIDDEN: "PRIVATE_TEAM_FORBIDDEN",
 
   // ─── Project (Phase 4) ─────────────────────────────────────────────────
   PROJECT_NOT_FOUND: "PROJECT_NOT_FOUND",
@@ -66,6 +75,11 @@ export const ERROR_CODES = {
   // ─── Member (Phase 2) ──────────────────────────────────────────────────
   MEMBER_NOT_FOUND: "MEMBER_NOT_FOUND",
   MEMBER_ALREADY_EXISTS: "MEMBER_ALREADY_EXISTS",
+  MEMBER_NOT_WORKSPACE_MEMBER: "MEMBER_NOT_WORKSPACE_MEMBER",
+
+  // ─── Upload (Phase 4) ──────────────────────────────────────────────────
+  UPLOAD_TYPE_NOT_ALLOWED: "UPLOAD_TYPE_NOT_ALLOWED",
+  UPLOAD_FILE_TOO_LARGE: "UPLOAD_FILE_TOO_LARGE",
 } as const;
 
 // Type-safe error code type (union of all values)

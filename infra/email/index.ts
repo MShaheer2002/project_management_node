@@ -10,12 +10,10 @@
 
 import { Resend } from "resend";
 import { env } from "../../config/env.js";
+import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { AppError } from "../../shared/utils/api-error.js";
 
 const resend = new Resend(env.RESEND_API_KEY);
-
-// "From" address — must be verified in Resend dashboard for production
-// In development with onboarding@resend.dev, Resend allows sending to your own email
-const FROM_ADDRESS = "Linearis <onboarding@resend.dev>";
 
 interface SendEmailParams {
   to: string;
@@ -36,12 +34,23 @@ export async function sendEmail({ to, subject, html }: SendEmailParams) {
     return;
   }
 
-  await resend.emails.send({
-    from: FROM_ADDRESS,
+  const { error } = await resend.emails.send({
+    from: env.RESEND_FROM_ADDRESS,
     to,
     subject,
     html,
   });
+
+  if (error) {
+    console.error("[Email] Resend failed to send email", {
+      to,
+      subject,
+      from: env.RESEND_FROM_ADDRESS,
+      error,
+    });
+
+    throw new AppError(502, ERROR_CODES.EMAIL_SEND_FAILED, "Invitation email could not be sent");
+  }
 }
 
 /**

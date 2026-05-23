@@ -38,5 +38,5 @@ export const corsConfig: CorsOptions = {
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
 
   // Headers the client is allowed to send
-  allowedHeaders: ["Content-Type", "Authorization", "X-Workspace-Id"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Workspace-Id","ngrok-skip-browser-warning"],
 };

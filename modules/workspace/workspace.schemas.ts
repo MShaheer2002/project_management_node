@@ -55,6 +55,8 @@ const slugSchema = z
   });
 
 const teamSizeSchema = z.enum(["SMALL", "MEDIUM", "LARGE", "ENTERPRISE"]);
+const memberListSortSchema = z.enum(["name:asc", "name:desc", "joinedAt:asc", "joinedAt:desc"]);
+const memberListViewSchema = z.enum(["compact", "full"]);
 
 // ─── Request Schemas ─────────────────────────────────────────────────────────
 
@@ -137,6 +139,21 @@ export const removeMemberSchema = {
   }),
 };
 
+/** GET /workspaces/:workspaceId/members — List/search workspace members */
+export const listWorkspaceMembersSchema = {
+  params: z.object({
+    workspaceId: z.string().uuid("Invalid workspace ID"),
+  }),
+  query: z.object({
+    q: z.string().trim().max(100).optional(),
+    cursor: z.string().min(1, "Invalid cursor").optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    sort: memberListSortSchema.optional(),
+    role: z.enum(["OWNER", "ADMIN", "MEMBER", "GUEST"]).optional(),
+    view: memberListViewSchema.optional(),
+  }),
+};
+
 /** GET /invitations/resolve?t=<token> — Resolve an invite token (public) */
 export const resolveInvitationSchema = {
   query: z.object({
@@ -165,3 +182,4 @@ export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema.body>;
 export type UpdateWorkspaceInput = z.infer<typeof updateWorkspaceSchema.body>;
 export type InviteMemberInput = z.infer<typeof inviteMemberSchema.body>;
 export type ChangeMemberRoleInput = z.infer<typeof changeMemberRoleSchema.body>;
+export type ListWorkspaceMembersQuery = z.infer<typeof listWorkspaceMembersSchema.query>;

@@ -10,7 +10,8 @@ import type { RequestHandler } from "express";
 import * as workspaceService from "./workspace.service.js";
 import * as membershipService from "./membership.service.js";
 import * as invitationService from "./invitation.service.js";
-import { sendSuccess } from "../../shared/utils/api-response.js";
+import { sendList, sendSuccess } from "../../shared/utils/api-response.js";
+import type { ListWorkspaceMembersQuery } from "./workspace.schemas.js";
 
 // ─── Workspace CRUD ──────────────────────────────────────────────────────────
 
@@ -102,8 +103,11 @@ export const createInvitation: RequestHandler = async (req, res, next) => {
 /** GET /workspaces/:workspaceId/members — List workspace members */
 export const listMembers: RequestHandler = async (req, res, next) => {
   try {
-    const members = await membershipService.listMembers(req.params.workspaceId as string);
-    sendSuccess(res, 200, members);
+    const result = await membershipService.listMembers(
+      req.params.workspaceId as string,
+      (req.validated?.query ?? req.query) as ListWorkspaceMembersQuery,
+    );
+    sendList(res, result.items, result.meta);
   } catch (error) {
     next(error);
   }

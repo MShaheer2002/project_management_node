@@ -35,6 +35,11 @@ import { openApiSpec } from "../docs/api/openapi.js";
 import authRoutes from "../modules/auth/auth.routes.js";
 import workspaceRoutes from "../modules/workspace/workspace.routes.js";
 import invitationRoutes from "../modules/workspace/invitation.routes.js";
+import dashboardRoutes from "../modules/dashboard/dashboard.routes.js";
+import sidebarRoutes from "../modules/sidebar/sidebar.routes.js";
+import departmentRoutes from "../modules/department/department.routes.js";
+import teamRoutes from "../modules/team/team.routes.js";
+import uploadRoutes from "../modules/upload/upload.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -121,8 +126,15 @@ app.use(authRoutes);
 // Phase 2: Workspaces (multi-tenancy core)
 app.use("/workspaces", workspaceRoutes);
 app.use("/invitations", invitationRoutes);
-// Phase 3: app.use("/departments", departmentRoutes);
-// Phase 3: app.use("/teams", teamRoutes);
+
+// Dashboard aggregate (read-only workspace overview)
+app.use("/dashboard", dashboardRoutes);
+
+// Sidebar/app shell aggregate
+app.use("/sidebar", sidebarRoutes);
+app.use("/departments", departmentRoutes);
+app.use("/teams", teamRoutes);
+app.use("/uploads", uploadRoutes);
 // Phase 4: app.use("/projects", projectRoutes);
 // Phase 5: app.use("/issues", issueRoutes);
 // Phase 6: app.use("/comments", commentRoutes);

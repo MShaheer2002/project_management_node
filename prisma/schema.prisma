@@ -322,7 +322,7 @@ model WorkspaceInvitation {
 
   workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   invitedBy  User        @relation("InvitationSender", fields: [invitedById], references: [id])
-  team       Team        @relation(fields: [teamId], references: [id])
+  team       Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
   department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, email]) // Fast lookup: "does this email have a pending invite for this workspace?"
@@ -364,6 +364,9 @@ model Department {
 
   @@unique([workspaceId, name]) // Department names must be unique within a workspace
   @@index([workspaceId])
+  @@index([headId])
+  @@index([visibility])
+  @@index([isDefault])
 }
 
 /// DepartmentMembership — join table linking User ↔ Department
@@ -391,7 +394,9 @@ model Team {
   workspaceId  String
   departmentId String? // Optional — team can exist without a department
   name         String
+  description  String?
   leadId       String // FK → User who leads this team (contextual edit permission)
+  visibility   Visibility @default(PUBLIC)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -408,6 +413,8 @@ model Team {
   @@unique([workspaceId, name]) // Team names must be unique within a workspace
   @@index([workspaceId])
   @@index([departmentId])
+  @@index([leadId])
+  @@index([visibility])
 }
 
 /// TeamMembership — join table linking User ↔ Team

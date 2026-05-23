@@ -113,7 +113,7 @@ export const workspacePaths: Record<string, any> = {
     get: {
       tags: ["Workspaces"],
       summary: "List workspace members",
-      description: "Returns all members with their roles. Any workspace member can view.",
+      description: "Returns all members with their roles, joined dates, and workspace-scoped team/department memberships. Any workspace member can view.",
       security: [{ clerkAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/WorkspaceId" }],
       responses: {
@@ -121,7 +121,64 @@ export const workspacePaths: Record<string, any> = {
           description: "List of members",
           content: {
             "application/json": {
-              example: { success: true, data: [{ id: "user_2x...", email: "john@example.com", name: "John Doe", avatar: null, role: "OWNER", joinedAt: "2026-05-17T00:00:00Z" }] },
+              example: {
+                success: true,
+                data: [
+                  {
+                    id: "user_2x...",
+                    email: "john@example.com",
+                    name: "John Doe",
+                    avatar: null,
+                    role: "OWNER",
+                    invitedById: null,
+                    joinedAt: "2026-05-17T00:00:00Z",
+                    team: {
+                      id: "team-uuid",
+                      name: "Engineering",
+                      leadId: "user_2x...",
+                      departmentId: "department-uuid",
+                      department: {
+                        id: "department-uuid",
+                        name: "Product",
+                        color: "#6366f1",
+                        icon: "building",
+                      },
+                      joinedAt: "2026-05-17T00:00:00Z",
+                    },
+                    teams: [
+                      {
+                        id: "team-uuid",
+                        name: "Engineering",
+                        leadId: "user_2x...",
+                        departmentId: "department-uuid",
+                        department: {
+                          id: "department-uuid",
+                          name: "Product",
+                          color: "#6366f1",
+                          icon: "building",
+                        },
+                        joinedAt: "2026-05-17T00:00:00Z",
+                      },
+                    ],
+                    department: {
+                      id: "department-uuid",
+                      name: "Product",
+                      color: "#6366f1",
+                      icon: "building",
+                      joinedAt: "2026-05-17T00:00:00Z",
+                    },
+                    departments: [
+                      {
+                        id: "department-uuid",
+                        name: "Product",
+                        color: "#6366f1",
+                        icon: "building",
+                        joinedAt: "2026-05-17T00:00:00Z",
+                      },
+                    ],
+                  },
+                ],
+              },
             },
           },
         },

@@ -27,6 +27,13 @@ declare global {
         name: string;
       };
 
+      /** Validated request data produced by `validate` middleware */
+      validated?: {
+        body?: unknown;
+        params?: unknown;
+        query?: unknown;
+      };
+
       /** Active workspace context — set by `requireWorkspace` middleware */
       workspace?: {
         id: string; // Workspace UUID

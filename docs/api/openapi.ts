@@ -16,6 +16,9 @@
 // ─── Phase-specific path imports (uncomment as phases are built) ─────────────
 import { authPaths, authSchemas } from "./paths/auth.js";
 import { workspacePaths, workspaceSchemas } from "./paths/workspace.js";
+import { dashboardPaths, dashboardSchemas } from "./paths/dashboard.js";
+import { sidebarPaths, sidebarSchemas } from "./paths/sidebar.js";
+import { uploadPaths, uploadSchemas } from "./paths/upload.js";
 // import { departmentPaths, departmentSchemas } from "./paths/department.js";
 // import { teamPaths, teamSchemas } from "./paths/team.js";
 // import { projectPaths, projectSchemas } from "./paths/project.js";
@@ -56,6 +59,9 @@ export const openApiSpec: Record<string, any> = {
     { name: "Auth", description: "Authentication webhooks and user profile" },
     { name: "Workspaces", description: "Workspace CRUD and membership management" },
     { name: "Invitations", description: "Workspace invitations — send, resolve, accept, revoke" },
+    { name: "Dashboard", description: "Workspace dashboard aggregate data" },
+    { name: "Sidebar", description: "Authenticated app shell and sidebar data" },
+    { name: "Uploads", description: "Presigned S3 upload URL generation" },
   ],
 
   // ─── Paths: Only implemented routes ──────────────────────────────────────────
@@ -105,6 +111,15 @@ export const openApiSpec: Record<string, any> = {
 
     // Phase 2: Workspaces
     ...workspacePaths,
+
+    // Dashboard aggregate
+    ...dashboardPaths,
+
+    // Sidebar/app shell aggregate
+    ...sidebarPaths,
+
+    // S3 presigned uploads
+    ...uploadPaths,
 
     // As phases are built, spread their paths here:
     // ...departmentPaths,
@@ -247,6 +262,15 @@ export const openApiSpec: Record<string, any> = {
 
       // Phase 2: Workspaces
       ...workspaceSchemas,
+
+      // Dashboard aggregate
+      ...dashboardSchemas,
+
+      // Sidebar/app shell aggregate
+      ...sidebarSchemas,
+
+      // S3 presigned uploads
+      ...uploadSchemas,
 
       // As phases are built, spread their schemas here:
       // ...departmentSchemas,

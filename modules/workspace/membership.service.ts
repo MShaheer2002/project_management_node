@@ -16,7 +16,9 @@
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
-import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
+import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
+import type { Prisma, WorkspaceRole } from "../../app/generated/prisma/client.js";
+import type { ListWorkspaceMembersQuery } from "./workspace.schemas.js";
 
 /**
  * Invite a user to a workspace by email.
@@ -71,28 +73,161 @@ export async function inviteMember(
 
 /**
  * List all members of a workspace.
- * Returns user profile + their role in this workspace.
+ * Returns user profile, role, joined date, and workspace-scoped team/department
+ * memberships for the members page table and filters.
  */
-export async function listMembers(workspaceId: string) {
-  const memberships = await prisma.workspaceMembership.findMany({
-    where: { workspaceId },
-    include: {
-      user: {
-        select: { id: true, email: true, name: true, avatar: true },
-      },
-    },
-    orderBy: [
-      // OWNER first, then ADMIN, then MEMBER, then GUEST
-      { role: "asc" },
-      { joinedAt: "asc" },
-    ],
-  });
+function getWorkspaceMemberOrderBy(
+  sort: ListWorkspaceMembersQuery["sort"],
+): Prisma.WorkspaceMembershipOrderByWithRelationInput[] {
+  switch (sort) {
+    case "name:desc":
+      return [{ user: { name: "desc" } }, { userId: "desc" }];
+    case "joinedAt:asc":
+      return [{ joinedAt: "asc" }, { userId: "asc" }];
+    case "joinedAt:desc":
+      return [{ joinedAt: "desc" }, { userId: "desc" }];
+    case "name:asc":
+    default:
+      return [{ user: { name: "asc" } }, { userId: "asc" }];
+  }
+}
 
-  return memberships.map((m) => ({
-    ...m.user,
-    role: m.role,
-    joinedAt: m.joinedAt,
-  }));
+export async function listMembers(workspaceId: string, query: ListWorkspaceMembersQuery) {
+  const limit = clampListLimit(query.limit);
+  const where: Prisma.WorkspaceMembershipWhereInput = {
+    workspaceId,
+    ...(query.role ? { role: query.role } : {}),
+    ...(query.q
+      ? {
+          user: {
+            OR: [
+              { name: { contains: query.q, mode: "insensitive" } },
+              { email: { contains: query.q, mode: "insensitive" } },
+            ],
+          },
+        }
+      : {}),
+  };
+  const orderBy = getWorkspaceMemberOrderBy(query.sort);
+
+  const [total, memberships] = await Promise.all([
+    prisma.workspaceMembership.count({ where }),
+    prisma.workspaceMembership.findMany({
+      where,
+      orderBy,
+      ...(query.cursor
+        ? {
+            cursor: {
+              userId_workspaceId: {
+                userId: query.cursor,
+                workspaceId,
+              },
+            },
+            skip: 1,
+          }
+        : {}),
+      take: limit + 1,
+      select: {
+        userId: true,
+        role: true,
+        invitedById: true,
+        joinedAt: true,
+        user: {
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            avatar: true,
+            teamMemberships: {
+              where: {
+                team: { workspaceId },
+              },
+              select: {
+                joinedAt: true,
+                team: {
+                  select: {
+                    id: true,
+                    name: true,
+                    leadId: true,
+                    departmentId: true,
+                    department: {
+                      select: {
+                        id: true,
+                        name: true,
+                        color: true,
+                        icon: true,
+                      },
+                    },
+                  },
+                },
+              },
+              orderBy: { joinedAt: "asc" },
+            },
+            departmentMemberships: {
+              where: {
+                department: { workspaceId },
+              },
+              select: {
+                joinedAt: true,
+                department: {
+                  select: {
+                    id: true,
+                    name: true,
+                    color: true,
+                    icon: true,
+                  },
+                },
+              },
+              orderBy: { joinedAt: "asc" },
+            },
+          },
+        },
+      },
+    }),
+  ]);
+
+  const page = slicePage(memberships, limit);
+
+  const items = query.view === "compact"
+    ? page.items.map((membership) => ({
+        id: membership.user.id,
+        name: membership.user.name,
+        email: membership.user.email,
+        role: membership.role,
+      }))
+    : page.items.map((membership) => {
+        const teams = membership.user.teamMemberships.map((teamMembership) => ({
+          ...teamMembership.team,
+          joinedAt: teamMembership.joinedAt,
+        }));
+        const departments = membership.user.departmentMemberships.map((departmentMembership) => ({
+          ...departmentMembership.department,
+          joinedAt: departmentMembership.joinedAt,
+        }));
+
+        return {
+          id: membership.user.id,
+          email: membership.user.email,
+          name: membership.user.name,
+          avatar: membership.user.avatar,
+          role: membership.role,
+          invitedById: membership.invitedById,
+          joinedAt: membership.joinedAt,
+          team: teams[0] ?? null,
+          teams,
+          department: departments[0] ?? teams[0]?.department ?? null,
+          departments,
+        };
+      });
+
+  return {
+    items,
+    meta: {
+      total,
+      cursor: page.hasMore ? page.items[page.items.length - 1]?.userId ?? null : null,
+      hasMore: page.hasMore,
+    },
+  };
 }
 
 /**
@@ -142,22 +277,59 @@ export async function changeMemberRole(
  * OWNER cannot be removed — they must delete the workspace instead.
  */
 export async function removeMember(workspaceId: string, targetUserId: string) {
-  // Find the membership
-  const membership = await prisma.workspaceMembership.findUnique({
-    where: { userId_workspaceId: { userId: targetUserId, workspaceId } },
-    select: { id: true, role: true },
-  });
+  await prisma.$transaction(async (tx) => {
+    const membership = await tx.workspaceMembership.findUnique({
+      where: { userId_workspaceId: { userId: targetUserId, workspaceId } },
+      select: { id: true, role: true },
+    });
 
-  if (!membership) {
-    throw new AppError(404, ERROR_CODES.MEMBER_NOT_FOUND, "Member not found in this workspace");
-  }
+    if (!membership) {
+      throw new AppError(404, ERROR_CODES.MEMBER_NOT_FOUND, "Member not found in this workspace");
+    }
 
-  // OWNER cannot be removed
-  if (membership.role === "OWNER") {
-    throw new AppError(403, ERROR_CODES.CANNOT_REMOVE_OWNER, "Workspace owner cannot be removed");
-  }
+    if (membership.role === "OWNER") {
+      throw new AppError(403, ERROR_CODES.CANNOT_REMOVE_OWNER, "Workspace owner cannot be removed");
+    }
 
-  await prisma.workspaceMembership.delete({
-    where: { userId_workspaceId: { userId: targetUserId, workspaceId } },
+    const ledTeam = await tx.team.findFirst({
+      where: { workspaceId, leadId: targetUserId },
+      select: { id: true },
+    });
+
+    if (ledTeam) {
+      throw new AppError(
+        409,
+        ERROR_CODES.FORBIDDEN,
+        "Reassign this member from their team lead role before removing them from the workspace",
+      );
+    }
+
+    await tx.department.updateMany({
+      where: { workspaceId, headId: targetUserId },
+      data: { headId: null },
+    });
+
+    await tx.project.updateMany({
+      where: { workspaceId, leadId: targetUserId },
+      data: { leadId: null },
+    });
+
+    await tx.teamMembership.deleteMany({
+      where: {
+        userId: targetUserId,
+        team: { workspaceId },
+      },
+    });
+
+    await tx.departmentMembership.deleteMany({
+      where: {
+        userId: targetUserId,
+        department: { workspaceId },
+      },
+    });
+
+    await tx.workspaceMembership.delete({
+      where: { userId_workspaceId: { userId: targetUserId, workspaceId } },
+    });
   });
 }
