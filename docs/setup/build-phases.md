@@ -571,11 +571,15 @@ modules/team/
 
 **Dependency:** Phase 3 (teams must exist to own projects)
 
+**Implementation guides:**
+- Backend setup: [phase-4-backend-setup-guide.md](./phase-4-backend-setup-guide.md)
+- Frontend integration: [phase-4-frontend-project-integration-guide.md](./phase-4-frontend-project-integration-guide.md)
+
 ### 4.1 Routes
 
 ```
 POST   /projects                      — Create project (MEMBER+)
-GET    /projects                      — List projects (filterable by team, status)
+GET    /projects                      — List projects (filterable by team, status, visibility)
 GET    /projects/:id                  — Get project details
 PATCH  /projects/:id                  — Update project (ADMIN+ or LEAD)
 DELETE /projects/:id                  — Delete/archive project (ADMIN+ or LEAD)
@@ -593,10 +597,10 @@ GET    /projects/:id/members          — Get project team members
 - Deleting a project cascades its issues (hard delete)
 - Visibility: `PRIVATE` projects hidden from GUESTs
 
-### 4.3 Filtering
+### 4.3 Filtering & Pagination
 
 ```
-GET /projects?team=<teamId>&status=active&page=1&limit=20
+GET /projects?teamId=<teamId>&status=ACTIVE&visibility=PUBLIC&cursor=<projectId>&limit=20
 ```
 
 ### 4.4 Module Structure
@@ -608,6 +612,125 @@ modules/project/
 ├── project.service.ts
 └── project.schemas.ts
 ```
+
+### 4.5 Setup Guide (Backend Integration)
+
+Implement Phase 4 in this exact order:
+
+1. **Prisma model + migration**
+   - Add `Project` model with `workspaceId`, `teamId`, `departmentId?`, `leadId?`, `name`, `slug`, `description?`, `status`, `visibility`, timestamps
+   - Add unique constraints for workspace scope: `@@unique([workspaceId, name])`, `@@unique([workspaceId, slug])`
+   - Add indexes used by list API: `[workspaceId, teamId]`, `[workspaceId, status]`
+   - Run migration with descriptive name (example: `add-project-model-phase-4`)
+
+2. **Schemas (`project.schemas.ts`)**
+   - `createProjectSchema`, `updateProjectSchema`, `listProjectsSchema`, `projectIdParamsSchema`
+   - Validate and normalize `slug` (`^[a-z0-9-]+$`)
+   - List schema supports: `teamId?`, `status?`, `visibility?`, `cursor?`, `limit?`
+
+3. **Service (`project.service.ts`)**
+   - Enforce workspace scoping in every query (`where: { workspaceId: req.workspace.id, ... }`)
+   - Validate `teamId` belongs to same workspace
+   - Derive `departmentId` from selected team
+   - Create/update/archive/delete logic in service only (no business logic in controller)
+   - Implement cursor pagination contract for list endpoint
+
+4. **Controller (`project.controller.ts`)**
+   - Parse validated inputs and call service
+   - Return standardized response shape (`success/data/error/meta`)
+
+5. **Routes (`project.routes.ts`)**
+   - Apply middleware chain on protected routes:
+   - `authenticate → requireWorkspace → requireRole(...) → validate(...)`
+   - Recommended permissions:
+   - `POST /projects`: `MEMBER | LEAD | ADMIN | OWNER`
+   - `GET /projects`, `GET /projects/:id`: `GUEST+` (with PRIVATE filtering)
+   - `PATCH`, `DELETE`: `LEAD | ADMIN | OWNER`
+
+6. **App wiring**
+   - Register project routes in main router/app module
+   - Ensure 404/error handlers remain global and last in chain
+
+7. **Test coverage**
+   - Create project under valid team in workspace
+   - Reject cross-workspace team/project access
+   - Enforce role rules for update/delete
+   - Verify list filters and cursor pagination
+   - Verify delete cascade behavior on issues
+
+### 4.6 Frontend Integration Guide
+
+Use this contract so frontend can integrate immediately after backend ships.
+
+**Workspace context**
+- Send workspace context on every project request:
+- Prefer path-param routes when available; otherwise include `X-Workspace-Id` header
+- Never send arbitrary `userId` for auth decisions; backend derives identity from session/JWT
+
+**API contracts**
+- Create:
+```http
+POST /projects
+Content-Type: application/json
+X-Workspace-Id: <workspaceId>
+```
+```json
+{
+  "name": "Platform Revamp",
+  "slug": "platform-revamp",
+  "teamId": "team_xxx",
+  "description": "Q3 platform work",
+  "visibility": "PUBLIC"
+}
+```
+
+- List (cursor-based):
+```http
+GET /projects?teamId=<teamId>&status=ACTIVE&visibility=PUBLIC&cursor=<projectId>&limit=20
+X-Workspace-Id: <workspaceId>
+```
+
+- Success response shape:
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "proj_xxx",
+      "name": "Platform Revamp",
+      "slug": "platform-revamp",
+      "status": "ACTIVE",
+      "visibility": "PUBLIC",
+      "teamId": "team_xxx"
+    }
+  ],
+  "meta": { "cursor": "proj_next", "hasMore": true, "total": 42 }
+}
+```
+
+**Frontend state flow**
+- Projects page loads with `GET /projects` using active workspace
+- Filter changes (`team/status/visibility`) reset cursor and refetch
+- Infinite scroll / load-more uses `meta.cursor` and `meta.hasMore`
+- Project detail page calls `GET /projects/:id`
+- Edit/archive actions call `PATCH /projects/:id`
+- Delete action calls `DELETE /projects/:id` and removes item from UI list
+
+**Frontend error handling**
+- Handle standard error envelope:
+```json
+{ "success": false, "error": { "code": "FORBIDDEN", "message": "..." } }
+```
+- Expected codes for UI branches: `401`, `403`, `404`, `409`, `422`
+- On `422`, map field-level validation issues to form errors
+
+**Frontend done-when checklist**
+- [ ] User can create project from UI and see it in list
+- [ ] Team/status/visibility filters work
+- [ ] Cursor pagination works without duplicates
+- [ ] Unauthorized actions are hidden/disabled and server-denied if attempted
+- [ ] PRIVATE projects are hidden for GUEST role
+- [ ] Archive/delete actions update UI consistently
 
 ### Done When
 

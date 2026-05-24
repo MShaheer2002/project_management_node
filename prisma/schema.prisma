@@ -74,6 +74,12 @@ enum ProjectStatus {
   COMPLETED
 }
 
+/// Role of a member inside a project scope
+enum ProjectMembershipRole {
+  LEAD
+  MEMBER
+}
+
 /// Sprint/cycle lifecycle — auto-transitions based on dates
 enum CycleStatus {
   UPCOMING
@@ -195,6 +201,7 @@ model User {
   workspaceMemberships  WorkspaceMembership[]
   teamMemberships       TeamMembership[]
   departmentMemberships DepartmentMembership[]
+  projectMemberships    ProjectMembership[]
 
   // -- Ownership/lead relations --
   createdWorkspaces     Workspace[]    @relation("WorkspaceCreator") // Workspaces this user created
@@ -448,10 +455,16 @@ model Project {
   teamId       String // FK → Team that owns this project
   departmentId String? // Denormalized from team.departmentId for faster queries
   name         String
+  slug         String
   description  String?
   leadId       String? // FK → User who leads this project (contextual edit permission)
   status       ProjectStatus @default(ACTIVE)
   visibility   Visibility    @default(PUBLIC)
+  startDate    DateTime?     @db.Date
+  targetDate   DateTime?     @db.Date
+  featureRoadmap       Boolean @default(true)
+  featureCycles        Boolean @default(true)
+  featureIssueTracking Boolean @default(true)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -460,13 +473,29 @@ model Project {
   team       Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
   department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   lead       User?       @relation("ProjectLead", fields: [leadId], references: [id], onDelete: SetNull)
+  memberships ProjectMembership[]
   issues     Issue[] // All issues in this project
 
   @@unique([workspaceId, name]) // Project names must be unique within a workspace
+  @@unique([workspaceId, slug])
   @@index([workspaceId])
   @@index([teamId])
   @@index([departmentId])
   @@index([status])
+}
+
+/// ProjectMembership — links a user to a project and role within that project
+model ProjectMembership {
+  projectId       String
+  userId          String
+  membershipRole  ProjectMembershipRole @default(MEMBER)
+  joinedAt        DateTime              @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@index([userId])
 }
 
 // ============================================================================

@@ -40,6 +40,7 @@ import sidebarRoutes from "../modules/sidebar/sidebar.routes.js";
 import departmentRoutes from "../modules/department/department.routes.js";
 import teamRoutes from "../modules/team/team.routes.js";
 import uploadRoutes from "../modules/upload/upload.routes.js";
+import projectRoutes from "../modules/project/project.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -135,7 +136,7 @@ app.use("/sidebar", sidebarRoutes);
 app.use("/departments", departmentRoutes);
 app.use("/teams", teamRoutes);
 app.use("/uploads", uploadRoutes);
-// Phase 4: app.use("/projects", projectRoutes);
+app.use("/projects", projectRoutes);
 // Phase 5: app.use("/issues", issueRoutes);
 // Phase 6: app.use("/comments", commentRoutes);
 // Phase 7: app.use("/labels", labelRoutes);

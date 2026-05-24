@@ -19,6 +19,7 @@ import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { generateToken, hashToken, normalizeEmail } from "../../shared/utils/crypto.js";
 import { sendInvitationEmail } from "../../infra/email/index.js";
+import { env } from "../../config/env.js";
 
 /** Invitations expire after 7 days */
 const INVITE_EXPIRY_DAYS = 7;
@@ -130,14 +131,39 @@ export async function createInvitation(params: {
     },
   });
 
+  const inviteUrl = `${env.FRONTEND_URL}/invite?token=${rawToken}`;
+
+  // Dev/staging convenience: always log the invite URL so manual sharing is possible
+  // when provider free-tier delivery limits block outbound email.
+  if (env.NODE_ENV !== "production") {
+    console.log("[Invite] Workspace invitation link");
+    console.log(`  Workspace: ${params.workspaceName} (${params.workspaceId})`);
+    console.log(`  Email: ${email}`);
+    console.log(`  URL: ${inviteUrl}`);
+  }
+
   // Send the invitation email (raw token in the link, not the hash)
-  await sendInvitationEmail({
-    to: email,
-    inviterName: params.inviterName,
-    workspaceName: params.workspaceName,
-    role: params.role,
-    inviteToken: rawToken,
-  });
+  try {
+    await sendInvitationEmail({
+      to: email,
+      inviterName: params.inviterName,
+      workspaceName: params.workspaceName,
+      role: params.role,
+      inviteToken: rawToken,
+    });
+  } catch (error) {
+    // In production we still fail hard on delivery errors.
+    if (env.NODE_ENV === "production") {
+      throw error;
+    }
+
+    // In non-production, keep invite creation successful and rely on logged URL.
+    console.warn("[Invite] Email delivery failed; using logged invite URL fallback", {
+      workspaceId: params.workspaceId,
+      email,
+      error,
+    });
+  }
 
   return invitation;
 }
