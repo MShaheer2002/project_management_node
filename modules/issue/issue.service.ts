@@ -1,0 +1,900 @@
+import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
+
+import { prisma } from "../../shared/utils/prisma.js";
+import { AppError } from "../../shared/utils/api-error.js";
+import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
+import { createIssueAttachments } from "./issue-attachment.service.js";
+import type {
+  CreateIssueInput,
+  ListIssuesQuery,
+  UpdateIssueInput,
+} from "./issue.schemas.js";
+
+const statusToDb: Record<string, string> = {
+  backlog: "BACKLOG",
+  todo: "TODO",
+  "in-progress": "IN_PROGRESS",
+  review: "REVIEW",
+  done: "DONE",
+};
+
+const statusFromDb: Record<string, string> = {
+  BACKLOG: "backlog",
+  TODO: "todo",
+  IN_PROGRESS: "in-progress",
+  REVIEW: "review",
+  DONE: "done",
+};
+
+const priorityToDb: Record<string, string> = {
+  low: "LOW",
+  medium: "MEDIUM",
+  high: "HIGH",
+  urgent: "URGENT",
+};
+
+const priorityFromDb: Record<string, string> = {
+  LOW: "low",
+  MEDIUM: "medium",
+  HIGH: "high",
+  URGENT: "urgent",
+};
+
+const typeToDb: Record<string, string> = {
+  task: "TASK",
+  bug: "BUG",
+  issue: "ISSUE",
+};
+
+const typeFromDb: Record<string, string> = {
+  TASK: "task",
+  BUG: "bug",
+  ISSUE: "issue",
+};
+
+const severityToDb: Record<string, string> = {
+  low: "LOW",
+  medium: "MEDIUM",
+  high: "HIGH",
+};
+
+const severityFromDb: Record<string, string> = {
+  LOW: "low",
+  MEDIUM: "medium",
+  HIGH: "high",
+};
+
+function parseDueTime(value: string | null | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null || value.length === 0) {
+    return null;
+  }
+
+  const date = new Date(`1970-01-01T${value.length === 5 ? `${value}:00` : value}Z`);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date;
+}
+
+function mapIssue(record: any, includeRelations = true) {
+  const labels = (record.labels ?? []).map((labelLink: any) => labelLink.label.name);
+  const subtasks = (record.subtasks ?? []).map((subtask: any) => ({
+    id: subtask.id,
+    title: subtask.title,
+    completed: subtask.completed,
+    order: subtask.order,
+  }));
+
+  const attachments = (record.attachments ?? []).map((attachment: any) => ({
+    id: attachment.id,
+    key: attachment.key,
+    fileName: attachment.fileName,
+    contentType: attachment.contentType,
+    size: attachment.size,
+    kind: attachment.kind,
+    assetUrl: attachment.assetUrl,
+    createdAt: attachment.createdAt,
+  }));
+
+  const base = {
+    id: record.id,
+    entityId: record.internalId,
+    title: record.title,
+    description: record.description,
+    type: typeFromDb[record.type] ?? "task",
+    status: statusFromDb[record.status] ?? "backlog",
+    priority: priorityFromDb[record.priority] ?? "medium",
+    labels,
+    dueDate: record.dueDate,
+    dueTime: record.dueTime,
+    estimate: record.estimate ?? null,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    creatorId: record.creatorId,
+    assigneeId: record.assigneeId,
+    projectId: record.projectId,
+    teamId: record.teamId,
+    departmentId: record.departmentId,
+    subtaskStats: {
+      total: subtasks.length,
+      completed: subtasks.filter((subtask: any) => subtask.completed).length,
+    },
+    attachmentCount: attachments.length,
+  };
+
+  if (!includeRelations) {
+    return base;
+  }
+
+  return {
+    ...base,
+    creator: record.creator,
+    assignee: record.assignee,
+    project: record.project ? { id: record.project.id, name: record.project.name } : null,
+    team: record.team ? { id: record.team.id, name: record.team.name } : null,
+    department: record.department
+      ? { id: record.department.id, name: record.department.name, color: record.department.color }
+      : null,
+    subtasks,
+    attachments,
+    parent: record.parent
+      ? {
+          id: record.parent.id,
+          title: record.parent.title,
+          status: statusFromDb[record.parent.status] ?? "backlog",
+        }
+      : null,
+    dependencies: (record.relationsFrom ?? []).map((relation: any) => ({
+      issueId: relation.relatedId,
+      relation: relation.type === "BLOCKS" ? "blocks" : relation.type === "BLOCKED_BY" ? "blocked-by" : "related",
+      issue: relation.related
+        ? {
+            id: relation.related.id,
+            title: relation.related.title,
+            status: statusFromDb[relation.related.status] ?? "backlog",
+          }
+        : null,
+    })),
+    watchers: (record.watchers ?? []).map((watcher: any) => ({
+      id: watcher.user.id,
+      name: watcher.user.name,
+      email: watcher.user.email,
+      avatar: watcher.user.avatar,
+      role: watcher.user.workspaceMemberships?.[0]?.role ?? "MEMBER",
+    })),
+    integrationRef: record.integrationRef ?? null,
+    stepsToReproduce: record.stepsToReproduce,
+    expectedBehavior: record.expectedBehavior,
+    actualBehavior: record.actualBehavior,
+    severity: record.severity ? (severityFromDb[record.severity] ?? null) : null,
+    acceptanceCriteria: record.acceptanceCriteria,
+    notes: record.notes,
+  };
+}
+
+function getIssueOrderBy(sort: ListIssuesQuery["sort"]) {
+  switch (sort) {
+    case "createdAt:asc":
+      return [{ createdAt: "asc" }, { id: "asc" }] as any;
+    case "updatedAt:asc":
+      return [{ updatedAt: "asc" }, { id: "asc" }] as any;
+    case "dueDate:asc":
+      return [{ dueDate: "asc" }, { id: "asc" }] as any;
+    case "dueDate:desc":
+      return [{ dueDate: "desc" }, { id: "desc" }] as any;
+    case "createdAt:desc":
+      return [{ createdAt: "desc" }, { id: "desc" }] as any;
+    case "updatedAt:desc":
+    default:
+      return [{ updatedAt: "desc" }, { id: "desc" }] as any;
+  }
+}
+
+function buildIssueWhere(workspaceId: string, workspaceRole: WorkspaceRole, userId: string, query: ListIssuesQuery) {
+  const and: any[] = [];
+
+  if (workspaceRole !== "OWNER" && workspaceRole !== "ADMIN") {
+    and.push({
+      OR: [
+        { project: { visibility: "PUBLIC" } },
+        { project: { leadId: userId } },
+        { project: { memberships: { some: { userId } } } },
+      ],
+    });
+  }
+
+  if (query.q) {
+    and.push({
+      OR: [
+        { id: { contains: query.q, mode: "insensitive" } },
+        { title: { contains: query.q, mode: "insensitive" } },
+        { description: { contains: query.q, mode: "insensitive" } },
+      ],
+    });
+  }
+
+  return {
+    workspaceId,
+    ...(query.status ? { status: statusToDb[query.status] ?? "BACKLOG" } : {}),
+    ...(query.priority ? { priority: priorityToDb[query.priority] ?? "MEDIUM" } : {}),
+    ...(query.type ? { type: typeToDb[query.type] ?? "TASK" } : {}),
+    ...(query.assigneeId ? { assigneeId: query.assigneeId } : {}),
+    ...(query.projectId ? { projectId: query.projectId } : {}),
+    ...(query.teamId ? { teamId: query.teamId } : {}),
+    ...(query.departmentId ? { departmentId: query.departmentId } : {}),
+    ...(query.creatorId ? { creatorId: query.creatorId } : {}),
+    ...(and.length > 0 ? { AND: and } : {}),
+  };
+}
+
+async function assertIssueAccessible(workspaceId: string, workspaceRole: WorkspaceRole, userId: string, issueId: string) {
+  const issue = await prisma.issue.findFirst({
+    where: {
+      id: issueId,
+      workspaceId,
+      ...(workspaceRole === "OWNER" || workspaceRole === "ADMIN"
+        ? {}
+        : {
+            OR: [
+              { project: { visibility: "PUBLIC" } },
+              { project: { leadId: userId } },
+              { project: { memberships: { some: { userId } } } },
+            ],
+          }),
+    },
+    select: { id: true },
+  });
+
+  if (!issue) {
+    const existing = await prisma.issue.findFirst({
+      where: { id: issueId, workspaceId },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+    }
+    throw new AppError(404, ERROR_CODES.FORBIDDEN, "Issue is not visible");
+  }
+}
+
+async function assertProjectInWorkspace(tx: any, workspaceId: string, projectId: string) {
+  const project = await tx.project.findFirst({
+    where: { id: projectId, workspaceId },
+    select: { id: true, teamId: true, departmentId: true },
+  });
+  if (!project) {
+    throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
+  }
+  return project;
+}
+
+async function assertAssigneeInWorkspace(tx: any, workspaceId: string, assigneeId: string) {
+  const membership = await tx.workspaceMembership.findUnique({
+    where: {
+      userId_workspaceId: {
+        userId: assigneeId,
+        workspaceId,
+      },
+    },
+    select: { id: true },
+  });
+  if (!membership) {
+    throw new AppError(404, ERROR_CODES.ASSIGNEE_NOT_WORKSPACE_MEMBER, "Assignee is not a workspace member");
+  }
+}
+
+async function syncIssueLabels(tx: any, workspaceId: string, issueId: string, labels: string[] | undefined) {
+  if (!labels) {
+    return;
+  }
+
+  const uniqueNames = [...new Set(labels.map((label) => label.trim()).filter(Boolean))];
+
+  await tx.issueLabel.deleteMany({ where: { issueId } });
+  if (uniqueNames.length === 0) {
+    return;
+  }
+
+  const createdLabels: Array<{ id: string }> = [];
+  for (const name of uniqueNames) {
+    const label = await tx.label.upsert({
+      where: {
+        workspaceId_name: {
+          workspaceId,
+          name,
+        },
+      },
+      update: {},
+      create: {
+        workspaceId,
+        name,
+        color: "#6b7280",
+      },
+      select: { id: true },
+    });
+    createdLabels.push(label);
+  }
+
+  await tx.issueLabel.createMany({
+    data: createdLabels.map((label) => ({ issueId, labelId: label.id })),
+    skipDuplicates: true,
+  });
+}
+
+async function syncRelatedIssues(tx: any, workspaceId: string, issueId: string, relatedIssueKeys: string[] | undefined) {
+  if (!relatedIssueKeys) {
+    return;
+  }
+  await tx.issueRelation.deleteMany({
+    where: {
+      issueId,
+      type: "RELATED",
+    },
+  });
+
+  const uniqueKeys = [...new Set(relatedIssueKeys)];
+  for (const relatedId of uniqueKeys) {
+    if (relatedId === issueId) {
+      continue;
+    }
+    const exists = await tx.issue.findFirst({
+      where: { id: relatedId, workspaceId },
+      select: { id: true },
+    });
+    if (!exists) {
+      throw new AppError(404, ERROR_CODES.INVALID_RELATED_ISSUE, `Related issue ${relatedId} not found`);
+    }
+    await tx.issueRelation.create({
+      data: {
+        issueId,
+        relatedId,
+        type: "RELATED" as any,
+      },
+    });
+  }
+}
+
+function validateTypeSpecific(input: CreateIssueInput | UpdateIssueInput, currentType?: string) {
+  const type = ("type" in input && input.type ? input.type : currentType ? typeFromDb[currentType] : null);
+
+  if (type === "bug") {
+    const steps = "stepsToReproduce" in input ? input.stepsToReproduce : undefined;
+    const expected = "expectedBehavior" in input ? input.expectedBehavior : undefined;
+    const actual = "actualBehavior" in input ? input.actualBehavior : undefined;
+    const severity = "severity" in input ? input.severity : undefined;
+    if (!steps || !expected || !actual || !severity) {
+      throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "BUG issues require reproduction, expected, actual, and severity");
+    }
+  }
+
+  if (type === "issue") {
+    const acceptance = "acceptanceCriteria" in input ? input.acceptanceCriteria : undefined;
+    if (!acceptance) {
+      throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "ISSUE type requires acceptanceCriteria");
+    }
+  }
+}
+
+export async function createIssue(workspaceId: string, creatorId: string, input: CreateIssueInput) {
+  validateTypeSpecific(input);
+
+  return prisma.$transaction(async (tx) => {
+    const project = await assertProjectInWorkspace(tx, workspaceId, input.projectId);
+    if (input.assigneeId) {
+      await assertAssigneeInWorkspace(tx, workspaceId, input.assigneeId);
+    }
+
+    if (input.parentIssueId) {
+      const parent = await tx.issue.findFirst({
+        where: { id: input.parentIssueId, workspaceId },
+        select: { id: true },
+      });
+      if (!parent) {
+        throw new AppError(404, ERROR_CODES.PARENT_ISSUE_NOT_FOUND, "Parent issue not found");
+      }
+    }
+
+    const workspace = await tx.workspace.update({
+      where: { id: workspaceId },
+      data: { issueCounter: { increment: 1 } },
+      select: { issueCounter: true },
+    });
+
+    const issueId = `LIN-${workspace.issueCounter}`;
+    const issue = await tx.issue.create({
+      data: {
+        id: issueId,
+        number: workspace.issueCounter,
+        workspaceId,
+        projectId: input.projectId,
+        teamId: project.teamId,
+        departmentId: project.departmentId ?? null,
+        title: input.title,
+        description: input.description ?? null,
+        type: typeToDb[input.type],
+        status: statusToDb[input.status ?? "backlog"],
+        priority: priorityToDb[input.priority],
+        assigneeId: input.assigneeId ?? null,
+        creatorId,
+        dueDate: input.dueDate ? new Date(input.dueDate) : null,
+        dueTime: parseDueTime(input.dueTime),
+        estimate: input.estimate ?? null,
+        stepsToReproduce: input.stepsToReproduce ?? null,
+        expectedBehavior: input.expectedBehavior ?? null,
+        actualBehavior: input.actualBehavior ?? null,
+        severity: input.severity ? severityToDb[input.severity] : null,
+        acceptanceCriteria: input.acceptanceCriteria ?? null,
+        notes: input.notes ?? null,
+        parentIssueId: input.parentIssueId ?? null,
+      } as any,
+      select: { id: true },
+    });
+
+    if (input.subtasks && input.subtasks.length > 0) {
+      await tx.issueSubtask.createMany({
+        data: input.subtasks.map((subtask, index) => ({
+          issueId: issue.id,
+          title: subtask.title,
+          order: subtask.order ?? index,
+        })),
+      });
+    }
+
+    await syncIssueLabels(tx, workspaceId, issue.id, input.labels);
+    await syncRelatedIssues(tx, workspaceId, issue.id, input.relatedIssueKeys);
+
+    if (input.attachments && input.attachments.length > 0) {
+      await createIssueAttachments(tx, issue.id, workspaceId, creatorId, input.attachments);
+    }
+
+    const created = await tx.issue.findUnique({
+      where: { id: issue.id },
+      include: {
+        creator: { select: { id: true, name: true, email: true, avatar: true } },
+        assignee: { select: { id: true, name: true, email: true, avatar: true } },
+        project: { select: { id: true, name: true } },
+        team: { select: { id: true, name: true } },
+        department: { select: { id: true, name: true, color: true } },
+        subtasks: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
+        labels: { include: { label: { select: { name: true } } } },
+        attachments: { orderBy: [{ createdAt: "desc" }] },
+        parent: { select: { id: true, title: true, status: true } },
+        relationsFrom: { include: { related: { select: { id: true, title: true, status: true } } } },
+        watchers: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                avatar: true,
+                workspaceMemberships: { where: { workspaceId }, select: { role: true }, take: 1 },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    return mapIssue(created);
+  });
+}
+
+export async function resolveIssueRouteId(workspaceId: string, issueIdentifier: string) {
+  const byPublicId = await prisma.issue.findFirst({
+    where: { id: issueIdentifier, workspaceId },
+    select: { id: true },
+  });
+
+  if (byPublicId) {
+    return byPublicId.id;
+  }
+
+  const byEntityId = await prisma.issue.findFirst({
+    where: { internalId: issueIdentifier, workspaceId },
+    select: { id: true },
+  });
+
+  if (byEntityId) {
+    return byEntityId.id;
+  }
+
+  throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+}
+
+export async function listIssues(workspaceId: string, workspaceRole: WorkspaceRole, userId: string, query: ListIssuesQuery) {
+  const limit = clampListLimit(query.limit);
+  const where = buildIssueWhere(workspaceId, workspaceRole, userId, query);
+  const orderBy = getIssueOrderBy(query.sort);
+
+  const [total, records] = await Promise.all([
+    prisma.issue.count({ where: where as any }),
+    prisma.issue.findMany({
+      where,
+      orderBy: orderBy as any,
+      ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
+      take: limit + 1,
+      include: query.view === "compact"
+        ? undefined
+        : {
+            creator: { select: { id: true, name: true, email: true, avatar: true } },
+            assignee: { select: { id: true, name: true, email: true, avatar: true } },
+            project: { select: { id: true, name: true } },
+            team: { select: { id: true, name: true } },
+            department: { select: { id: true, name: true, color: true } },
+            labels: { include: { label: { select: { name: true } } } },
+            subtasks: { select: { id: true, completed: true, order: true, title: true } },
+            attachments: { select: { id: true } },
+          },
+      select: query.view === "compact"
+        ? {
+            id: true,
+            title: true,
+            status: true,
+            projectId: true,
+          }
+        : undefined,
+    } as any),
+  ]);
+
+  const page = slicePage(records as any[], limit);
+  const items = query.view === "compact"
+    ? page.items.map((record: any) => ({
+        id: record.id,
+        title: record.title,
+        status: statusFromDb[record.status] ?? "backlog",
+        projectId: record.projectId,
+      }))
+    : page.items.map((record: any) => mapIssue(record, true));
+
+  return {
+    items,
+    meta: {
+      total,
+      cursor: page.hasMore ? page.items[page.items.length - 1]?.id ?? null : null,
+      hasMore: page.hasMore,
+    },
+  };
+}
+
+export async function getIssueById(workspaceId: string, workspaceRole: WorkspaceRole, userId: string, issueId: string) {
+  await assertIssueAccessible(workspaceId, workspaceRole, userId, issueId);
+
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    include: {
+      creator: { select: { id: true, name: true, email: true, avatar: true } },
+      assignee: { select: { id: true, name: true, email: true, avatar: true } },
+      project: { select: { id: true, name: true } },
+      team: { select: { id: true, name: true } },
+      department: { select: { id: true, name: true, color: true } },
+      subtasks: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
+      labels: { include: { label: { select: { name: true } } } },
+      attachments: { orderBy: [{ createdAt: "desc" }] },
+      parent: { select: { id: true, title: true, status: true } },
+      relationsFrom: { include: { related: { select: { id: true, title: true, status: true } } } },
+      watchers: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              avatar: true,
+              workspaceMemberships: { where: { workspaceId }, select: { role: true }, take: 1 },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!issue) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  return mapIssue(issue, true);
+}
+
+export async function updateIssue(workspaceId: string, issueId: string, input: UpdateIssueInput) {
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.issue.findFirst({
+      where: { id: issueId, workspaceId },
+      select: { id: true, type: true },
+    });
+
+    if (!current) {
+      throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+    }
+
+    validateTypeSpecific(input, current.type);
+
+    if (input.assigneeId) {
+      await assertAssigneeInWorkspace(tx, workspaceId, input.assigneeId);
+    }
+
+    if (input.parentIssueId !== undefined && input.parentIssueId !== null) {
+      if (input.parentIssueId === issueId) {
+        throw new AppError(409, ERROR_CODES.INVALID_PARENT_ISSUE, "Issue cannot be its own parent");
+      }
+      const parent = await tx.issue.findFirst({
+        where: { id: input.parentIssueId, workspaceId },
+        select: { id: true, parentIssueId: true },
+      });
+      if (!parent) {
+        throw new AppError(404, ERROR_CODES.PARENT_ISSUE_NOT_FOUND, "Parent issue not found");
+      }
+      if (parent.parentIssueId === issueId) {
+        throw new AppError(409, ERROR_CODES.ISSUE_CYCLE_DETECTED, "Parent linkage cycle detected");
+      }
+    }
+
+    await tx.issue.update({
+      where: { id: issueId },
+      data: {
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.priority !== undefined ? { priority: priorityToDb[input.priority] as any } : {}),
+        ...(input.status !== undefined ? { status: statusToDb[input.status] as any } : {}),
+        ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
+        ...(input.dueDate !== undefined ? { dueDate: input.dueDate ? new Date(input.dueDate) : null } : {}),
+        ...(input.dueTime !== undefined ? { dueTime: parseDueTime(input.dueTime) } : {}),
+        ...(input.estimate !== undefined ? { estimate: input.estimate } : {}),
+        ...(input.stepsToReproduce !== undefined ? { stepsToReproduce: input.stepsToReproduce } : {}),
+        ...(input.expectedBehavior !== undefined ? { expectedBehavior: input.expectedBehavior } : {}),
+        ...(input.actualBehavior !== undefined ? { actualBehavior: input.actualBehavior } : {}),
+        ...(input.severity !== undefined ? { severity: input.severity ? severityToDb[input.severity] as any : null } : {}),
+        ...(input.acceptanceCriteria !== undefined ? { acceptanceCriteria: input.acceptanceCriteria } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        ...(input.parentIssueId !== undefined ? { parentIssueId: input.parentIssueId } : {}),
+      } as any,
+    });
+
+    await syncIssueLabels(tx, workspaceId, issueId, input.labels);
+    await syncRelatedIssues(tx, workspaceId, issueId, input.relatedIssueKeys);
+
+    if (input.attachments && input.attachments.length > 0) {
+      const existing = await (tx as any).issueAttachment.findMany({
+        where: { issueId },
+        select: { key: true },
+      });
+      const existingKeys = new Set(existing.map((row: any) => row.key));
+      const toAdd = input.attachments.filter((attachment) => !existingKeys.has(attachment.key));
+      await createIssueAttachments(tx, issueId, workspaceId, current.id, toAdd);
+    }
+
+    const updated = await tx.issue.findFirst({
+      where: { id: issueId, workspaceId },
+      include: {
+        creator: { select: { id: true, name: true, email: true, avatar: true } },
+        assignee: { select: { id: true, name: true, email: true, avatar: true } },
+        project: { select: { id: true, name: true } },
+        team: { select: { id: true, name: true } },
+        department: { select: { id: true, name: true, color: true } },
+        subtasks: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
+        labels: { include: { label: { select: { name: true } } } },
+        attachments: { orderBy: [{ createdAt: "desc" }] },
+        parent: { select: { id: true, title: true, status: true } },
+        relationsFrom: { include: { related: { select: { id: true, title: true, status: true } } } },
+        watchers: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                avatar: true,
+                workspaceMemberships: { where: { workspaceId }, select: { role: true }, take: 1 },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    return mapIssue(updated, true);
+  });
+}
+
+export async function updateIssueStatus(
+  workspaceId: string,
+  workspaceRole: WorkspaceRole,
+  userId: string,
+  issueId: string,
+  status: string,
+) {
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { id: true },
+  });
+  if (!issue) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  await prisma.issue.update({
+    where: { id: issueId },
+    data: { status: (statusToDb[status] ?? "BACKLOG") as any },
+  });
+
+  return getIssueById(workspaceId, workspaceRole, userId, issueId);
+}
+
+export async function deleteIssue(workspaceId: string, issueId: string) {
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { id: true },
+  });
+  if (!issue) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+  await prisma.issue.delete({ where: { id: issueId } });
+}
+
+export async function addDependency(workspaceId: string, issueId: string, relatedId: string, relation: "blocks" | "blocked-by" | "related") {
+  if (issueId === relatedId) {
+    throw new AppError(409, ERROR_CODES.INVALID_RELATED_ISSUE, "Issue cannot depend on itself");
+  }
+
+  const [source, target] = await Promise.all([
+    prisma.issue.findFirst({ where: { id: issueId, workspaceId }, select: { id: true } }),
+    prisma.issue.findFirst({ where: { id: relatedId, workspaceId }, select: { id: true } }),
+  ]);
+  if (!source || !target) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  const type = relation === "blocks" ? "BLOCKS" : relation === "blocked-by" ? "BLOCKED_BY" : "RELATED";
+
+  try {
+    await prisma.issueRelation.create({
+      data: {
+        issueId,
+        relatedId,
+        type: type as any,
+      },
+    });
+  } catch {
+    throw new AppError(409, ERROR_CODES.DEPENDENCY_ALREADY_EXISTS, "Dependency already exists");
+  }
+
+  return { issueId, relatedId, relation };
+}
+
+export async function removeDependency(workspaceId: string, issueId: string, relatedId: string) {
+  const existing = await prisma.issueRelation.findFirst({
+    where: {
+      issueId,
+      relatedId,
+      issue: { workspaceId },
+    },
+    select: { id: true },
+  });
+  if (!existing) {
+    throw new AppError(404, ERROR_CODES.DEPENDENCY_NOT_FOUND, "Dependency not found");
+  }
+  await prisma.issueRelation.delete({ where: { id: existing.id } });
+}
+
+export async function listWatchers(workspaceId: string, issueId: string) {
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { id: true },
+  });
+  if (!issue) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  return (prisma as any).issueWatcher.findMany({
+    where: { issueId },
+    include: {
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          avatar: true,
+          workspaceMemberships: {
+            where: { workspaceId },
+            select: { role: true },
+            take: 1,
+          },
+        },
+      },
+    },
+    orderBy: [{ createdAt: "asc" }],
+  }).then((rows: any[]) => rows.map((row: any) => ({
+    id: row.user.id,
+    name: row.user.name,
+    email: row.user.email,
+    avatar: row.user.avatar,
+    role: row.user.workspaceMemberships[0]?.role ?? "MEMBER",
+  })));
+}
+
+export async function addWatchers(workspaceId: string, issueId: string, userIds: string[]) {
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { id: true },
+  });
+  if (!issue) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  const uniqueUserIds = [...new Set(userIds)];
+  const memberships = await prisma.workspaceMembership.findMany({
+    where: { workspaceId, userId: { in: uniqueUserIds } },
+    select: { userId: true },
+  });
+  if (memberships.length !== uniqueUserIds.length) {
+    throw new AppError(404, ERROR_CODES.WATCHER_NOT_WORKSPACE_MEMBER, "One or more users are not workspace members");
+  }
+
+  await (prisma as any).issueWatcher.createMany({
+    data: uniqueUserIds.map((userId) => ({ issueId, userId })),
+    skipDuplicates: true,
+  });
+
+  return { added: uniqueUserIds };
+}
+
+export async function removeWatcher(workspaceId: string, issueId: string, userId: string) {
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { id: true },
+  });
+  if (!issue) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  await (prisma as any).issueWatcher.deleteMany({
+    where: { issueId, userId },
+  });
+}
+
+export async function updateIntegrationRef(workspaceId: string, issueId: string, integrationRef: any) {
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { id: true },
+  });
+  if (!issue) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  await prisma.issue.update({
+    where: { id: issueId },
+    data: { integrationRef: (integrationRef ?? null) as any },
+  });
+
+  return getIssueById(workspaceId, "MEMBER", "", issueId);
+}
+
+export async function addAttachments(workspaceId: string, issueId: string, createdById: string, attachments: any[]) {
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { id: true },
+  });
+  if (!issue) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await createIssueAttachments(tx, issueId, workspaceId, createdById, attachments);
+  });
+
+  return getIssueById(workspaceId, "MEMBER", "", issueId);
+}
+
+export async function removeAttachment(workspaceId: string, issueId: string, attachmentId: string) {
+  const attachment = await (prisma as any).issueAttachment.findFirst({
+    where: { id: attachmentId, issueId, workspaceId },
+    select: { id: true },
+  });
+  if (!attachment) {
+    throw new AppError(404, ERROR_CODES.ATTACHMENT_NOT_FOUND, "Attachment not found");
+  }
+  await (prisma as any).issueAttachment.delete({ where: { id: attachmentId } });
+}

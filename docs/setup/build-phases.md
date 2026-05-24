@@ -749,6 +749,10 @@ X-Workspace-Id: <workspaceId>
 
 **Dependency:** Phase 4 (projects must exist to contain issues)
 
+**Implementation guide:**
+- Backend setup: [phase-5-backend-setup-guide.md](./phase-5-backend-setup-guide.md)
+- Frontend integration: [phase-5-frontend-issue-integration-guide.md](./phase-5-frontend-issue-integration-guide.md)
+
 ### 5.1 Routes
 
 ```

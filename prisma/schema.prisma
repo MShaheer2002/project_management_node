@@ -202,6 +202,7 @@ model User {
   teamMemberships       TeamMembership[]
   departmentMemberships DepartmentMembership[]
   projectMemberships    ProjectMembership[]
+  issueWatchers         IssueWatcher[]
 
   // -- Ownership/lead relations --
   createdWorkspaces     Workspace[]    @relation("WorkspaceCreator") // Workspaces this user created
@@ -228,6 +229,7 @@ model User {
   createdTemplates      Template[] // Templates created by this user
   createdApiKeys        ApiKey[] // API keys created by this user
   connectedIntegrations Integration[] // Integrations connected by this user
+  createdIssueAttachments IssueAttachment[]
 
   @@index([email])
 }
@@ -262,6 +264,7 @@ model Workspace {
   teams          Team[]
   projects       Project[]
   issues         Issue[]
+  issueAttachments IssueAttachment[]
   labels         Label[]
   cycles         Cycle[]
   notifications  Notification[]
@@ -535,6 +538,8 @@ model Issue {
   dueTime     DateTime?     @db.Time()
   estimate    Int? // Story points / complexity estimate
   cycleId     String? // FK → Cycle (sprint) this issue belongs to
+  parentIssueId String? // Optional parent linkage
+  integrationRef Json? // Structured external reference payload
 
   // -- Bug-specific fields (populated when type = BUG) --
   stepsToReproduce String?     @db.Text
@@ -564,6 +569,10 @@ model Issue {
   labels        IssueLabel[] // Labels attached to this issue (many-to-many)
   relationsFrom IssueRelation[] @relation("IssueRelationFrom") // Relations where this issue is the source
   relationsTo   IssueRelation[] @relation("IssueRelationTo") // Relations where this issue is the target
+  parent        Issue?          @relation("IssueParent", fields: [parentIssueId], references: [id], onDelete: SetNull)
+  children      Issue[]         @relation("IssueParent")
+  watchers      IssueWatcher[]
+  attachments   IssueAttachment[]
 
   @@unique([workspaceId, number]) // Issue numbers are unique within a workspace
   @@index([workspaceId])
@@ -576,6 +585,7 @@ model Issue {
   @@index([creatorId])
   @@index([workspaceId, status]) // Dashboard: filter issues by status
   @@index([workspaceId, assigneeId]) // "My Issues" page
+  @@index([parentIssueId])
 }
 
 /// IssueSubtask — checklist items within an issue
@@ -648,6 +658,42 @@ model IssueRelation {
   @@unique([issueId, relatedId, type]) // Prevent duplicate relations of same type
   @@index([issueId])
   @@index([relatedId])
+}
+
+/// IssueWatcher — users subscribed to issue updates
+model IssueWatcher {
+  issueId    String
+  userId     String
+  createdAt  DateTime @default(now())
+
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([issueId, userId])
+  @@index([userId])
+}
+
+/// IssueAttachment — persisted uploaded asset references for an issue
+model IssueAttachment {
+  id          String   @id @default(uuid())
+  issueId     String
+  workspaceId String
+  key         String
+  fileName    String
+  contentType String
+  size        Int
+  kind        String // attachment | video
+  assetUrl    String?
+  createdById String
+  createdAt   DateTime @default(now())
+
+  issue      Issue      @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy  User       @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@unique([issueId, key])
+  @@index([issueId])
+  @@index([workspaceId])
 }
 
 // ============================================================================

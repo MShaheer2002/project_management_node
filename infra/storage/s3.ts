@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { extname } from "node:path";
 
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 import { env } from "../../config/env.js";
@@ -86,5 +86,22 @@ export async function createPresignedPutUrl(key: string, contentType: string) {
     key,
     expiresIn: env.AWS_S3_URL_TTL_SECONDS,
     assetUrl: buildPublicAssetUrl(key),
+  };
+}
+
+export async function createPresignedGetUrl(key: string, expiresIn = 300) {
+  const command = new GetObjectCommand({
+    Bucket: env.AWS_S3_BUCKET,
+    Key: key,
+  });
+
+  const url = await getSignedUrl(s3Client, command, {
+    expiresIn,
+  });
+
+  return {
+    url,
+    key,
+    expiresIn,
   };
 }

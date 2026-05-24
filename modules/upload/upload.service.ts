@@ -1,5 +1,5 @@
 import { env } from "../../config/env.js";
-import { buildUploadKey, createPresignedPutUrl } from "../../infra/storage/s3.js";
+import { buildUploadKey, createPresignedGetUrl, createPresignedPutUrl } from "../../infra/storage/s3.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import type {
@@ -98,4 +98,19 @@ export async function createPresignedUrls(workspaceId: string, input: CreatePres
   return {
     uploads,
   };
+}
+
+export async function createViewUrl(workspaceId: string, key: string) {
+  const normalizedKey = key.trim();
+  const expectedPrefix = `${env.AWS_S3_UPLOAD_PREFIX.replace(/\/$/, "")}/workspaces/${workspaceId}/`;
+
+  if (!normalizedKey.startsWith(expectedPrefix)) {
+    throw new AppError(
+      404,
+      ERROR_CODES.NOT_FOUND,
+      "Resource not found",
+    );
+  }
+
+  return createPresignedGetUrl(normalizedKey, 300);
 }

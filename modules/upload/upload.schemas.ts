@@ -53,7 +53,14 @@ export const createPresignedUrlsSchema = {
   }),
 };
 
+export const getViewUrlSchema = {
+  query: z.object({
+    key: z.string().trim().min(1, "Key is required").max(1024, "Key must be at most 1024 characters"),
+  }),
+};
+
 export type UploadKind = z.infer<typeof uploadKindSchema>;
 export type CreatePresignedUrlInput = z.infer<typeof singleUploadBodySchema>;
 export type BatchUploadFileInput = z.infer<typeof batchUploadFileSchema>;
 export type CreatePresignedUrlsInput = z.infer<typeof createPresignedUrlsSchema.body>;
+export type GetViewUrlInput = z.infer<typeof getViewUrlSchema.query>;

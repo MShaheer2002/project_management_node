@@ -69,6 +69,9 @@ You need to decide this before frontend integration:
 
 For this project, private-by-default is the safer choice. If you only need workspace logos and avatars right now, a controlled public path can still be acceptable.
 
+If you keep the bucket private, use temporary signed `GET` URLs for viewing:
+- [S3 Signed View URL Guide](./s3-signed-view-url-guide.md)
+
 ### 3.3 Configure CORS on the Bucket
 
 Your browser uploads will fail without bucket CORS.

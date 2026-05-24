@@ -93,6 +93,10 @@ enum WorkspaceRole {
 | `PATCH` | `/workspaces/:workspaceId/members/:userId` | ✅ | ADMIN, OWNER | Change member role |
 | `DELETE` | `/workspaces/:workspaceId/members/:userId` | ✅ | ADMIN, OWNER | Remove member |
 
+Invitation delivery fallback (dev/staging):
+- If email provider delivery is blocked/limited, use logged invite URLs from:
+- [invitation-link-fallback.md](./invitation-link-fallback.md)
+
 ### 3.3 Slug Availability Check
 
 | Method | Path | Auth | Role | Description |
