@@ -102,6 +102,11 @@ enum ActivityType {
   MEMBER_JOINED
   STATUS_CHANGED
   ASSIGNMENT_CHANGED
+  LABEL_CREATED
+  LABEL_UPDATED
+  LABEL_DELETED
+  ISSUE_LABEL_ADDED
+  ISSUE_LABEL_REMOVED
 }
 
 /// What kind of entity an activity log entry refers to
@@ -230,6 +235,7 @@ model User {
   createdApiKeys        ApiKey[] // API keys created by this user
   connectedIntegrations Integration[] // Integrations connected by this user
   createdIssueAttachments IssueAttachment[]
+  createdCommentAttachments CommentAttachment[]
 
   @@index([email])
 }
@@ -265,6 +271,7 @@ model Workspace {
   projects       Project[]
   issues         Issue[]
   issueAttachments IssueAttachment[]
+  commentAttachments CommentAttachment[]
   labels         Label[]
   cycles         Cycle[]
   notifications  Notification[]
@@ -615,16 +622,21 @@ model IssueSubtask {
 /// Labels have a name and color (hex). Names must be unique within a workspace.
 /// Many-to-many with Issues via the IssueLabel join table.
 model Label {
-  id          String @id @default(uuid())
-  workspaceId String
-  name        String // e.g., "frontend", "bug", "design"
-  color       String // Hex color for UI display (e.g., "#ef4444")
+  id             String @id @default(uuid())
+  workspaceId    String
+  name           String // e.g., "frontend", "bug", "design"
+  normalizedName String // lowercased + trimmed/collapsed spaces for uniqueness
+  color          String // Hex color for UI display (e.g., "#ef4444")
+  description    String? @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   issues    IssueLabel[] // Issues that have this label
 
-  @@unique([workspaceId, name]) // Label names must be unique within a workspace
+  @@unique([workspaceId, normalizedName]) // Case-insensitive label uniqueness in workspace
   @@index([workspaceId])
+  @@index([workspaceId, createdAt])
 }
 
 /// IssueLabel — join table for Issue ↔ Label (many-to-many)
@@ -720,9 +732,33 @@ model Comment {
   author  User      @relation(fields: [authorId], references: [id])
   parent  Comment?  @relation("CommentThread", fields: [parentId], references: [id], onDelete: Cascade)
   replies Comment[] @relation("CommentThread") // Child replies to this comment
+  attachments CommentAttachment[]
 
   @@index([issueId])
   @@index([parentId])
+}
+
+/// CommentAttachment — persisted uploaded asset references for a comment
+model CommentAttachment {
+  id          String   @id @default(uuid())
+  commentId   String
+  workspaceId String
+  key         String
+  fileName    String
+  contentType String
+  size        Int
+  kind        String // attachment | video
+  assetUrl    String?
+  createdById String
+  createdAt   DateTime @default(now())
+
+  comment   Comment   @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, key])
+  @@index([commentId])
+  @@index([workspaceId])
 }
 
 // ============================================================================

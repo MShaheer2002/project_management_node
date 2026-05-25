@@ -65,6 +65,14 @@ const severityFromDb: Record<string, string> = {
   HIGH: "high",
 };
 
+function normalizeLabelName(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function normalizeLabelKey(value: string) {
+  return normalizeLabelName(value).toLowerCase();
+}
+
 function parseDueTime(value: string | null | undefined) {
   if (value === undefined) {
     return undefined;
@@ -81,7 +89,12 @@ function parseDueTime(value: string | null | undefined) {
 }
 
 function mapIssue(record: any, includeRelations = true) {
-  const labels = (record.labels ?? []).map((labelLink: any) => labelLink.label.name);
+  const labelObjects = (record.labels ?? []).map((labelLink: any) => ({
+    id: labelLink.label.id,
+    name: labelLink.label.name,
+    color: labelLink.label.color,
+  }));
+  const labels = labelObjects.map((label: any) => label.name);
   const subtasks = (record.subtasks ?? []).map((subtask: any) => ({
     id: subtask.id,
     title: subtask.title,
@@ -109,6 +122,7 @@ function mapIssue(record: any, includeRelations = true) {
     status: statusFromDb[record.status] ?? "backlog",
     priority: priorityFromDb[record.priority] ?? "medium",
     labels,
+    labelObjects,
     dueDate: record.dueDate,
     dueTime: record.dueTime,
     estimate: record.estimate ?? null,
@@ -292,7 +306,7 @@ async function syncIssueLabels(tx: any, workspaceId: string, issueId: string, la
     return;
   }
 
-  const uniqueNames = [...new Set(labels.map((label) => label.trim()).filter(Boolean))];
+  const uniqueNames = [...new Set(labels.map((label) => normalizeLabelName(label)).filter(Boolean))];
 
   await tx.issueLabel.deleteMany({ where: { issueId } });
   if (uniqueNames.length === 0) {
@@ -303,15 +317,16 @@ async function syncIssueLabels(tx: any, workspaceId: string, issueId: string, la
   for (const name of uniqueNames) {
     const label = await tx.label.upsert({
       where: {
-        workspaceId_name: {
+        workspaceId_normalizedName: {
           workspaceId,
-          name,
+          normalizedName: normalizeLabelKey(name),
         },
       },
       update: {},
       create: {
         workspaceId,
         name,
+        normalizedName: normalizeLabelKey(name),
         color: "#6b7280",
       },
       select: { id: true },
@@ -460,7 +475,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         team: { select: { id: true, name: true } },
         department: { select: { id: true, name: true, color: true } },
         subtasks: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
-        labels: { include: { label: { select: { name: true } } } },
+        labels: { include: { label: { select: { id: true, name: true, color: true } } } },
         attachments: { orderBy: [{ createdAt: "desc" }] },
         parent: { select: { id: true, title: true, status: true } },
         relationsFrom: { include: { related: { select: { id: true, title: true, status: true } } } },
@@ -526,7 +541,7 @@ export async function listIssues(workspaceId: string, workspaceRole: WorkspaceRo
             project: { select: { id: true, name: true } },
             team: { select: { id: true, name: true } },
             department: { select: { id: true, name: true, color: true } },
-            labels: { include: { label: { select: { name: true } } } },
+            labels: { include: { label: { select: { id: true, name: true, color: true } } } },
             subtasks: { select: { id: true, completed: true, order: true, title: true } },
             attachments: { select: { id: true } },
           },
@@ -573,7 +588,7 @@ export async function getIssueById(workspaceId: string, workspaceRole: Workspace
       team: { select: { id: true, name: true } },
       department: { select: { id: true, name: true, color: true } },
       subtasks: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
-      labels: { include: { label: { select: { name: true } } } },
+      labels: { include: { label: { select: { id: true, name: true, color: true } } } },
       attachments: { orderBy: [{ createdAt: "desc" }] },
       parent: { select: { id: true, title: true, status: true } },
       relationsFrom: { include: { related: { select: { id: true, title: true, status: true } } } },
@@ -676,7 +691,7 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
         team: { select: { id: true, name: true } },
         department: { select: { id: true, name: true, color: true } },
         subtasks: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
-        labels: { include: { label: { select: { name: true } } } },
+        labels: { include: { label: { select: { id: true, name: true, color: true } } } },
         attachments: { orderBy: [{ createdAt: "desc" }] },
         parent: { select: { id: true, title: true, status: true } },
         relationsFrom: { include: { related: { select: { id: true, title: true, status: true } } } },
