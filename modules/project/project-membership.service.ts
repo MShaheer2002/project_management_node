@@ -5,6 +5,7 @@ import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
+import { createProjectMembershipNotification } from "../notification/notification.service.js";
 import type {
   AddProjectMembersInput,
   ListProjectMembersQuery,
@@ -187,6 +188,7 @@ export async function listProjectMembers(
 export async function addProjectMembers(
   workspaceId: string,
   projectId: string,
+  actorUserId: string,
   input: AddProjectMembersInput,
 ) {
   const userIds = [...new Set(input.userIds)];
@@ -194,7 +196,7 @@ export async function addProjectMembers(
   const added = await prisma.$transaction(async (tx) => {
     const project = await tx.project.findFirst({
       where: { id: projectId, workspaceId },
-      select: { id: true },
+      select: { id: true, name: true },
     });
 
     if (!project) {
@@ -241,7 +243,7 @@ export async function addProjectMembers(
       })),
     });
 
-    return { userIds, projectId };
+    return { userIds, projectId, projectName: project.name };
   });
 
   await Promise.all(added.userIds.map((memberId) => logActivity({
@@ -253,15 +255,23 @@ export async function addProjectMembers(
     message: "Project member added",
     metadata: { projectId: added.projectId, memberId },
   })));
+  await Promise.all(added.userIds.map((memberId) => createProjectMembershipNotification({
+    workspaceId,
+    recipientUserId: memberId,
+    actorUserId,
+    projectId: added.projectId,
+    projectName: added.projectName,
+    action: "added",
+  })));
 
   return { added: added.userIds };
 }
 
-export async function removeProjectMember(workspaceId: string, projectId: string, userId: string) {
-  await prisma.$transaction(async (tx) => {
+export async function removeProjectMember(workspaceId: string, projectId: string, actorUserId: string, userId: string) {
+  const removed = await prisma.$transaction(async (tx) => {
     const project = await tx.project.findFirst({
       where: { id: projectId, workspaceId },
-      select: { id: true, leadId: true },
+      select: { id: true, leadId: true, name: true },
     });
 
     if (!project) {
@@ -294,6 +304,7 @@ export async function removeProjectMember(workspaceId: string, projectId: string
         },
       },
     });
+    return { projectName: project.name };
   });
 
   await logActivity({
@@ -304,5 +315,13 @@ export async function removeProjectMember(workspaceId: string, projectId: string
     targetId: projectId,
     message: "Project member removed",
     metadata: { projectId, memberId: userId },
+  });
+  await createProjectMembershipNotification({
+    workspaceId,
+    recipientUserId: userId,
+    actorUserId,
+    projectId,
+    projectName: removed.projectName,
+    action: "removed",
   });
 }

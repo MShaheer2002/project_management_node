@@ -95,7 +95,7 @@ export async function getSidebarData(workspaceId: string, userId: string, role: 
       },
     }),
     prisma.notification.count({
-      where: { workspaceId, userId, read: false },
+      where: { workspaceId, recipientUserId: userId, readAt: null },
     }),
     prisma.issue.count({
       where: { workspaceId, assigneeId: userId, status: { not: "DONE" } },

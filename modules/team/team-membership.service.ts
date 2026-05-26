@@ -8,6 +8,7 @@ import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
+import { createNotification } from "../notification/notification.service.js";
 import type {
   AddTeamMembersInput,
   ListTeamMembersQuery,
@@ -182,13 +183,13 @@ export async function listTeamMembers(
   };
 }
 
-export async function addTeamMembers(workspaceId: string, teamId: string, input: AddTeamMembersInput) {
+export async function addTeamMembers(workspaceId: string, teamId: string, actorUserId: string, input: AddTeamMembersInput) {
   const userIds = [...new Set(input.userIds)];
 
   const added = await prisma.$transaction(async (tx) => {
     const team = await tx.team.findFirst({
       where: { id: teamId, workspaceId },
-      select: { id: true },
+      select: { id: true, name: true },
     });
 
     if (!team) {
@@ -234,7 +235,7 @@ export async function addTeamMembers(workspaceId: string, teamId: string, input:
       })),
     });
 
-    return { userIds, teamId };
+    return { userIds, teamId, teamName: team.name };
   });
 
   await Promise.all(added.userIds.map((memberId) => logActivity({
@@ -246,15 +247,35 @@ export async function addTeamMembers(workspaceId: string, teamId: string, input:
     message: "Team member joined",
     metadata: { teamId: added.teamId, memberId },
   })));
+  await Promise.all(added.userIds.map((memberId) => createNotification({
+    workspaceId,
+    recipientUserId: memberId,
+    actorUserId,
+    type: "TEAM_MEMBER",
+    category: "membership",
+    title: "Added to team",
+    message: `You were added to team ${added.teamName}`,
+    target: { type: "team", id: added.teamId, url: `/teams/${added.teamId}` },
+    metadata: {
+      teamId: added.teamId,
+      memberId,
+      action: "added",
+      workspaceId,
+      entityId: added.teamId,
+      entityTitle: added.teamName,
+      url: `/teams/${added.teamId}`,
+    },
+    eventId: `team-member:${added.teamId}:added:${memberId}`,
+  })));
 
   return { added: added.userIds };
 }
 
-export async function removeTeamMember(workspaceId: string, teamId: string, userId: string) {
-  await prisma.$transaction(async (tx) => {
+export async function removeTeamMember(workspaceId: string, teamId: string, actorUserId: string, userId: string) {
+  const removed = await prisma.$transaction(async (tx) => {
     const team = await tx.team.findFirst({
       where: { id: teamId, workspaceId },
-      select: { leadId: true },
+      select: { leadId: true, name: true },
     });
 
     if (!team) {
@@ -287,6 +308,7 @@ export async function removeTeamMember(workspaceId: string, teamId: string, user
         },
       },
     });
+    return { teamName: team.name };
   });
 
   await logActivity({
@@ -297,5 +319,25 @@ export async function removeTeamMember(workspaceId: string, teamId: string, user
     targetId: teamId,
     message: "Team member removed",
     metadata: { teamId, memberId: userId },
+  });
+  await createNotification({
+    workspaceId,
+    recipientUserId: userId,
+    actorUserId,
+    type: "TEAM_MEMBER",
+    category: "membership",
+    title: "Removed from team",
+    message: `You were removed from team ${removed.teamName}`,
+    target: { type: "team", id: teamId, url: `/teams/${teamId}` },
+    metadata: {
+      teamId,
+      memberId: userId,
+      action: "removed",
+      workspaceId,
+      entityId: teamId,
+      entityTitle: removed.teamName,
+      url: `/teams/${teamId}`,
+    },
+    eventId: `team-member:${teamId}:removed:${userId}`,
   });
 }

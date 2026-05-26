@@ -85,6 +85,7 @@ export const addMembers: RequestHandler = async (req, res, next) => {
     const result = await teamMembershipService.addTeamMembers(
       req.workspace!.id,
       req.params.id as string,
+      req.user!.id,
       req.body as AddTeamMembersInput,
     );
     sendSuccess(res, 200, result);
@@ -98,6 +99,7 @@ export const removeMember: RequestHandler = async (req, res, next) => {
     await teamMembershipService.removeTeamMember(
       req.workspace!.id,
       req.params.id as string,
+      req.user!.id,
       req.params.uid as string,
     );
     res.status(204).send();

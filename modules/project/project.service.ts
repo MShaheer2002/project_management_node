@@ -5,6 +5,8 @@ import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
+import { createNotification } from "../notification/notification.service.js";
+import { createProjectMembershipNotification } from "../notification/notification.service.js";
 import type {
   CreateProjectInput,
   ListProjectsQuery,
@@ -269,7 +271,7 @@ export async function getProjectOwnership(workspaceId: string, projectId: string
   };
 }
 
-export async function createProject(workspaceId: string, input: CreateProjectInput) {
+export async function createProject(workspaceId: string, actorUserId: string, input: CreateProjectInput) {
   const existingByName = await prisma.project.findFirst({
     where: {
       workspaceId,
@@ -282,7 +284,7 @@ export async function createProject(workspaceId: string, input: CreateProjectInp
     throw new AppError(409, ERROR_CODES.PROJECT_NAME_TAKEN, "A project with this name already exists");
   }
 
-  const createdId = await prisma.$transaction(async (tx) => {
+  const createdPayload = await prisma.$transaction(async (tx) => {
     const team = await assertTeamInWorkspace(tx, workspaceId, input.teamId);
     const resolvedDepartmentId = team.departmentId ?? null;
 
@@ -350,11 +352,14 @@ export async function createProject(workspaceId: string, input: CreateProjectInp
       });
     }
 
-    return createdProject.id;
+    return {
+      projectId: createdProject.id,
+      memberIds,
+    };
   });
 
   const created = await prisma.project.findFirst({
-    where: { id: createdId, workspaceId },
+    where: { id: createdPayload.projectId, workspaceId },
     select: projectFullSelect,
   });
 
@@ -364,13 +369,22 @@ export async function createProject(workspaceId: string, input: CreateProjectInp
 
   await logActivity({
     workspaceId,
-    actorId: input.leadId ?? "system",
+    actorId: actorUserId,
     type: "PROJECT_CREATED",
     targetType: "PROJECT",
     targetId: created.id,
     message: `Project ${created.name} created`,
     metadata: { projectId: created.id, projectName: created.name },
   });
+
+  await Promise.all((createdPayload.memberIds ?? []).map((memberId) => createProjectMembershipNotification({
+    workspaceId,
+    recipientUserId: memberId,
+    actorUserId,
+    projectId: created.id,
+    projectName: created.name,
+    action: "added",
+  })));
 
   return mapProject(created);
 }
@@ -459,7 +473,10 @@ export async function getProjectById(
   return mapProject(project);
 }
 
-export async function updateProject(workspaceId: string, projectId: string, input: UpdateProjectInput) {
+export async function updateProject(workspaceId: string, projectId: string, actorUserId: string, input: UpdateProjectInput) {
+  let previousLeadId: string | null = null;
+  let resolvedLeadId: string | null = null;
+
   const updatedId = await prisma.$transaction(async (tx) => {
     const current = await tx.project.findFirst({
       where: { id: projectId, workspaceId },
@@ -469,6 +486,7 @@ export async function updateProject(workspaceId: string, projectId: string, inpu
     if (!current) {
       throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
     }
+    previousLeadId = current.leadId;
 
     if (input.name && input.name !== current.name) {
       const nameConflict = await tx.project.findFirst({
@@ -509,6 +527,7 @@ export async function updateProject(workspaceId: string, projectId: string, inpu
         leadId = input.leadId;
       }
     }
+    resolvedLeadId = leadId !== undefined ? leadId : current.leadId;
 
     let slug: string | undefined = undefined;
     if (input.slug) {
@@ -573,13 +592,41 @@ export async function updateProject(workspaceId: string, projectId: string, inpu
 
   await logActivity({
     workspaceId,
-    actorId: updated.lead?.id ?? "system",
+    actorId: actorUserId,
     type: "PROJECT_UPDATED",
     targetType: "PROJECT",
     targetId: updated.id,
     message: `Project ${updated.name} updated`,
     metadata: { projectId: updated.id, projectName: updated.name },
   });
+
+  if (resolvedLeadId && resolvedLeadId !== previousLeadId) {
+    await createNotification({
+      workspaceId,
+      recipientUserId: resolvedLeadId,
+      actorUserId,
+      type: "PROJECT_MEMBER",
+      category: "membership",
+      title: "You are now project lead",
+      message: `You were assigned as lead for project ${updated.name}`,
+      target: {
+        type: "project",
+        id: updated.id,
+        url: `/projects/${updated.id}`,
+      },
+      metadata: {
+        projectId: updated.id,
+        action: "lead_assigned",
+        previousLeadId,
+        newLeadId: resolvedLeadId,
+        workspaceId,
+        entityId: updated.id,
+        entityTitle: updated.name,
+        url: `/projects/${updated.id}`,
+      },
+      eventId: `project-lead:${updated.id}:${resolvedLeadId}`,
+    });
+  }
 
   return mapProject(updated);
 }

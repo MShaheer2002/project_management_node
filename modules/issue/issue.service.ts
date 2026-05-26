@@ -5,6 +5,9 @@ import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
+import { emitIssueCreated, emitIssueDeleted, emitIssueUpdated } from "../../socket/events.js";
+import { getSocketServer } from "../../socket/index.js";
+import { createNotification } from "../notification/notification.service.js";
 import { createIssueAttachments } from "./issue-attachment.service.js";
 import type {
   CreateIssueInput,
@@ -375,21 +378,32 @@ async function syncRelatedIssues(tx: any, workspaceId: string, issueId: string, 
 }
 
 function validateTypeSpecific(input: CreateIssueInput | UpdateIssueInput, currentType?: string) {
-  const type = ("type" in input && input.type ? input.type : currentType ? typeFromDb[currentType] : null);
+  const nextType = ("type" in input && input.type ? input.type : currentType ? typeFromDb[currentType] : null);
+  const isUpdate = Boolean(currentType);
+  const currentTypeKey = currentType ? typeFromDb[currentType] : null;
+  const isTypeTransition = isUpdate && Boolean(nextType && currentTypeKey && nextType !== currentTypeKey);
 
-  if (type === "bug") {
+  if (nextType === "bug") {
     const steps = "stepsToReproduce" in input ? input.stepsToReproduce : undefined;
     const expected = "expectedBehavior" in input ? input.expectedBehavior : undefined;
     const actual = "actualBehavior" in input ? input.actualBehavior : undefined;
     const severity = "severity" in input ? input.severity : undefined;
-    if (!steps || !expected || !actual || !severity) {
+
+    // For PATCH updates, enforce required bug fields only when switching to BUG.
+    // Existing BUG issues can be updated partially without resending all bug fields.
+    const mustValidate = !isUpdate || isTypeTransition;
+    if (mustValidate && (!steps || !expected || !actual || !severity)) {
       throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "BUG issues require reproduction, expected, actual, and severity");
     }
   }
 
-  if (type === "issue") {
+  if (nextType === "issue") {
     const acceptance = "acceptanceCriteria" in input ? input.acceptanceCriteria : undefined;
-    if (!acceptance) {
+
+    // For PATCH updates, enforce acceptance criteria only when switching to ISSUE.
+    // Existing ISSUE issues can be updated partially without resending acceptanceCriteria.
+    const mustValidate = !isUpdate || isTypeTransition;
+    if (mustValidate && !acceptance) {
       throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "ISSUE type requires acceptanceCriteria");
     }
   }
@@ -496,6 +510,10 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
       },
     });
 
+    if (!created) {
+      throw new AppError(500, ERROR_CODES.INTERNAL_ERROR, "Failed to load created issue");
+    }
+
     const mapped = mapIssue(created);
     await logActivity({
       workspaceId,
@@ -512,6 +530,46 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         teamId: project.teamId,
       },
     });
+
+    // If issue is created with an assignee, emit assignment notification immediately.
+    if (created.assigneeId) {
+      const issueRouteId = created.internalId ?? created.id;
+      await createNotification({
+        workspaceId,
+        recipientUserId: created.assigneeId,
+        actorUserId: creatorId,
+        type: "ASSIGNMENT",
+        category: "assignment",
+        title: "New issue assignment",
+        message: `You were assigned issue ${issueRouteId}`,
+        target: {
+          type: "issue",
+          id: created.id,
+          publicId: issueRouteId,
+          url: `/issues/${issueRouteId}`,
+        },
+        metadata: {
+          issueId: created.id,
+          fromAssignee: null,
+          toAssignee: created.assigneeId,
+          workspaceId,
+          entityId: created.id,
+          entityTitle: created.title,
+          url: `/issues/${issueRouteId}`,
+        },
+        eventId: `issue-assignment:create:${created.id}:${created.assigneeId}`,
+      });
+    }
+
+    const io = getSocketServer();
+    if (io) {
+      emitIssueCreated(io, workspaceId, {
+        issueId: created.id,
+        publicId: created.internalId ?? created.id,
+        full: mapped,
+      });
+    }
+
     return mapped;
   });
 }
@@ -632,7 +690,7 @@ export async function getIssueById(workspaceId: string, workspaceRole: Workspace
   return mapIssue(issue, true);
 }
 
-export async function updateIssue(workspaceId: string, issueId: string, input: UpdateIssueInput) {
+export async function updateIssue(workspaceId: string, issueId: string, actorUserId: string, input: UpdateIssueInput) {
   return prisma.$transaction(async (tx) => {
     const current = await tx.issue.findFirst({
       where: { id: issueId, workspaceId },
@@ -732,7 +790,7 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
     if (input.type !== undefined && typeToDb[input.type] !== current.type) {
       await logActivity({
         workspaceId,
-        actorId: current.creatorId,
+        actorId: actorUserId,
         type: "ISSUE_TYPE_CHANGED",
         targetType: "ISSUE",
         targetId: issueId,
@@ -743,7 +801,7 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
     if (input.status !== undefined && statusToDb[input.status] !== current.status) {
       await logActivity({
         workspaceId,
-        actorId: current.creatorId,
+        actorId: actorUserId,
         type: "ISSUE_STATUS_CHANGED",
         targetType: "ISSUE",
         targetId: issueId,
@@ -754,7 +812,7 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
     if (input.priority !== undefined && priorityToDb[input.priority] !== current.priority) {
       await logActivity({
         workspaceId,
-        actorId: current.creatorId,
+        actorId: actorUserId,
         type: "ISSUE_PRIORITY_CHANGED",
         targetType: "ISSUE",
         targetId: issueId,
@@ -765,7 +823,7 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
     if (input.assigneeId !== undefined && input.assigneeId !== current.assigneeId) {
       await logActivity({
         workspaceId,
-        actorId: current.creatorId,
+        actorId: actorUserId,
         type: "ISSUE_ASSIGNEE_CHANGED",
         targetType: "ISSUE",
         targetId: issueId,
@@ -779,7 +837,7 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
       if (before !== after) {
         await logActivity({
           workspaceId,
-          actorId: current.creatorId,
+          actorId: actorUserId,
           type: "ISSUE_DUE_DATE_CHANGED",
           targetType: "ISSUE",
           targetId: issueId,
@@ -791,7 +849,7 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
     if (updated && (updated.projectId !== current.projectId || updated.teamId !== current.teamId)) {
       await logActivity({
         workspaceId,
-        actorId: current.creatorId,
+        actorId: actorUserId,
         type: "ISSUE_SCOPE_CHANGED",
         targetType: "ISSUE",
         targetId: issueId,
@@ -800,7 +858,99 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
       });
     }
 
-    return mapIssue(updated, true);
+    if (updated) {
+      const issueRouteId = updated.internalId ?? updated.id;
+
+      if (input.assigneeId !== undefined && input.assigneeId !== current.assigneeId && input.assigneeId) {
+        await createNotification({
+          workspaceId,
+          recipientUserId: input.assigneeId,
+          actorUserId,
+          type: "ASSIGNMENT",
+          category: "assignment",
+          title: "New issue assignment",
+          message: `You were assigned issue ${issueRouteId}`,
+          target: {
+            type: "issue",
+            id: issueId,
+            publicId: issueRouteId,
+            url: `/issues/${issueRouteId}`,
+          },
+          metadata: {
+            issueId,
+            fromAssignee: current.assigneeId,
+            toAssignee: input.assigneeId,
+            workspaceId,
+            entityId: issueId,
+            entityTitle: updated.title,
+            url: `/issues/${issueRouteId}`,
+          },
+          eventId: `issue-assignment:${issueId}:${input.assigneeId}:${updated.updatedAt.toISOString()}`,
+        });
+      }
+
+      const recipientSet = new Set<string>();
+      if (updated.assigneeId) recipientSet.add(updated.assigneeId);
+      if (updated.creatorId) recipientSet.add(updated.creatorId);
+      for (const watcher of updated.watchers ?? []) {
+        if (watcher?.user?.id) recipientSet.add(watcher.user.id);
+      }
+
+      const changedFields: Array<{ field: string; from: unknown; to: unknown }> = [];
+      if (input.status !== undefined && statusToDb[input.status] !== current.status) {
+        changedFields.push({ field: "status", from: statusFromDb[current.status], to: input.status });
+      }
+      if (input.priority !== undefined && priorityToDb[input.priority] !== current.priority) {
+        changedFields.push({ field: "priority", from: priorityFromDb[current.priority], to: input.priority });
+      }
+      if (input.dueDate !== undefined) {
+        const before = current.dueDate ? current.dueDate.toISOString().slice(0, 10) : null;
+        const after = input.dueDate ?? null;
+        if (before !== after) changedFields.push({ field: "dueDate", from: before, to: after });
+      }
+
+      await Promise.all(changedFields.flatMap((change) => [...recipientSet].map((recipientUserId) => createNotification({
+        workspaceId,
+        recipientUserId,
+        actorUserId,
+        type: "UPDATE",
+        category: "update",
+        title: "Issue updated",
+        message: `${updated.title} ${change.field} changed`,
+        target: {
+          type: "issue",
+          id: issueId,
+          publicId: issueRouteId,
+          url: `/issues/${issueRouteId}`,
+        },
+        metadata: {
+          issueId,
+          field: change.field,
+          from: change.from,
+          to: change.to,
+          workspaceId,
+          entityId: issueId,
+          entityTitle: updated.title,
+          url: `/issues/${issueRouteId}`,
+        },
+        eventId: `issue-update:${issueId}:${change.field}:${updated.updatedAt.toISOString()}:${recipientUserId}`,
+      }))));
+    }
+
+    if (!updated) {
+      throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+    }
+
+    const mapped = mapIssue(updated, true);
+    const io = getSocketServer();
+    if (io) {
+      emitIssueUpdated(io, workspaceId, {
+        issueId,
+        publicId: updated.internalId ?? updated.id,
+        full: mapped,
+      });
+    }
+    return mapped;
   });
 }
 
@@ -837,9 +987,65 @@ export async function updateIssueStatus(
         toStatus: status,
       },
     });
+
+    const updated = await prisma.issue.findFirst({
+      where: { id: issueId, workspaceId },
+      select: {
+        id: true,
+        internalId: true,
+        title: true,
+        creatorId: true,
+        assigneeId: true,
+        watchers: { select: { userId: true } },
+      },
+    });
+
+    if (updated) {
+      const issueRouteId = updated.internalId ?? updated.id;
+      const recipients = new Set<string>();
+      if (updated.assigneeId) recipients.add(updated.assigneeId);
+      if (updated.creatorId) recipients.add(updated.creatorId);
+      for (const watcher of updated.watchers) recipients.add(watcher.userId);
+
+      await Promise.all([...recipients].map((recipientUserId) => createNotification({
+        workspaceId,
+        recipientUserId,
+        actorUserId: userId,
+        type: "UPDATE",
+        category: "update",
+        title: "Issue updated",
+        message: `${updated.title} status changed`,
+        target: {
+          type: "issue",
+          id: updated.id,
+          publicId: issueRouteId,
+          url: `/issues/${issueRouteId}`,
+        },
+        metadata: {
+          issueId: updated.id,
+          field: "status",
+          from: statusFromDb[issue.status] ?? "backlog",
+          to: status,
+          workspaceId,
+          entityId: updated.id,
+          entityTitle: updated.title,
+          url: `/issues/${issueRouteId}`,
+        },
+        eventId: `issue-update:${updated.id}:status:${new Date().toISOString()}:${recipientUserId}`,
+      })));
+    }
   }
 
-  return getIssueById(workspaceId, workspaceRole, userId, issueId);
+  const resolved = await getIssueById(workspaceId, workspaceRole, userId, issueId);
+  const io = getSocketServer();
+  if (io) {
+    emitIssueUpdated(io, workspaceId, {
+      issueId,
+      publicId: (resolved as any)?.id ?? issueId,
+      full: resolved,
+    });
+  }
+  return resolved;
 }
 
 export async function deleteIssue(workspaceId: string, issueId: string) {
@@ -860,6 +1066,10 @@ export async function deleteIssue(workspaceId: string, issueId: string) {
     metadata: { entityId: issueId },
   });
   await prisma.issue.delete({ where: { id: issueId } });
+  const io = getSocketServer();
+  if (io) {
+    emitIssueDeleted(io, workspaceId, { issueId });
+  }
 }
 
 export async function addDependency(workspaceId: string, issueId: string, relatedId: string, relation: "blocks" | "blocked-by" | "related") {

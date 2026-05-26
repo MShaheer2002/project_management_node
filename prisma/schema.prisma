@@ -92,6 +92,12 @@ enum NotificationType {
   MENTION
   ASSIGNMENT
   UPDATE
+  COMMENT_REPLY
+  PROJECT_MEMBER
+  TEAM_MEMBER
+  WORKSPACE_INVITE
+  ISSUE_DUE_SOON
+  ISSUE_OVERDUE
 }
 
 /// Categories of trackable actions in the activity feed
@@ -825,22 +831,33 @@ model Cycle {
 /// Types: MENTION (@mentioned in comment), ASSIGNMENT (issue assigned), UPDATE (watched issue changed).
 /// Two user relations: `userId` = who receives it, `actorId` = who triggered it.
 model Notification {
-  id          String           @id @default(uuid())
-  workspaceId String
-  userId      String // FK → User who receives this notification
-  actorId     String // FK → User who triggered this notification
-  type        NotificationType
-  issueId     String? // FK → related Issue (if applicable)
-  description String // Human-readable summary (e.g., "John assigned LIN-42 to you")
-  read        Boolean          @default(false)
-  createdAt   DateTime         @default(now())
+  id              String           @id @default(uuid())
+  workspaceId     String
+  recipientUserId String // FK → User who receives this notification
+  actorUserId     String? // FK → User who triggered this notification (nullable for system events)
+  type            NotificationType
+  category        String
+  title           String
+  message         String
+  targetType      String
+  targetId        String
+  targetPublicId  String?
+  targetUrl       String
+  metadata        Json?
+  readAt          DateTime?
+  eventId         String?
+  dedupeKey       String?
+  createdAt       DateTime         @default(now())
 
   // -- Relations --
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  user      User      @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
-  actor     User      @relation("NotificationActor", fields: [actorId], references: [id])
+  user      User      @relation("NotificationRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+  actor     User?     @relation("NotificationActor", fields: [actorUserId], references: [id], onDelete: SetNull)
 
-  @@index([userId, read]) // Unread notification count query
+  @@index([workspaceId, recipientUserId, createdAt(sort: Desc)])
+  @@index([workspaceId, recipientUserId, readAt, createdAt(sort: Desc)])
+  @@index([workspaceId, recipientUserId, type, createdAt(sort: Desc)])
+  @@unique([workspaceId, recipientUserId, dedupeKey])
   @@index([workspaceId])
 }
 

@@ -45,6 +45,7 @@ import issueRoutes from "../modules/issue/issue.routes.js";
 import commentRoutes from "../modules/comment/comment.routes.js";
 import labelRoutes from "../modules/label/label.routes.js";
 import activityRoutes from "../modules/activity/activity.routes.js";
+import notificationRoutes from "../modules/notification/notification.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -145,7 +146,7 @@ app.use("/issues", issueRoutes);
 app.use(commentRoutes);
 app.use(labelRoutes);
 app.use(activityRoutes);
-// Phase 8: app.use("/notifications", notificationRoutes);
+app.use(notificationRoutes);
 // Phase 10: app.use("/cycles", cycleRoutes);
 // Phase 10: app.use("/templates", templateRoutes);
 // Phase 10: app.use("/api-keys", apiKeyRoutes);

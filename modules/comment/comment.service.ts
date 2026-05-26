@@ -5,7 +5,10 @@ import { logActivity } from "../../shared/utils/activity.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { prisma } from "../../shared/utils/prisma.js";
+import { emitCommentCreated, emitCommentDeleted, emitCommentUpdated } from "../../socket/events.js";
+import { getSocketServer } from "../../socket/index.js";
 import { validateAttachmentRefs } from "../issue/issue-attachment.service.js";
+import { createNotification } from "../notification/notification.service.js";
 import type { CreateCommentInput, ListCommentsQuery, UpdateCommentInput } from "./comment.schemas.js";
 
 function mapComment(comment: any) {
@@ -46,6 +49,55 @@ async function assertIssueExistsInWorkspace(workspaceId: string, issueId: string
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
   }
+}
+
+function normalizeMentionToken(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+async function extractMentionedUserIds(workspaceId: string, body: string) {
+  const ids = new Set<string>();
+
+  // Preferred explicit formats
+  const markdownMention = /@\[([^\]]+)\]\((user_[a-zA-Z0-9]+)\)/g;
+  const directMention = /\B@(user_[a-zA-Z0-9]+)\b/g;
+  for (const match of body.matchAll(markdownMention)) ids.add(match[2]!);
+  for (const match of body.matchAll(directMention)) ids.add(match[1]!);
+
+  // Fallback plain-text format: "@First Last"
+  const plainCandidates = new Set<string>();
+  const plainMention = /@([A-Za-z][A-Za-z0-9._-]*(?:\s+[A-Za-z][A-Za-z0-9._-]*){0,3})/g;
+  for (const match of body.matchAll(plainMention)) {
+    const token = normalizeMentionToken(match[1] ?? "");
+    if (token) plainCandidates.add(token);
+  }
+
+  if (plainCandidates.size > 0) {
+    const members = await prisma.workspaceMembership.findMany({
+      where: { workspaceId },
+      select: {
+        userId: true,
+        user: { select: { name: true } },
+      },
+    });
+
+    const memberNameIndex = new Map<string, string[]>();
+    for (const member of members) {
+      const key = normalizeMentionToken(member.user.name ?? "");
+      if (!key) continue;
+      const list = memberNameIndex.get(key) ?? [];
+      list.push(member.userId);
+      memberNameIndex.set(key, list);
+    }
+
+    for (const candidate of plainCandidates) {
+      const matches = memberNameIndex.get(candidate);
+      // Only auto-resolve unambiguous names
+      if (matches && matches.length === 1) ids.add(matches[0]!);
+    }
+  }
+
+  return [...ids];
 }
 
 export async function createComment(workspaceId: string, issueId: string, userId: string, input: CreateCommentInput) {
@@ -129,7 +181,76 @@ export async function createComment(workspaceId: string, issueId: string, userId
     },
   });
 
-  return mapComment(hydrated);
+  const issueForNotification = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { id: true, internalId: true, title: true },
+  });
+  const issueRouteId = issueForNotification?.internalId ?? issueId;
+
+  if (input.parentId) {
+    const parent = await prisma.comment.findFirst({
+      where: { id: input.parentId, issue: { workspaceId } },
+      select: { authorId: true },
+    });
+    if (parent?.authorId) {
+      await createNotification({
+        workspaceId,
+        recipientUserId: parent.authorId,
+        actorUserId: userId,
+        type: "COMMENT_REPLY",
+        category: "comment",
+        title: "New reply to your comment",
+        message: `Someone replied on issue ${issueRouteId}`,
+        target: { type: "comment", id: created.id, url: `/issues/${issueRouteId}` },
+        metadata: {
+          issueId,
+          commentId: created.id,
+          parentCommentId: input.parentId,
+          commentExcerpt: input.body.slice(0, 140),
+          workspaceId,
+          entityId: issueId,
+          entityTitle: issueForNotification?.title ?? null,
+          url: `/issues/${issueRouteId}`,
+        },
+        eventId: `comment-reply:${created.id}:${parent.authorId}`,
+      });
+    }
+  }
+
+  const mentionedUserIds = await extractMentionedUserIds(workspaceId, input.body);
+  await Promise.all(mentionedUserIds.map((mentionedUserId) => createNotification({
+    workspaceId,
+    recipientUserId: mentionedUserId,
+    actorUserId: userId,
+    type: "MENTION",
+    category: "mention",
+    title: "You were mentioned in a comment",
+    message: `You were mentioned on issue ${issueRouteId}`,
+    target: { type: "comment", id: created.id, url: `/issues/${issueRouteId}` },
+    metadata: {
+      issueId,
+      commentId: created.id,
+      commentExcerpt: input.body.slice(0, 140),
+      mentionedBy: { id: userId },
+      workspaceId,
+      entityId: issueId,
+      entityTitle: issueForNotification?.title ?? null,
+      url: `/issues/${issueRouteId}`,
+    },
+    eventId: `comment-mention:${created.id}:${mentionedUserId}`,
+  })));
+
+  const mapped = mapComment(hydrated);
+  const io = getSocketServer();
+  if (io) {
+    emitCommentCreated(io, workspaceId, issueId, {
+      issueId,
+      commentId: created.id,
+      full: mapped,
+    });
+  }
+
+  return mapped;
 }
 
 export async function listComments(workspaceId: string, issueId: string, query: ListCommentsQuery) {
@@ -242,7 +363,17 @@ export async function updateComment(workspaceId: string, commentId: string, user
     },
   });
 
-  return mapComment(updated);
+  const mapped = mapComment(updated);
+  const io = getSocketServer();
+  if (io) {
+    emitCommentUpdated(io, workspaceId, (updated as any).issueId, {
+      issueId: (updated as any).issueId,
+      commentId: current.id,
+      full: mapped,
+    });
+  }
+
+  return mapped;
 }
 
 export async function deleteComment(workspaceId: string, commentId: string, userId: string, role: WorkspaceRole) {
@@ -284,6 +415,14 @@ export async function deleteComment(workspaceId: string, commentId: string, user
       commentId: current.id,
     },
   });
+
+  const io = getSocketServer();
+  if (io && detail?.issueId) {
+    emitCommentDeleted(io, workspaceId, detail.issueId, {
+      issueId: detail?.issueId ?? null,
+      commentId: current.id,
+    });
+  }
 }
 
 export async function addCommentAttachments(workspaceId: string, commentId: string, userId: string, attachments: any[]) {

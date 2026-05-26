@@ -46,7 +46,7 @@ export const getById: RequestHandler = async (req, res, next) => {
 export const update: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    const issue = await issueService.updateIssue(req.workspace!.id, issueId, req.body);
+    const issue = await issueService.updateIssue(req.workspace!.id, issueId, req.user!.id, req.body);
     sendSuccess(res, 200, issue);
   } catch (error) {
     next(error);

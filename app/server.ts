@@ -15,9 +15,12 @@
  * This ensures no orphaned connections or in-flight requests are dropped abruptly.
  */
 
+import { createServer } from "node:http";
+
 import app from "./app.js";
 import { env } from "../config/env.js";
 import { prisma } from "../shared/utils/prisma.js";
+import { initializeSocket } from "../socket/index.js";
 
 // ─── Start Server ────────────────────────────────────────────────────────────
 
@@ -28,7 +31,10 @@ async function start() {
     console.log("✅ Database connected");
 
     // Start the HTTP server
-    const server = app.listen(env.PORT, () => {
+    const httpServer = createServer(app);
+    initializeSocket(httpServer);
+
+    httpServer.listen(env.PORT, () => {
       console.log(
         `Server running on port ${env.PORT} (${env.NODE_ENV} mode)`,
       );
@@ -45,7 +51,7 @@ async function start() {
       console.log(`\n⏳ Received ${signal}. Shutting down gracefully...`);
 
       // Stop accepting new connections
-      server.close(() => {
+      httpServer.close(() => {
         console.log("🔌 HTTP server closed");
       });
 

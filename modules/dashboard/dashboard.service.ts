@@ -88,7 +88,7 @@ export async function getDashboardData(workspaceId: string, userId: string) {
       where: { workspaceId, status: { not: "DONE" } },
     }),
     prisma.notification.count({
-      where: { workspaceId, userId, read: false },
+      where: { workspaceId, recipientUserId: userId, readAt: null },
     }),
     prisma.issue.findMany({
       where: { workspaceId, assigneeId: userId, status: { not: "DONE" } },

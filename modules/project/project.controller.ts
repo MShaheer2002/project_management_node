@@ -11,7 +11,7 @@ import type {
 
 export const create: RequestHandler = async (req, res, next) => {
   try {
-    const created = await projectService.createProject(req.workspace!.id, req.body);
+    const created = await projectService.createProject(req.workspace!.id, req.user!.id, req.body);
     sendSuccess(res, 201, created);
   } catch (error) {
     next(error);
@@ -51,6 +51,7 @@ export const update: RequestHandler = async (req, res, next) => {
     const updated = await projectService.updateProject(
       req.workspace!.id,
       req.params.id as string,
+      req.user!.id,
       req.body,
     );
     sendSuccess(res, 200, updated);
@@ -89,6 +90,7 @@ export const addMembers: RequestHandler = async (req, res, next) => {
     const result = await projectMembershipService.addProjectMembers(
       req.workspace!.id,
       req.params.id as string,
+      req.user!.id,
       req.body as AddProjectMembersInput,
     );
     sendSuccess(res, 200, result);
@@ -102,6 +104,7 @@ export const removeMember: RequestHandler = async (req, res, next) => {
     await projectMembershipService.removeProjectMember(
       req.workspace!.id,
       req.params.id as string,
+      req.user!.id,
       req.params.uid as string,
     );
     res.status(204).send();
