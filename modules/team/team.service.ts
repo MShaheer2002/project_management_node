@@ -6,6 +6,7 @@ import type {
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import type {
   CreateTeamInput,
@@ -318,7 +319,7 @@ export async function getTeamById(workspaceId: string, workspaceRole: WorkspaceR
 export async function updateTeam(workspaceId: string, teamId: string, input: UpdateTeamInput) {
   const current = await prisma.team.findFirst({
     where: { id: teamId, workspaceId },
-    select: { id: true },
+    select: { id: true, leadId: true, name: true },
   });
 
   if (!current) {
@@ -401,6 +402,18 @@ export async function updateTeam(workspaceId: string, teamId: string, input: Upd
       });
     }
   });
+
+  if (input.leadId !== undefined && input.leadId !== current.leadId) {
+    await logActivity({
+      workspaceId,
+      actorId: input.leadId ?? current.leadId ?? "system",
+      type: "TEAM_MEMBER_ROLE_CHANGED",
+      targetType: "TEAM",
+      targetId: teamId,
+      message: `Team lead changed for ${current.name}`,
+      metadata: { teamId, roleBefore: current.leadId, roleAfter: input.leadId ?? null },
+    });
+  }
 
   return getTeamById(workspaceId, "MEMBER", teamId);
 }

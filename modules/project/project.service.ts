@@ -3,6 +3,7 @@ import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import type {
   CreateProjectInput,
@@ -361,6 +362,16 @@ export async function createProject(workspaceId: string, input: CreateProjectInp
     throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
   }
 
+  await logActivity({
+    workspaceId,
+    actorId: input.leadId ?? "system",
+    type: "PROJECT_CREATED",
+    targetType: "PROJECT",
+    targetId: created.id,
+    message: `Project ${created.name} created`,
+    metadata: { projectId: created.id, projectName: created.name },
+  });
+
   return mapProject(created);
 }
 
@@ -559,6 +570,16 @@ export async function updateProject(workspaceId: string, projectId: string, inpu
   if (!updated) {
     throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
   }
+
+  await logActivity({
+    workspaceId,
+    actorId: updated.lead?.id ?? "system",
+    type: "PROJECT_UPDATED",
+    targetType: "PROJECT",
+    targetId: updated.id,
+    message: `Project ${updated.name} updated`,
+    metadata: { projectId: updated.id, projectName: updated.name },
+  });
 
   return mapProject(updated);
 }

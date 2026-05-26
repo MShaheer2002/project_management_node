@@ -3,6 +3,7 @@ import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import type {
   AddProjectMembersInput,
@@ -240,10 +241,20 @@ export async function addProjectMembers(
       })),
     });
 
-    return userIds;
+    return { userIds, projectId };
   });
 
-  return { added };
+  await Promise.all(added.userIds.map((memberId) => logActivity({
+    workspaceId,
+    actorId: memberId,
+    type: "PROJECT_MEMBER_ADDED",
+    targetType: "PROJECT",
+    targetId: added.projectId,
+    message: "Project member added",
+    metadata: { projectId: added.projectId, memberId },
+  })));
+
+  return { added: added.userIds };
 }
 
 export async function removeProjectMember(workspaceId: string, projectId: string, userId: string) {
@@ -283,5 +294,15 @@ export async function removeProjectMember(workspaceId: string, projectId: string
         },
       },
     });
+  });
+
+  await logActivity({
+    workspaceId,
+    actorId: userId,
+    type: "PROJECT_MEMBER_REMOVED",
+    targetType: "PROJECT",
+    targetId: projectId,
+    message: "Project member removed",
+    metadata: { projectId, memberId: userId },
   });
 }

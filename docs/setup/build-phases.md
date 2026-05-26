@@ -24,10 +24,11 @@ Phase 4  → Work Container  (projects)
 Phase 5  → Work Unit       (issues — the core product)
 Phase 6  → Collaboration   (comments & threads)
 Phase 7  → Power Features  (labels, relations, subtasks)
-Phase 8  → UX Layer        (activity feed, notifications)
-Phase 9  → Realtime        (Socket.IO live updates)
-Phase 10 → Business        (cycles, templates, billing, integrations)
-Phase 11 → Intelligence    (MCP server, AI assistant — future scope)
+Phase 8  → Activity        (audit timeline across issues/projects/teams)
+Phase 9  → Notifications   (inbox, unread counts, delivery channels)
+Phase 10 → Realtime        (Socket.IO live updates)
+Phase 11 → Business        (cycles, templates, billing, integrations)
+Phase 12 → Intelligence    (MCP server, AI assistant — future scope)
 ```
 
 ---
@@ -128,7 +129,7 @@ infra/                          # Added in Phase 8+ when needed
 ├── email/                     # Email sending (SMTP/Resend)
 └── storage/                   # File uploads (S3/R2)
 
-socket/                         # Socket.IO handlers (Phase 9)
+socket/                         # Socket.IO handlers (Phase 10)
 ├── index.ts                   # Server setup
 ├── auth.ts                    # Socket auth middleware
 ├── rooms.ts                   # Room join/leave
@@ -571,9 +572,10 @@ modules/team/
 
 **Dependency:** Phase 3 (teams must exist to own projects)
 
-**Implementation guides:**
-- Backend setup: [phase-4-backend-setup-guide.md](./phase-4-backend-setup-guide.md)
-- Frontend integration: [phase-4-frontend-project-integration-guide.md](./phase-4-frontend-project-integration-guide.md)
+Frontend/backend contract reference:
+
+- [phase4-backend-contract.md](./phase4-backend-contract.md)
+- [../features/projects-features/phase-4-frontend-project-ui-test-guide.md](../features/projects-features/phase-4-frontend-project-ui-test-guide.md)
 
 ### 4.1 Routes
 
@@ -749,9 +751,9 @@ X-Workspace-Id: <workspaceId>
 
 **Dependency:** Phase 4 (projects must exist to contain issues)
 
-**Implementation guide:**
-- Backend setup: [phase-5-backend-setup-guide.md](./phase-5-backend-setup-guide.md)
-- Frontend integration: [phase-5-frontend-issue-integration-guide.md](./phase-5-frontend-issue-integration-guide.md)
+Frontend/backend contract reference:
+
+- [phase5-backend-contract.md](./phase5-backend-contract.md)
 
 ### 5.1 Routes
 
@@ -843,6 +845,8 @@ modules/issue/
 
 **Dependency:** Phase 5 (issues must exist)
 
+Detailed implementation contract: [phase6-backend-contract.md](./phase6-backend-contract.md)
+
 ### 6.1 Routes
 
 ```
@@ -891,6 +895,8 @@ modules/comment/
 **Goal:** Make the issue system powerful. Labels for categorization, relations for dependency tracking.
 
 **Dependency:** Phase 5 (issues must exist)
+
+Detailed labels contract: [phase7-labels-backend-contract.md](./phase7-labels-backend-contract.md)
 
 ### 7.1 Label Routes
 
@@ -944,31 +950,41 @@ modules/issue/
 
 ---
 
-## Phase 8 — Activity Feed & Notifications (UX Layer)
+## Phase 8 — Activity Feed (UX Layer)
 
-**Goal:** Users can see what happened (activity) and what needs their attention (notifications).
+**Goal:** Users can see exactly what happened across issues, projects, teams, and workspace entities in a production-grade activity timeline.
 
 **Dependency:** Phase 5+ (needs issues, comments, memberships)
+
+Detailed frontend-ready contract: [phase8-backend-contract.md](./phase8-backend-contract.md)
 
 ### 8.1 Activity Routes
 
 ```
 GET /activity                         — Workspace activity feed (paginated)
 GET /activity?target=issue&targetId=<id>  — Activity for specific entity
+GET /activity?target=project&targetId=<id> — Activity for specific project
+GET /activity?target=team&targetId=<id>    — Activity for specific team
 ```
 
 ### 8.2 Activity Generation
 
 Activities are created as **side effects** of other operations. Not a separate user action.
 
-| Trigger                  | Activity Type         |
-|--------------------------|-----------------------|
-| Issue created            | `ISSUE_CREATED`       |
-| Issue status → DONE      | `ISSUE_COMPLETED`     |
-| Issue status changed     | `STATUS_CHANGED`      |
-| Issue reassigned         | `ASSIGNMENT_CHANGED`  |
-| Comment posted           | `COMMENT_ADDED`       |
-| User joined workspace    | `MEMBER_JOINED`       |
+| Trigger                                | Activity Type            |
+|----------------------------------------|--------------------------|
+| Issue created (task/issue/bug)         | `ISSUE_CREATED`          |
+| Issue status changed (e.g. Todo→Doing) | `ISSUE_STATUS_CHANGED`   |
+| Issue priority changed                 | `ISSUE_PRIORITY_CHANGED` |
+| Issue reassigned                       | `ISSUE_ASSIGNEE_CHANGED` |
+| Issue moved project/team               | `ISSUE_SCOPE_CHANGED`    |
+| Comment posted                         | `COMMENT_ADDED`          |
+| Comment edited/deleted                 | `COMMENT_UPDATED/DELETED`|
+| Label added/removed                    | `ISSUE_LABEL_UPDATED`    |
+| Member added/removed in project        | `PROJECT_MEMBER_UPDATED` |
+| Project created/updated/archived       | `PROJECT_UPDATED`        |
+| Team membership/role changed           | `TEAM_MEMBER_UPDATED`    |
+| User joined workspace                  | `MEMBER_JOINED`          |
 
 **Implementation:** Service functions emit activities after the primary action succeeds. Use a helper:
 
@@ -985,7 +1001,43 @@ async function logActivity(params: {
 })
 ```
 
-### 8.3 Notification Routes
+### 8.3 Feed UX Contract (Linear/Jira-style)
+
+- Timeline entries must render actor avatar/name, event badge, human-readable message, and relative timestamp.
+- Issue detail must show issue-scoped timeline (example: "Shaheer created issue LIN-4", "Shaheer moved Todo → In Progress", "John commented").
+- Project detail must show project-scoped timeline with cross-issue activity in that project.
+- Team pages must show team-scoped timeline for assignments, membership, and workflow changes.
+- Workspace/global activity must aggregate all entities with filters (`actor`, `type`, `target`, `dateRange`).
+- Every activity payload includes `actor`, `target`, `type`, `message`, `metadata`, `createdAt`.
+
+### 8.4 Module Structure
+
+```
+modules/activity/
+├── activity.routes.ts
+├── activity.controller.ts
+├── activity.service.ts
+└── activity.schemas.ts
+```
+
+### Done When
+
+- [ ] Activity log records issue/project/team/workspace actions automatically
+- [ ] Activity feed API returns paginated results
+- [ ] Activity can be filtered by entity and target (`issue|project|team|workspace`)
+- [ ] Activity timeline UI contract supports avatar + actor + action badge + timestamp
+- [ ] Status transition messages include both previous and next status
+- [ ] Comment and label changes are represented as activities
+
+---
+
+## Phase 9 — Notifications (Inbox Layer)
+
+**Goal:** Users get reliable, production-grade notifications separated from activity feed, delivered via API and websocket in this phase.
+
+**Dependency:** Phase 8 complete (notifications are derived from activity-worthy events and mention/assignment logic).
+
+### 9.1 Notification Routes
 
 ```
 GET    /notifications                  — List notifications for user (paginated)
@@ -994,48 +1046,55 @@ PATCH  /notifications/:id/read        — Mark as read
 PATCH  /notifications/read-all        — Mark all as read
 ```
 
-### 8.4 Notification Generation
+### 9.2 Notification Generation
 
 | Trigger               | Notification Type | Recipient          |
 |------------------------|-------------------|--------------------|
 | @mention in comment   | `MENTION`         | Mentioned user     |
 | Issue assigned to user| `ASSIGNMENT`      | Assignee           |
 | Issue status changed  | `UPDATE`          | Assignee + creator |
+| Comment reply         | `COMMENT_REPLY`   | Parent author      |
+| Project invite/add    | `PROJECT_MEMBER`  | Target member      |
 
-### 8.5 Module Structure
+### 9.3 Delivery and Read Model
+
+- Source of truth is persisted DB notifications (`readAt`, `createdAt`, `type`, `target`).
+- API polling support is mandatory.
+- Websocket push for notifications is included in this phase.
+- Must support idempotent generation (avoid duplicate notifications for same event key).
+- Must support cursor pagination and unread counter performance at scale.
+
+### 9.4 Module Structure
 
 ```
-modules/activity/
-├── activity.routes.ts
-├── activity.controller.ts
-├── activity.service.ts
-└── activity.schemas.ts
-
 modules/notification/
 ├── notification.routes.ts
 ├── notification.controller.ts
 ├── notification.service.ts
 └── notification.schemas.ts
+
+socket/
+└── notification.events.ts       # user:<id> realtime notification delivery
 ```
 
 ### Done When
 
-- [ ] Activity log records all major actions automatically
-- [ ] Activity feed API returns paginated results
-- [ ] Activity can be filtered by entity
-- [ ] Notifications generated on mention, assignment, status change
+- [ ] Notifications generated on mention, assignment, status, replies, and project member events
 - [ ] Unread count endpoint works
 - [ ] Mark as read / mark all as read works
+- [ ] Notifications are deduplicated and pagination-safe
+- [ ] Notification payloads include deep links to issue/project/team targets
+- [ ] Notification websocket delivery works for connected clients (`user:<id>` room)
 
 ---
 
-## Phase 9 — Realtime (Socket.IO)
+## Phase 10 — Realtime (Socket.IO)
 
 **Goal:** Live updates across clients. When one user changes an issue, others see it instantly.
 
-**Dependency:** Phase 8 (activity + notifications power the events)
+**Dependency:** Phase 8 and Phase 9 (activity and notifications already in place)
 
-### 9.1 Architecture
+### 10.1 Architecture
 
 ```
 Client ← Socket.IO → Server
@@ -1045,7 +1104,7 @@ Client ← Socket.IO → Server
               Service layer emits events
 ```
 
-### 9.2 Events
+### 10.2 Events
 
 | Event                    | Payload                     | Room               |
 |--------------------------|-----------------------------|---------------------|
@@ -1053,9 +1112,8 @@ Client ← Socket.IO → Server
 | `issue:updated`          | Issue diff                  | `workspace:<id>`    |
 | `issue:deleted`          | Issue ID                    | `workspace:<id>`    |
 | `comment:created`        | Comment object              | `issue:<id>`        |
-| `notification:new`       | Notification object         | `user:<id>`         |
 
-### 9.3 Authentication
+### 10.3 Authentication
 
 Socket.IO connections authenticated using Clerk session token:
 
@@ -1066,7 +1124,7 @@ io.use(async (socket, next) => {
 });
 ```
 
-### 9.4 Room Strategy
+### 10.4 Room Strategy
 
 - `workspace:<workspaceId>` — all members of workspace (issue updates)
 - `issue:<issueId>` — users viewing a specific issue (comments)
@@ -1074,7 +1132,7 @@ io.use(async (socket, next) => {
 
 Clients join workspace room on connect, issue rooms on navigation.
 
-### 9.5 Module Structure
+### 10.5 Module Structure
 
 ```
 socket/
@@ -1095,13 +1153,13 @@ socket/
 
 ---
 
-## Phase 10 — Advanced Features (Business Layer)
+## Phase 11 — Advanced Features (Business Layer)
 
 **Goal:** Features that make the product competitive. Only built after the core product is solid.
 
 **Dependency:** All previous phases complete and stable.
 
-### 10.1 Cycles (Sprints)
+### 11.1 Cycles (Sprints)
 
 ```
 POST   /cycles                        — Create cycle
@@ -1119,7 +1177,7 @@ DELETE /issues/:id/cycle              — Remove issue from cycle
 - Status auto-transitions: `UPCOMING → CURRENT → COMPLETED` (background job checks dates)
 - An issue can belong to one cycle at a time
 
-### 10.2 Templates
+### 11.2 Templates
 
 ```
 POST   /templates                     — Create template (ADMIN+)
@@ -1130,7 +1188,7 @@ DELETE /templates/:id                 — Delete template
 POST   /templates/:id/apply           — Create issue from template
 ```
 
-### 10.3 API Keys
+### 11.3 API Keys
 
 ```
 POST   /api-keys                      — Generate new key (ADMIN+)
@@ -1144,7 +1202,7 @@ DELETE /api-keys/:id                  — Revoke key
 - Track `lastUsedAt` on each API request
 - API key auth as alternative to Clerk JWT (for external integrations)
 
-### 10.4 Integrations
+### 11.4 Integrations
 
 ```
 POST   /integrations/:provider/connect     — Connect integration
@@ -1154,7 +1212,7 @@ GET    /integrations                        — List integration status
 
 Providers: GitHub, Slack, Discord, Figma. Each has provider-specific OAuth + webhook config.
 
-### 10.5 Billing (Stripe)
+### 11.5 Billing (Stripe)
 
 ```
 GET    /billing                       — Current plan + subscription status
@@ -1180,11 +1238,11 @@ POST   /webhooks/stripe               — Stripe webhook receiver
 
 ---
 
-## Phase 11 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
+## Phase 12 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
 
 **Goal:** Expose workspace data to AI agents via the Model Context Protocol (MCP), and provide an in-app AI assistant that can read, create, and manage issues through natural language.
 
-**Dependency:** Phase 10 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
+**Dependency:** Phase 11 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
 
 **Plan tier:** Basic AI on Standard plan, full AI on Plus plan.
 
@@ -1249,7 +1307,7 @@ Resources are data the AI can read to understand the workspace context before ta
 
 MCP sessions authenticate via:
 
-1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 10.3.
+1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 11.3.
 2. **Clerk session** — for the in-app AI assistant (user's own permissions apply).
 
 All MCP tool calls are **workspace-scoped** and **permission-checked** — an AI agent cannot do anything the authenticated user can't do themselves.

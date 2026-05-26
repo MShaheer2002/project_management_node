@@ -3,6 +3,7 @@ import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { createIssueAttachments } from "./issue-attachment.service.js";
 import type {
@@ -495,7 +496,23 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
       },
     });
 
-    return mapIssue(created);
+    const mapped = mapIssue(created);
+    await logActivity({
+      workspaceId,
+      actorId: creatorId,
+      type: "ISSUE_CREATED",
+      targetType: "ISSUE",
+      targetId: issue.id,
+      message: `Issue ${issue.id} created`,
+      metadata: {
+        entityId: issue.id,
+        entityTitle: input.title,
+        issueId: issue.id,
+        projectId: input.projectId,
+        teamId: project.teamId,
+      },
+    });
+    return mapped;
   });
 }
 
@@ -619,7 +636,7 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
   return prisma.$transaction(async (tx) => {
     const current = await tx.issue.findFirst({
       where: { id: issueId, workspaceId },
-      select: { id: true, type: true },
+      select: { id: true, type: true, status: true, priority: true, assigneeId: true, dueDate: true, projectId: true, teamId: true, creatorId: true },
     });
 
     if (!current) {
@@ -653,6 +670,7 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
       data: {
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.type !== undefined ? { type: typeToDb[input.type] as any } : {}),
         ...(input.priority !== undefined ? { priority: priorityToDb[input.priority] as any } : {}),
         ...(input.status !== undefined ? { status: statusToDb[input.status] as any } : {}),
         ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
@@ -711,6 +729,77 @@ export async function updateIssue(workspaceId: string, issueId: string, input: U
       },
     });
 
+    if (input.type !== undefined && typeToDb[input.type] !== current.type) {
+      await logActivity({
+        workspaceId,
+        actorId: current.creatorId,
+        type: "ISSUE_TYPE_CHANGED",
+        targetType: "ISSUE",
+        targetId: issueId,
+        message: `Issue ${issueId} type changed`,
+        metadata: { entityId: issueId, fromType: typeFromDb[current.type], toType: input.type },
+      });
+    }
+    if (input.status !== undefined && statusToDb[input.status] !== current.status) {
+      await logActivity({
+        workspaceId,
+        actorId: current.creatorId,
+        type: "ISSUE_STATUS_CHANGED",
+        targetType: "ISSUE",
+        targetId: issueId,
+        message: `Issue ${issueId} status changed`,
+        metadata: { entityId: issueId, fromStatus: statusFromDb[current.status], toStatus: input.status },
+      });
+    }
+    if (input.priority !== undefined && priorityToDb[input.priority] !== current.priority) {
+      await logActivity({
+        workspaceId,
+        actorId: current.creatorId,
+        type: "ISSUE_PRIORITY_CHANGED",
+        targetType: "ISSUE",
+        targetId: issueId,
+        message: `Issue ${issueId} priority changed`,
+        metadata: { entityId: issueId, fromPriority: priorityFromDb[current.priority], toPriority: input.priority },
+      });
+    }
+    if (input.assigneeId !== undefined && input.assigneeId !== current.assigneeId) {
+      await logActivity({
+        workspaceId,
+        actorId: current.creatorId,
+        type: "ISSUE_ASSIGNEE_CHANGED",
+        targetType: "ISSUE",
+        targetId: issueId,
+        message: `Issue ${issueId} assignee changed`,
+        metadata: { entityId: issueId, fromAssigneeId: current.assigneeId, toAssigneeId: input.assigneeId ?? null },
+      });
+    }
+    if (input.dueDate !== undefined) {
+      const before = current.dueDate ? current.dueDate.toISOString().slice(0, 10) : null;
+      const after = input.dueDate ?? null;
+      if (before !== after) {
+        await logActivity({
+          workspaceId,
+          actorId: current.creatorId,
+          type: "ISSUE_DUE_DATE_CHANGED",
+          targetType: "ISSUE",
+          targetId: issueId,
+          message: `Issue ${issueId} due date changed`,
+          metadata: { entityId: issueId, fromDueDate: before, toDueDate: after },
+        });
+      }
+    }
+    if (updated && (updated.projectId !== current.projectId || updated.teamId !== current.teamId)) {
+      await logActivity({
+        workspaceId,
+        actorId: current.creatorId,
+        type: "ISSUE_SCOPE_CHANGED",
+        targetType: "ISSUE",
+        targetId: issueId,
+        message: `Issue ${issueId} scope changed`,
+        metadata: { entityId: issueId, fromProjectId: current.projectId, toProjectId: updated?.projectId, fromTeamId: current.teamId, toTeamId: updated?.teamId },
+      });
+    }
+
     return mapIssue(updated, true);
   });
 }
@@ -724,7 +813,7 @@ export async function updateIssueStatus(
 ) {
   const issue = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true },
+    select: { id: true, status: true },
   });
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
@@ -734,6 +823,21 @@ export async function updateIssueStatus(
     where: { id: issueId },
     data: { status: (statusToDb[status] ?? "BACKLOG") as any },
   });
+  if ((statusToDb[status] ?? "BACKLOG") !== issue.status) {
+    await logActivity({
+      workspaceId,
+      actorId: userId,
+      type: "ISSUE_STATUS_CHANGED",
+      targetType: "ISSUE",
+      targetId: issueId,
+      message: `Issue ${issueId} status changed`,
+      metadata: {
+        entityId: issueId,
+        fromStatus: statusFromDb[issue.status] ?? "backlog",
+        toStatus: status,
+      },
+    });
+  }
 
   return getIssueById(workspaceId, workspaceRole, userId, issueId);
 }
@@ -741,11 +845,20 @@ export async function updateIssueStatus(
 export async function deleteIssue(workspaceId: string, issueId: string) {
   const issue = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true },
+    select: { id: true, creatorId: true },
   });
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
   }
+  await logActivity({
+    workspaceId,
+    actorId: issue.creatorId,
+    type: "ISSUE_ARCHIVED",
+    targetType: "ISSUE",
+    targetId: issueId,
+    message: `Issue ${issueId} archived`,
+    metadata: { entityId: issueId },
+  });
   await prisma.issue.delete({ where: { id: issueId } });
 }
 

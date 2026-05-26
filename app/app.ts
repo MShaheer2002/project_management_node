@@ -44,6 +44,7 @@ import projectRoutes from "../modules/project/project.routes.js";
 import issueRoutes from "../modules/issue/issue.routes.js";
 import commentRoutes from "../modules/comment/comment.routes.js";
 import labelRoutes from "../modules/label/label.routes.js";
+import activityRoutes from "../modules/activity/activity.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -143,7 +144,7 @@ app.use("/projects", projectRoutes);
 app.use("/issues", issueRoutes);
 app.use(commentRoutes);
 app.use(labelRoutes);
-// Phase 8: app.use("/activity", activityRoutes);
+app.use(activityRoutes);
 // Phase 8: app.use("/notifications", notificationRoutes);
 // Phase 10: app.use("/cycles", cycleRoutes);
 // Phase 10: app.use("/templates", templateRoutes);

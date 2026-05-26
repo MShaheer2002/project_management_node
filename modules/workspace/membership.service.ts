@@ -16,6 +16,7 @@
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import type { Prisma, WorkspaceRole } from "../../app/generated/prisma/client.js";
 import type { ListWorkspaceMembersQuery } from "./workspace.schemas.js";
@@ -62,6 +63,16 @@ export async function inviteMember(
         select: { id: true, email: true, name: true, avatar: true },
       },
     },
+  });
+
+  await logActivity({
+    workspaceId,
+    actorId: user.id,
+    type: "WORKSPACE_MEMBER_JOINED",
+    targetType: "MEMBER",
+    targetId: user.id,
+    message: `${membership.user.name} joined workspace`,
+    metadata: { member: { id: membership.user.id, name: membership.user.name, email: membership.user.email }, roleAfter: membership.role },
   });
 
   return {
@@ -277,6 +288,10 @@ export async function changeMemberRole(
  * OWNER cannot be removed — they must delete the workspace instead.
  */
 export async function removeMember(workspaceId: string, targetUserId: string) {
+  const removedUser = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { id: true, name: true, email: true },
+  });
   await prisma.$transaction(async (tx) => {
     const membership = await tx.workspaceMembership.findUnique({
       where: { userId_workspaceId: { userId: targetUserId, workspaceId } },
@@ -331,5 +346,15 @@ export async function removeMember(workspaceId: string, targetUserId: string) {
     await tx.workspaceMembership.delete({
       where: { userId_workspaceId: { userId: targetUserId, workspaceId } },
     });
+  });
+
+  await logActivity({
+    workspaceId,
+    actorId: targetUserId,
+    type: "WORKSPACE_MEMBER_REMOVED",
+    targetType: "MEMBER",
+    targetId: targetUserId,
+    message: "Workspace member removed",
+    metadata: { member: removedUser ?? { id: targetUserId } },
   });
 }

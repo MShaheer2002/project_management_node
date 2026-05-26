@@ -20,6 +20,7 @@ import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { generateToken, hashToken, normalizeEmail } from "../../shared/utils/crypto.js";
 import { sendInvitationEmail } from "../../infra/email/index.js";
 import { env } from "../../config/env.js";
+import { logActivity } from "../../shared/utils/activity.js";
 
 /** Invitations expire after 7 days */
 const INVITE_EXPIRY_DAYS = 7;
@@ -355,6 +356,16 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
       }) as any,
     );
   }
+
+  await logActivity({
+    workspaceId: invitation.workspaceId,
+    actorId: userId,
+    type: "WORKSPACE_MEMBER_JOINED",
+    targetType: "MEMBER",
+    targetId: userId,
+    message: `${normalizedUserEmail} joined workspace`,
+    metadata: { member: { id: userId, email: normalizedUserEmail }, roleAfter: invitation.role },
+  });
 
   await prisma.$transaction(operations);
 

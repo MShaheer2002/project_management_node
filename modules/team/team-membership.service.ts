@@ -6,6 +6,7 @@ import type {
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import type {
   AddTeamMembersInput,
@@ -233,10 +234,20 @@ export async function addTeamMembers(workspaceId: string, teamId: string, input:
       })),
     });
 
-    return userIds;
+    return { userIds, teamId };
   });
 
-  return { added };
+  await Promise.all(added.userIds.map((memberId) => logActivity({
+    workspaceId,
+    actorId: memberId,
+    type: "TEAM_MEMBER_JOINED",
+    targetType: "TEAM",
+    targetId: added.teamId,
+    message: "Team member joined",
+    metadata: { teamId: added.teamId, memberId },
+  })));
+
+  return { added: added.userIds };
 }
 
 export async function removeTeamMember(workspaceId: string, teamId: string, userId: string) {
@@ -276,5 +287,15 @@ export async function removeTeamMember(workspaceId: string, teamId: string, user
         },
       },
     });
+  });
+
+  await logActivity({
+    workspaceId,
+    actorId: userId,
+    type: "TEAM_MEMBER_REMOVED",
+    targetType: "TEAM",
+    targetId: teamId,
+    message: "Team member removed",
+    metadata: { teamId, memberId: userId },
   });
 }

@@ -1,6 +1,7 @@
 import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { logActivity } from "../../shared/utils/activity.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { prisma } from "../../shared/utils/prisma.js";
@@ -112,6 +113,22 @@ export async function createComment(workspaceId: string, issueId: string, userId
     } as any,
   });
 
+  await logActivity({
+    workspaceId,
+    actorId: userId,
+    type: "COMMENT_CREATED",
+    targetType: "COMMENT",
+    targetId: created.id,
+    message: `Comment added on ${issueId}`,
+    metadata: {
+      issueId,
+      entityId: issueId,
+      commentId: created.id,
+      parentCommentId: input.parentId ?? null,
+      commentExcerpt: input.body.slice(0, 140),
+    },
+  });
+
   return mapComment(hydrated);
 }
 
@@ -210,6 +227,21 @@ export async function updateComment(workspaceId: string, commentId: string, user
     });
   });
 
+  await logActivity({
+    workspaceId,
+    actorId: userId,
+    type: "COMMENT_EDITED",
+    targetType: "COMMENT",
+    targetId: current.id,
+    message: "Comment edited",
+    metadata: {
+      issueId: (updated as any).issueId,
+      entityId: (updated as any).issueId,
+      commentId: current.id,
+      commentExcerpt: input.body.slice(0, 140),
+    },
+  });
+
   return mapComment(updated);
 }
 
@@ -234,7 +266,24 @@ export async function deleteComment(workspaceId: string, commentId: string, user
     throw new AppError(403, ERROR_CODES.COMMENT_DELETE_FORBIDDEN, "You do not have permission to delete this comment");
   }
 
+  const detail = await prisma.comment.findFirst({
+    where: { id: current.id, issue: { workspaceId } },
+    select: { issueId: true },
+  });
   await prisma.comment.delete({ where: { id: current.id } });
+  await logActivity({
+    workspaceId,
+    actorId: userId,
+    type: "COMMENT_DELETED",
+    targetType: "COMMENT",
+    targetId: current.id,
+    message: "Comment deleted",
+    metadata: {
+      issueId: detail?.issueId ?? null,
+      entityId: detail?.issueId ?? null,
+      commentId: current.id,
+    },
+  });
 }
 
 export async function addCommentAttachments(workspaceId: string, commentId: string, userId: string, attachments: any[]) {

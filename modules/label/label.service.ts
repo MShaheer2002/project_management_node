@@ -4,6 +4,7 @@ import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { prisma } from "../../shared/utils/prisma.js";
+import { logActivity } from "../../shared/utils/activity.js";
 import { resolveIssueRouteId } from "../issue/issue.service.js";
 import type {
   AttachIssueLabelsInput,
@@ -33,20 +34,6 @@ function mapLabel(label: any) {
     createdAt: label.createdAt,
     updatedAt: label.updatedAt,
   };
-}
-
-async function logLabelActivity(workspaceId: string, actorId: string, type: any, targetId: string, description: string, metadata?: any) {
-  await prisma.activity.create({
-    data: {
-      workspaceId,
-      actorId,
-      type,
-      targetId,
-      targetType: "ISSUE",
-      description,
-      metadata: metadata ?? null,
-    } as any,
-  });
 }
 
 async function assertLabelExistsInWorkspace(workspaceId: string, labelId: string) {
@@ -108,7 +95,15 @@ export async function createLabel(workspaceId: string, actorId: string, input: C
     include: { _count: { select: { issues: true } } },
   });
 
-  await logLabelActivity(workspaceId, actorId, "LABEL_CREATED", label.id, `Label ${label.name} created`);
+  await logActivity({
+    workspaceId,
+    actorId,
+    type: "LABEL_CREATED",
+    targetType: "LABEL",
+    targetId: label.id,
+    message: `${label.name} label created`,
+    metadata: { labelId: label.id, labelName: label.name, color: label.color },
+  });
   return mapLabel(label);
 }
 
@@ -185,14 +180,30 @@ export async function updateLabel(workspaceId: string, actorId: string, labelId:
     include: { _count: { select: { issues: true } } },
   });
 
-  await logLabelActivity(workspaceId, actorId, "LABEL_UPDATED", updated.id, `Label ${updated.name} updated`);
+  await logActivity({
+    workspaceId,
+    actorId,
+    type: "LABEL_UPDATED",
+    targetType: "LABEL",
+    targetId: updated.id,
+    message: `${updated.name} label updated`,
+    metadata: { labelId: updated.id, labelName: updated.name, color: updated.color },
+  });
   return mapLabel(updated);
 }
 
 export async function deleteLabel(workspaceId: string, actorId: string, labelId: string) {
   await assertLabelExistsInWorkspace(workspaceId, labelId);
   await prisma.label.delete({ where: { id: labelId } });
-  await logLabelActivity(workspaceId, actorId, "LABEL_DELETED", labelId, "Label deleted");
+  await logActivity({
+    workspaceId,
+    actorId,
+    type: "LABEL_DELETED",
+    targetType: "LABEL",
+    targetId: labelId,
+    message: "Label deleted",
+    metadata: { labelId },
+  });
 }
 
 export async function attachIssueLabels(
@@ -238,7 +249,15 @@ export async function attachIssueLabels(
     orderBy: [{ label: { name: "asc" } }],
   }) as any[];
 
-  await logLabelActivity(workspaceId, userId, "ISSUE_LABEL_ADDED", issueId, "Labels added to issue", { labelIds: toAdd });
+  await logActivity({
+    workspaceId,
+    actorId: userId,
+    type: "ISSUE_LABEL_ADDED",
+    targetType: "ISSUE",
+    targetId: issueId,
+    message: "Labels added to issue",
+    metadata: { issueId, labelIds: toAdd },
+  });
   return {
     issueId,
     labels: issueLabels.map((row) => ({
@@ -272,7 +291,15 @@ export async function removeIssueLabel(
     orderBy: [{ label: { name: "asc" } }],
   }) as any[];
 
-  await logLabelActivity(workspaceId, userId, "ISSUE_LABEL_REMOVED", issueId, "Label removed from issue", { labelId });
+  await logActivity({
+    workspaceId,
+    actorId: userId,
+    type: "ISSUE_LABEL_REMOVED",
+    targetType: "ISSUE",
+    targetId: issueId,
+    message: "Label removed from issue",
+    metadata: { issueId, labelId },
+  });
   return {
     issueId,
     labels: issueLabels.map((row) => ({

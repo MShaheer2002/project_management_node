@@ -77,6 +77,7 @@ export const updateIssueSchema = {
   body: z.object({
     title: z.string().trim().min(1).max(500).optional(),
     description: z.string().trim().max(50000).nullable().optional(),
+    type: issueTypeSchema.optional(),
     priority: issuePrioritySchema.optional(),
     status: issueStatusSchema.optional(),
     assigneeId: z.string().min(1).nullable().optional(),
