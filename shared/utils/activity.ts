@@ -8,7 +8,8 @@ type ActivityTargetType =
   | "WORKSPACE"
   | "COMMENT"
   | "LABEL"
-  | "MEMBER";
+  | "MEMBER"
+  | "CYCLE";
 
 type ActivityType =
   | "ISSUE_CREATED"
@@ -41,7 +42,15 @@ type ActivityType =
   | "TEAM_MEMBER_REMOVED"
   | "TEAM_MEMBER_ROLE_CHANGED"
   | "WORKSPACE_MEMBER_JOINED"
-  | "WORKSPACE_MEMBER_REMOVED";
+  | "WORKSPACE_MEMBER_REMOVED"
+  | "CYCLE_CREATED"
+  | "CYCLE_UPDATED"
+  | "CYCLE_COMPLETED"
+  | "CYCLE_REOPENED"
+  | "CYCLE_DELETED"
+  | "ISSUE_CYCLE_ASSIGNED"
+  | "ISSUE_CYCLE_REMOVED"
+  | "CYCLE_CARRY_OVER";
 
 interface LogActivityInput {
   workspaceId: string;

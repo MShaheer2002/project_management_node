@@ -27,8 +27,12 @@ Phase 7  → Power Features  (labels, relations, subtasks)
 Phase 8  → Activity        (audit timeline across issues/projects/teams)
 Phase 9  → Notifications   (inbox, unread counts, delivery channels)
 Phase 10 → Realtime        (Socket.IO live updates)
-Phase 11 → Business        (cycles, templates, billing, integrations)
-Phase 12 → Intelligence    (MCP server, AI assistant — future scope)
+Phase 11 → Cycles          (time-boxed execution for predictable delivery)
+Phase 12 → Templates       (standardized issue creation)
+Phase 13 → Billing         (plans, limits, Stripe lifecycle)
+Phase 14 → API Keys        (external/system access)
+Phase 15 → Integrations    (GitHub/Slack/etc. connectivity)
+Phase 16 → Intelligence    (MCP server, AI assistant — future scope)
 ```
 
 ---
@@ -1037,6 +1041,8 @@ modules/activity/
 
 **Dependency:** Phase 8 complete (notifications are derived from activity-worthy events and mention/assignment logic).
 
+Detailed frontend-ready contract: [phase9-backend-contract.md](./phase9-backend-contract.md)
+
 ### 9.1 Notification Routes
 
 ```
@@ -1093,6 +1099,8 @@ socket/
 **Goal:** Live updates across clients. When one user changes an issue, others see it instantly.
 
 **Dependency:** Phase 8 and Phase 9 (activity and notifications already in place)
+
+Detailed frontend-ready contract: [phase10-backend-contract.md](./phase10-backend-contract.md)
 
 ### 10.1 Architecture
 
@@ -1153,31 +1161,124 @@ socket/
 
 ---
 
-## Phase 11 — Advanced Features (Business Layer)
+## Phase 11 — Cycles (Execution Layer)
 
-**Goal:** Features that make the product competitive. Only built after the core product is solid.
+**Goal:** Deliver a production-grade cycle system aligned to product scope: time-boxed execution, team-level planning, clear current/upcoming/completed views, and accurate progress tracking.
 
-**Dependency:** All previous phases complete and stable.
+**Dependency:** Phase 10 complete and stable.
 
-### 11.1 Cycles (Sprints)
+**Backend contract:** [phase11-backend-contract.md](./phase11-backend-contract.md)
+
+### 11.1 Product Definition (Aligned to Scope)
+
+A **Cycle** (sprint) is a fixed time-boxed period used to plan and track issue delivery.
+
+Cycle in this product:
+- Is not a project and not a milestone.
+- Can include issues from many projects.
+- Is visible at workspace level with team scoping via `?team=`.
+- Must support `current`, `upcoming`, `completed` states exactly as defined in product scope.
+
+Relationship model:
+```
+Workspace
+  └── Team
+      ├── Projects
+      ├── Cycles
+      └── Issues (optional projectId, optional cycleId)
+```
+
+### 11.2 Data Model and Status Rules
+
+Cycle fields:
+- `id`, `workspaceId`, `teamId?`, `name`, `startDate`, `endDate`, `status`, `createdAt`
+
+Cycle status enum (API canonical):
+- `upcoming`
+- `current`
+- `completed`
+
+Database/internal enum mapping can differ, but API responses must expose product-scope values above.
+
+### 11.3 Core APIs
 
 ```
-POST   /cycles                        — Create cycle
-GET    /cycles                        — List cycles (filterable by status, team)
-GET    /cycles/:id                    — Get cycle detail with issues
-PATCH  /cycles/:id                    — Update cycle
-DELETE /cycles/:id                    — Delete cycle
+POST   /cycles                           — Create cycle
+GET    /cycles                           — List cycles (status, teamId, date range, cursor)
+GET    /cycles/:id                       — Cycle detail (stats + issues)
+PATCH  /cycles/:id                       — Update cycle
+DELETE /cycles/:id                       — Delete cycle
 
-POST   /issues/:id/cycle              — Assign issue to cycle
-DELETE /issues/:id/cycle              — Remove issue from cycle
+POST   /issues/:id/cycle                 — Assign issue to cycle
+DELETE /issues/:id/cycle                 — Remove issue from cycle
+
+POST   /cycles/:id/complete              — Complete cycle
+POST   /cycles/:id/carry-over            — Move unfinished issues (explicit)
+GET    /cycles/current                   — Resolve current cycle (workspace/team)
 ```
 
-**Business rules:**
-- Cycles have `startDate` and `endDate`
-- Status auto-transitions: `UPCOMING → CURRENT → COMPLETED` (background job checks dates)
-- An issue can belong to one cycle at a time
+### 11.4 Required Product Functionality
 
-### 11.2 Templates
+- Current cycle card:
+  - highlighted
+  - date range
+  - issue count
+  - progress bar (derived from completed/total)
+- Upcoming cycles list:
+  - ordered by `startDate asc`
+- Completed cycles list:
+  - completion summary and ended date
+- Team-scoped filtering:
+  - via `teamId` API filter and frontend `?team=` URL param
+- Cycle planning:
+  - assign/remove issues with optimistic-safe server validation
+- Cycle progress:
+  - `totalIssues`, `completedIssues`, `inProgressIssues`, `todoIssues`, `progressPercent`
+- Cycle completion:
+  - explicit carry-over handling for unfinished issues
+
+### 11.5 Permissions and Access Control
+
+From project scope:
+- Create/edit/delete cycles: `owner`, `admin`, `member`
+- View cycles: `owner`, `admin`, `member`, `guest`
+
+Enforcement:
+- route guards with `requireRole`
+- workspace membership required for all cycle endpoints
+- team-scoped operations must verify team belongs to same workspace
+
+### 11.6 Lifecycle and Operational Rules
+
+- `startDate < endDate` required.
+- At most one `current` cycle per `(workspaceId, teamId|null)` scope.
+- Transition path: `upcoming → current → completed`.
+- Issues can belong to at most one cycle at a time.
+- Completing a cycle does not delete or hide unfinished issues.
+- Unfinished issues must be explicitly handled (`next cycle` or `backlog`), never silently moved.
+- Deleting a cycle must preserve issues and clear `cycleId` safely.
+- All state-changing actions emit activity events and notification triggers where applicable.
+
+### 11.7 Realtime and Derived Data
+
+- Socket broadcasts on cycle create/update/delete and issue-cycle assignment updates.
+- `current cycle` and counters must be cache-safe and recomputed from issue state.
+- Reconciliation fallback via REST refetch on reconnect/tab focus remains mandatory.
+
+### Done When
+
+- [ ] `/cycles` supports current/upcoming/completed behavior exactly as product scope
+- [ ] Team filtering works via API + URL scoping (`?team=`)
+- [ ] Permission matrix is enforced for create/edit/delete/view
+- [ ] Progress metrics are accurate and consistent with issue statuses
+- [ ] Cycle completion and carry-over are explicit, auditable, and non-destructive
+- [ ] Realtime updates + REST reconciliation keep UI state consistent
+
+---
+
+## Phase 12 — Templates
+
+**Goal:** Standardize repeated work creation with reusable issue templates.
 
 ```
 POST   /templates                     — Create template (ADMIN+)
@@ -1188,31 +1289,17 @@ DELETE /templates/:id                 — Delete template
 POST   /templates/:id/apply           — Create issue from template
 ```
 
-### 11.3 API Keys
+### Done When
 
-```
-POST   /api-keys                      — Generate new key (ADMIN+)
-GET    /api-keys                      — List keys (masked)
-DELETE /api-keys/:id                  — Revoke key
-```
+- [ ] Templates support prefilled issue fields
+- [ ] Template apply flow creates valid issues end-to-end
+- [ ] Template permission boundaries are enforced
 
-**Business rules:**
-- Key format: `lin_live_*` (production), `lin_test_*` (development)
-- Store only the hash — show full key once on creation, never again
-- Track `lastUsedAt` on each API request
-- API key auth as alternative to Clerk JWT (for external integrations)
+---
 
-### 11.4 Integrations
+## Phase 13 — Billing (Stripe)
 
-```
-POST   /integrations/:provider/connect     — Connect integration
-DELETE /integrations/:provider/disconnect   — Disconnect
-GET    /integrations                        — List integration status
-```
-
-Providers: GitHub, Slack, Discord, Figma. Each has provider-specific OAuth + webhook config.
-
-### 11.5 Billing (Stripe)
+**Goal:** Provide subscription lifecycle, plan visibility, and enforcement hooks.
 
 ```
 GET    /billing                       — Current plan + subscription status
@@ -1225,34 +1312,75 @@ POST   /webhooks/stripe               — Stripe webhook receiver
 - Free plan by default on workspace creation
 - Plan limits enforced at service layer (member count, project count, etc.)
 - Stripe webhooks update `Subscription`, `Invoice`, `PaymentMethod` tables
-- Downgrade blocks features but doesn't delete data
+- Downgrade blocks features but does not delete existing data
 
 ### Done When
 
-- [ ] Cycles CRUD with auto-status transition works
-- [ ] Templates can create pre-filled issues
-- [ ] API keys can authenticate requests
-- [ ] At least one integration (GitHub) connects end-to-end
-- [ ] Stripe checkout + webhook flow works
-- [ ] Plan limits enforced (free tier restrictions)
+- [ ] Checkout + webhook flow works
+- [ ] Subscription state remains consistent after webhook retries
+- [ ] Plan limits are enforced in all guarded modules
 
 ---
 
-## Phase 12 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
+## Phase 14 — API Keys
+
+**Goal:** Enable secure non-user/system access for integrations and automation.
+
+```
+POST   /api-keys                      — Generate new key (ADMIN+)
+GET    /api-keys                      — List keys (masked)
+DELETE /api-keys/:id                  — Revoke key
+```
+
+**Business rules:**
+- Key format: `lin_live_*` (production), `lin_test_*` (development)
+- Store hash only; raw key is returned once on creation
+- Track `lastUsedAt` on each authenticated request
+- API key auth can coexist with Clerk JWT flows
+
+### Done When
+
+- [ ] API keys authenticate allowed routes
+- [ ] Revocation takes effect immediately
+- [ ] Key usage audit data is queryable
+
+---
+
+## Phase 15 — Integrations
+
+**Goal:** Connect external tools (GitHub, Slack, etc.) to workspace workflows.
+
+```
+POST   /integrations/:provider/connect      — Connect integration
+DELETE /integrations/:provider/disconnect   — Disconnect integration
+GET    /integrations                         — List integration status
+```
+
+Providers: GitHub, Slack, Discord, Figma (provider-specific OAuth + webhooks).
+
+### Done When
+
+- [ ] At least one provider (GitHub) works end-to-end
+- [ ] Disconnect cleans tokens/webhooks safely
+- [ ] Failed syncs are observable and retryable
+
+---
+
+## Phase 16 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
 
 **Goal:** Expose workspace data to AI agents via the Model Context Protocol (MCP), and provide an in-app AI assistant that can read, create, and manage issues through natural language.
 
-**Dependency:** Phase 11 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
+**Dependency:** Phase 15 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
 
 **Plan tier:** Basic AI on Standard plan, full AI on Plus plan.
 
-### 11.1 What is MCP
+### 16.1 What is MCP
 
 MCP (Model Context Protocol) is an open standard that lets AI models (Claude, GPT, etc.) call **tools** exposed by your server. Instead of the AI scraping your UI, it calls structured endpoints with typed parameters and gets structured responses.
 
 Think of it as: **an API designed for AI agents, not humans.**
 
-### 11.2 MCP Server Setup
+### 16.2 MCP Server Setup
 
 The MCP server runs as a separate module alongside the Express API. It exposes workspace data as tools that any MCP-compatible AI client can call.
 
@@ -1272,7 +1400,7 @@ mcp/
     └── workspace.ts          # Workspace summary resource
 ```
 
-### 11.3 MCP Tools
+### 16.3 MCP Tools
 
 These are the actions an AI agent can perform:
 
@@ -1292,7 +1420,7 @@ These are the actions an AI agent can perform:
 | `get_my_issues`         | Issues assigned to the authenticated user             | `status?`                                        |
 | `get_team_workload`     | Issue distribution across team members                | `teamId`                                         |
 
-### 11.4 MCP Resources (Read-Only Context)
+### 16.4 MCP Resources (Read-Only Context)
 
 Resources are data the AI can read to understand the workspace context before taking action:
 
@@ -1303,16 +1431,16 @@ Resources are data the AI can read to understand the workspace context before ta
 | Project summary         | `linearis://projects/{id}`   | Status, progress, recent activity         |
 | Current sprint          | `linearis://cycles/current`  | Active cycle, issue breakdown by status   |
 
-### 11.5 Authentication for MCP
+### 16.5 Authentication for MCP
 
 MCP sessions authenticate via:
 
-1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 11.3.
+1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 14.
 2. **Clerk session** — for the in-app AI assistant (user's own permissions apply).
 
 All MCP tool calls are **workspace-scoped** and **permission-checked** — an AI agent cannot do anything the authenticated user can't do themselves.
 
-### 11.6 In-App AI Assistant
+### 16.6 In-App AI Assistant
 
 A guided chatbot in the Linearis UI that uses the MCP tools internally:
 
@@ -1330,7 +1458,7 @@ User message → Backend AI endpoint → Claude API (with MCP tools) → Tool ca
 
 The backend acts as a **proxy** — it sends the user's message to Claude along with the MCP tool definitions. Claude decides which tools to call, the backend executes them against the DB, and returns the results.
 
-### 11.7 AI-Powered Suggestions (Plus Plan)
+### 16.7 AI-Powered Suggestions (Plus Plan)
 
 Passive AI features that run in the background:
 
@@ -1343,7 +1471,7 @@ Passive AI features that run in the background:
 
 These use background jobs (queues/workers from Phase 8+) — not blocking the user's request.
 
-### 11.8 Business Rules
+### 16.8 Business Rules
 
 - MCP server respects the same permission matrix as the REST API
 - AI actions create real Activity entries (actor = user, not "AI")

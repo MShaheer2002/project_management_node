@@ -133,6 +133,14 @@ enum ActivityType {
   TEAM_MEMBER_ROLE_CHANGED
   WORKSPACE_MEMBER_JOINED
   WORKSPACE_MEMBER_REMOVED
+  CYCLE_CREATED
+  CYCLE_UPDATED
+  CYCLE_COMPLETED
+  CYCLE_REOPENED
+  CYCLE_DELETED
+  ISSUE_CYCLE_ASSIGNED
+  ISSUE_CYCLE_REMOVED
+  CYCLE_CARRY_OVER
 }
 
 /// What kind of entity an activity log entry refers to
@@ -145,6 +153,7 @@ enum ActivityTargetType {
   COMMENT
   LABEL
   MEMBER
+  CYCLE
 }
 
 /// How two issues are related to each other
@@ -804,22 +813,28 @@ model CommentAttachment {
 model Cycle {
   id          String      @id @default(uuid())
   workspaceId String
-  teamId      String? // Optional — scope cycle to a specific team
+  teamId      String
+  number      Int
   name        String // e.g., "Sprint 12"
-  startDate   DateTime    @db.Date
-  endDate     DateTime    @db.Date
+  description String?
+  goal        String?
+  startsAt    DateTime
+  endsAt      DateTime
   status      CycleStatus @default(UPCOMING)
+  completedAt DateTime?
+  completedById String?
+  createdById String
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
   // -- Relations --
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  team      Team?     @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  team      Team      @relation(fields: [teamId], references: [id], onDelete: Cascade)
   issues    Issue[] // Issues in this cycle
 
-  @@index([workspaceId])
-  @@index([teamId])
-  @@index([status])
+  @@unique([teamId, number])
+  @@index([workspaceId, teamId, status])
+  @@index([workspaceId, startsAt, endsAt])
 }
 
 // ============================================================================

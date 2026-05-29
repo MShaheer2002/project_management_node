@@ -16,6 +16,7 @@ const targetTypeFromDb: Record<string, string> = {
   LABEL: "label",
   MEMBER: "member",
   DEPARTMENT: "team",
+  CYCLE: "cycle",
 };
 
 function mapActivity(item: any) {
