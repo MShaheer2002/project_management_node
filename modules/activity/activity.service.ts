@@ -17,6 +17,7 @@ const targetTypeFromDb: Record<string, string> = {
   MEMBER: "member",
   DEPARTMENT: "team",
   CYCLE: "cycle",
+  TEMPLATE: "template",
 };
 
 function mapActivity(item: any) {
@@ -59,6 +60,11 @@ async function assertScopeInWorkspace(workspaceId: string, scope: string, scopeI
   if (scope === "issue") {
     const issue = await prisma.issue.findFirst({ where: { id: scopeId, workspaceId }, select: { id: true } });
     if (!issue) throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+    return;
+  }
+  if (scope === "cycle") {
+    const cycle = await (prisma as any).cycle.findFirst({ where: { id: scopeId, workspaceId }, select: { id: true } });
+    if (!cycle) throw new AppError(404, ERROR_CODES.CYCLE_NOT_FOUND, "Cycle not found");
   }
 }
 
@@ -72,8 +78,8 @@ export async function listActivity(workspaceId: string, _workspaceRole: Workspac
   const limit = clampListLimit(query.limit, 50);
   const scope = query.scope ?? "workspace";
 
-  if ((scope === "project" || scope === "team" || scope === "issue") && !query.scopeId) {
-    throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "scopeId is required for project, team, and issue scopes");
+  if ((scope === "project" || scope === "team" || scope === "issue" || scope === "cycle") && !query.scopeId) {
+    throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "scopeId is required for project, team, issue, and cycle scopes");
   }
 
   if (query.scopeId && scope !== "workspace") {
@@ -102,6 +108,11 @@ export async function listActivity(workspaceId: string, _workspaceRole: Workspac
       { targetType: "ISSUE", targetId: query.scopeId },
       { metadata: { path: ["entityId"], equals: query.scopeId } },
       { metadata: { path: ["issueId"], equals: query.scopeId } },
+    ];
+  } else if (scope === "cycle" && query.scopeId) {
+    where.OR = [
+      { targetType: "CYCLE", targetId: query.scopeId },
+      { metadata: { path: ["cycleId"], equals: query.scopeId } },
     ];
   } else if (scope === "project" && query.scopeId) {
     where.OR = [

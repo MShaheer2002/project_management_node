@@ -21,7 +21,7 @@ import { env } from "../../config/env.js";
 export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   // ─── Known operational error (thrown intentionally in services) ──────
   if (err instanceof AppError) {
-    return sendError(res, err.statusCode, err.code, err.message);
+    return sendError(res, err.statusCode, err.code, err.message, err.details);
   }
 
   // ─── Unknown/unexpected error (programming bug or external failure) ──

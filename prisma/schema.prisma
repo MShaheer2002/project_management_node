@@ -135,12 +135,26 @@ enum ActivityType {
   WORKSPACE_MEMBER_REMOVED
   CYCLE_CREATED
   CYCLE_UPDATED
+  CYCLE_DATES_CHANGED
+  CYCLE_GOAL_CHANGED
+  CYCLE_STARTED
   CYCLE_COMPLETED
   CYCLE_REOPENED
   CYCLE_DELETED
-  ISSUE_CYCLE_ASSIGNED
-  ISSUE_CYCLE_REMOVED
+  ISSUE_CYCLE_CHANGED
+  ISSUE_ADDED_TO_CYCLE
+  ISSUE_REMOVED_FROM_CYCLE
+  CYCLE_ISSUE_STATUS_CHANGED
+  CYCLE_ISSUE_PRIORITY_CHANGED
+  CYCLE_ISSUE_ASSIGNEE_CHANGED
+  CYCLE_ISSUE_COMMENT_CREATED
   CYCLE_CARRY_OVER
+  TEMPLATE_CREATED
+  TEMPLATE_UPDATED
+  TEMPLATE_DELETED
+  TEMPLATE_ACTIVATED
+  TEMPLATE_DEACTIVATED
+  TEMPLATE_APPLIED
 }
 
 /// What kind of entity an activity log entry refers to
@@ -154,6 +168,7 @@ enum ActivityTargetType {
   LABEL
   MEMBER
   CYCLE
+  TEMPLATE
 }
 
 /// How two issues are related to each other
@@ -270,7 +285,9 @@ model User {
 
   // -- Other --
   activities            Activity[] // Activity log entries by this user
-  createdTemplates      Template[] // Templates created by this user
+  createdTemplates      Template[] @relation("TemplateCreator") // Templates created by this user
+  updatedTemplates      Template[] @relation("TemplateUpdater") // Templates last updated by this user
+  templateApplications  TemplateApplication[] // Template apply sessions for this user
   createdApiKeys        ApiKey[] // API keys created by this user
   connectedIntegrations Integration[] // Integrations connected by this user
   createdIssueAttachments IssueAttachment[]
@@ -316,6 +333,7 @@ model Workspace {
   notifications  Notification[]
   activities     Activity[]
   templates      Template[]
+  templateApplications TemplateApplication[]
   integrations   Integration[]
   apiKeys        ApiKey[]
   subscriptions  Subscription[]
@@ -586,6 +604,9 @@ model Issue {
   cycleId     String? // FK → Cycle (sprint) this issue belongs to
   parentIssueId String? // Optional parent linkage
   integrationRef Json? // Structured external reference payload
+  templateId      String? // Optional template source
+  templateVersion Int? // Applied template version at creation time
+  templateAppliedAt DateTime?
 
   // -- Bug-specific fields (populated when type = BUG) --
   stepsToReproduce String?     @db.Text
@@ -632,6 +653,7 @@ model Issue {
   @@index([workspaceId, status]) // Dashboard: filter issues by status
   @@index([workspaceId, assigneeId]) // "My Issues" page
   @@index([parentIssueId])
+  @@index([templateId])
 }
 
 /// IssueSubtask — checklist items within an issue
@@ -916,22 +938,81 @@ model Template {
   id              String         @id @default(uuid())
   workspaceId     String
   name            String
-  description     String?
-  content         String         @db.Text // Rich text template body
-  defaultPriority IssuePriority? // Pre-filled priority when using this template
-  defaultAssignee String? // "unassigned", "creator", or a specific user ID
-  defaultLabels   String[] // Array of Label IDs to auto-attach
-  checklistItems  Json? // Default subtask titles (e.g., ["Write tests", "Update docs"])
+  description     String
+  issueType       String // task | bug | issue
+  scopeType       String         @default("WORKSPACE") // WORKSPACE | TEAM | PROJECT
+  scopeId         String?
+  isDefault       Boolean        @default(false)
+  category        String
+  customCategory  String?
+  titleTemplate   String
+  contentTemplate String         @db.Text
+  defaultPriority String
+  defaultStatus   String
+  customStatus    String?
+  defaultAssigneeType String // UNASSIGNED | CREATOR | SPECIFIC_USER
+  defaultAssigneeId String?
+  defaultEstimate Int?
+  defaultDueDateOffset Int?
+  defaultLabelIds String[]
+  defaultSeverity String? // low | medium | high
+  categoryOptions String[]
+  priorityOptions String[]
+  statusOptions   String[]
+  labelOptions    String[]
+  checklistItems  String[]
+  stepsToReproduceTemplate String? @db.Text
+  expectedBehaviorTemplate String? @db.Text
+  actualBehaviorTemplate String? @db.Text
+  acceptanceCriteriaTemplate String? @db.Text
+  relatedIssueKeysTemplate String? @db.Text
+  notesTemplate String? @db.Text
+  lifecycle       String @default("ACTIVE")
+  isActive        Boolean @default(false)
+  activeVersion   Int @default(1)
+  usageCount      Int @default(0)
+  timesApplied    Int @default(0)
+  lastAppliedAt   DateTime?
+  deletedAt       DateTime?
   createdById     String
+  updatedById     String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
   // -- Relations --
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdBy User      @relation(fields: [createdById], references: [id])
+  createdBy User      @relation("TemplateCreator", fields: [createdById], references: [id])
+  updatedBy User?     @relation("TemplateUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+  applications TemplateApplication[]
 
-  @@unique([workspaceId, name]) // Template names must be unique within a workspace
-  @@index([workspaceId])
+  @@unique([workspaceId, name])
+  @@index([workspaceId, issueType])
+  @@index([workspaceId, scopeType, scopeId])
+  @@index([workspaceId, isActive])
+  @@index([workspaceId, lifecycle])
+}
+
+/// TemplateApplication — persisted per-user template apply state and draft snapshot.
+///
+/// This does not mutate the template itself. It stores the user's last applied draft
+/// so the frontend can restore state when navigating away and back.
+model TemplateApplication {
+  id          String   @id @default(uuid())
+  workspaceId String
+  templateId   String
+  userId       String
+  draft        Json
+  appliedAt    DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  template  Template  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, templateId, userId])
+  @@index([workspaceId, userId])
+  @@index([templateId])
 }
 
 // ============================================================================

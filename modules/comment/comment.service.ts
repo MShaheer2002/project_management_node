@@ -183,7 +183,7 @@ export async function createComment(workspaceId: string, issueId: string, userId
 
   const issueForNotification = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true, internalId: true, title: true },
+    select: { id: true, internalId: true, title: true, cycleId: true },
   });
   const issueRouteId = issueForNotification?.internalId ?? issueId;
 
@@ -239,6 +239,23 @@ export async function createComment(workspaceId: string, issueId: string, userId
     },
     eventId: `comment-mention:${created.id}:${mentionedUserId}`,
   })));
+
+  if (issueForNotification?.cycleId) {
+    await logActivity({
+      workspaceId,
+      actorId: userId,
+      type: "CYCLE_ISSUE_COMMENT_CREATED",
+      targetType: "COMMENT",
+      targetId: created.id,
+      message: "Comment created on issue in cycle",
+      metadata: {
+        issueId,
+        commentId: created.id,
+        cycleId: issueForNotification.cycleId,
+        entityId: issueId,
+      },
+    });
+  }
 
   const mapped = mapComment(hydrated);
   const io = getSocketServer();
@@ -360,6 +377,7 @@ export async function updateComment(workspaceId: string, commentId: string, user
       entityId: (updated as any).issueId,
       commentId: current.id,
       commentExcerpt: input.body.slice(0, 140),
+      cycleId: ((await prisma.issue.findFirst({ where: { id: (updated as any).issueId, workspaceId }, select: { cycleId: true } }))?.cycleId) ?? null,
     },
   });
 
@@ -399,7 +417,7 @@ export async function deleteComment(workspaceId: string, commentId: string, user
 
   const detail = await prisma.comment.findFirst({
     where: { id: current.id, issue: { workspaceId } },
-    select: { issueId: true },
+    select: { issueId: true, issue: { select: { cycleId: true } } },
   });
   await prisma.comment.delete({ where: { id: current.id } });
   await logActivity({
@@ -413,6 +431,7 @@ export async function deleteComment(workspaceId: string, commentId: string, user
       issueId: detail?.issueId ?? null,
       entityId: detail?.issueId ?? null,
       commentId: current.id,
+      cycleId: detail?.issue?.cycleId ?? null,
     },
   });
 

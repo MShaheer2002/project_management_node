@@ -802,6 +802,84 @@ Rules:
 
 ## Cycle Activity
 
+Cycle activity must integrate with the Phase 8 activity system, but the cycle activity screen must show **only activity related to the selected cycle**.
+
+Frontend contract:
+
+```http
+GET /activity?scope=cycle&scopeId=:cycleId
+```
+
+The response shape remains the Phase 8 activity list response.
+
+The backend must support `scope=cycle` in the activity feed query.
+
+### Cycle Activity Scope Rules
+
+For `scope=cycle&scopeId=:cycleId`, include only:
+
+- lifecycle events where the cycle itself is the primary target
+- issue planning events for this cycle
+- issue removal events for this cycle
+- carry-over events where this cycle is source or target
+- issue updates that occurred while the issue was assigned to this cycle
+- comments created on issues while the issue was assigned to this cycle
+
+Do not include:
+
+- all workspace activity
+- all team activity
+- all project activity
+- issue activity that happened before the issue was added to this cycle
+- issue activity that happened after the issue was removed from this cycle
+- activity for issues in the same project but not in this cycle
+
+This is important because the cycle activity tab is a cycle audit trail, not a team feed.
+
+### Required Activity Persistence Metadata
+
+Every activity record that should be visible in a cycle feed must include `metadata.cycleId`.
+
+For issue-related events, persist the cycle context active at event time:
+
+```ts
+type CycleActivityMetadata = {
+  workspaceId: string;
+  cycleId: string;
+  cycleName: string;
+  teamId: string;
+  issueId?: string; // public issue id, e.g. LIN-214
+  issueUuid?: string;
+  projectId?: string | null;
+  fromCycleId?: string | null;
+  toCycleId?: string | null;
+  fromStatus?: string;
+  toStatus?: string;
+};
+```
+
+Reason: if an issue moves between cycles later, old activity must remain attached to the cycle where it happened.
+
+### Activity Query Implementation
+
+Recommended filtering for `scope=cycle`:
+
+```ts
+where: {
+  workspaceId,
+  OR: [
+    { targetType: 'cycle', targetId: cycleId },
+    { metadata: { path: ['cycleId'], equals: cycleId } },
+    { metadata: { path: ['sourceCycleId'], equals: cycleId } },
+    { metadata: { path: ['targetCycleId'], equals: cycleId } }
+  ]
+}
+```
+
+If using PostgreSQL JSONB, add a GIN index for activity metadata if activity volume is expected to grow.
+
+### Activity Types
+
 Cycle actions must write to Phase 8 activity.
 
 Required activity types:
@@ -819,7 +897,11 @@ type CycleActivityType =
   | 'ISSUE_ADDED_TO_CYCLE'
   | 'ISSUE_REMOVED_FROM_CYCLE'
   | 'ISSUE_CARRIED_OVER'
-  | 'ISSUE_CYCLE_CHANGED';
+  | 'ISSUE_CYCLE_CHANGED'
+  | 'CYCLE_ISSUE_STATUS_CHANGED'
+  | 'CYCLE_ISSUE_PRIORITY_CHANGED'
+  | 'CYCLE_ISSUE_ASSIGNEE_CHANGED'
+  | 'CYCLE_ISSUE_COMMENT_CREATED';
 ```
 
 Activity target:
@@ -833,6 +915,25 @@ type CycleActivityTarget = {
   url: string;
 };
 ```
+
+### Event Rules By Action
+
+| Action | Activity type | Target | Required metadata |
+|---|---|---|---|
+| Create cycle | `CYCLE_CREATED` | `cycle` | `cycleId`, `cycleName`, `teamId` |
+| Update cycle dates | `CYCLE_DATES_CHANGED` | `cycle` | `cycleId`, `fromStartsAt`, `toStartsAt`, `fromEndsAt`, `toEndsAt` |
+| Update cycle goal | `CYCLE_GOAL_CHANGED` | `cycle` | `cycleId`, `fromGoal`, `toGoal` |
+| Complete cycle | `CYCLE_COMPLETED` | `cycle` | `cycleId`, `unfinishedIssueCount`, `completedIssueCount` |
+| Reopen cycle | `CYCLE_REOPENED` | `cycle` | `cycleId` |
+| Add issue to cycle | `ISSUE_ADDED_TO_CYCLE` | `issue` | `cycleId`, `cycleName`, `issueId`, `issueUuid` |
+| Remove issue from cycle | `ISSUE_REMOVED_FROM_CYCLE` | `issue` | `cycleId`, `cycleName`, `issueId`, `issueUuid` |
+| Carry issue over | `ISSUE_CARRIED_OVER` | `issue` | `sourceCycleId`, `targetCycleId`, `issueId`, `issueUuid` |
+| Issue status changed while in cycle | `CYCLE_ISSUE_STATUS_CHANGED` | `issue` | `cycleId`, `issueId`, `fromStatus`, `toStatus` |
+| Issue priority changed while in cycle | `CYCLE_ISSUE_PRIORITY_CHANGED` | `issue` | `cycleId`, `issueId`, `fromPriority`, `toPriority` |
+| Issue assignee changed while in cycle | `CYCLE_ISSUE_ASSIGNEE_CHANGED` | `issue` | `cycleId`, `issueId`, `fromAssignee`, `toAssignee` |
+| Comment added while issue is in cycle | `CYCLE_ISSUE_COMMENT_CREATED` | `comment` | `cycleId`, `issueId`, `commentId` |
+
+Issue-related cycle activity should be emitted in addition to the normal issue activity where appropriate. The same DB row can satisfy both feeds if metadata supports both `issueId` and `cycleId`.
 
 Example:
 
@@ -1097,6 +1198,9 @@ Stats should be aggregated in SQL/Prisma groupBy, not by loading all issues when
 - [ ] completion endpoint supports explicit unfinished issue handling
 - [ ] carry-over endpoint supports next cycle/backlog movement
 - [ ] activity events are written for cycle lifecycle and issue movement
+- [ ] `/activity?scope=cycle&scopeId=:cycleId` returns only cycle-scoped activity
+- [ ] issue/comment activity stores `metadata.cycleId` when event happens while assigned to a cycle
+- [ ] cycle activity excludes issue events outside the issue's time in that cycle
 - [ ] relevant notifications are created for assignees
 - [ ] socket events are emitted for cycle and issue updates
 - [ ] tests cover permissions, overlap, current uniqueness, carry-over, and completed-cycle guards

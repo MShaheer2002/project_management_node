@@ -430,6 +430,40 @@ export async function updateCycle(workspaceId: string, cycleId: string, userId: 
     metadata: { cycleId, teamId: updated.teamId, cycleName: updated.name },
   });
 
+  if (input.startsAt !== undefined || input.endsAt !== undefined) {
+    await logActivity({
+      workspaceId,
+      actorId: userId,
+      type: "CYCLE_DATES_CHANGED",
+      targetType: "CYCLE",
+      targetId: cycleId,
+      message: `Cycle ${updated.name} dates changed`,
+      metadata: {
+        cycleId,
+        fromStartsAt: cycle.startsAt,
+        toStartsAt: updated.startsAt,
+        fromEndsAt: cycle.endsAt,
+        toEndsAt: updated.endsAt,
+      },
+    });
+  }
+
+  if (input.goal !== undefined && input.goal !== cycle.goal) {
+    await logActivity({
+      workspaceId,
+      actorId: userId,
+      type: "CYCLE_GOAL_CHANGED",
+      targetType: "CYCLE",
+      targetId: cycleId,
+      message: `Cycle ${updated.name} goal changed`,
+      metadata: {
+        cycleId,
+        fromGoal: cycle.goal,
+        toGoal: input.goal,
+      },
+    });
+  }
+
   await emitCycleEvent(workspaceId, "cycle:updated", { cycleId, full: updated }, `cycle-updated:${cycleId}:${updated.updatedAt.toISOString()}`);
   const computed = await computeCycleStats(workspaceId, updated.id, updated.startsAt, updated.endsAt);
   return mapCycleSummary(updated, computed.stats);
@@ -596,7 +630,7 @@ export async function carryOverCycle(workspaceId: string, cycleId: string, userI
     eventId: `cycle-carry-over:${cycleId}:${issue.id}`,
   })));
 
-  await emitCycleEvent(workspaceId, "cycle:carry-over", {
+  await emitCycleEvent(workspaceId, "cycle:issues-carried-over", {
     cycleId,
     targetCycleId,
     movedIssueCount: unfinished.length,
@@ -632,11 +666,11 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
   await logActivity({
     workspaceId,
     actorId: userId,
-    type: "ISSUE_CYCLE_ASSIGNED",
+    type: "ISSUE_ADDED_TO_CYCLE",
     targetType: "ISSUE",
     targetId: issue.id,
     message: `Issue ${issue.internalId ?? issue.id} assigned to cycle ${cycle.name}`,
-    metadata: { issueId: issue.id, cycleId: cycle.id, teamId: cycle.teamId },
+    metadata: { issueId: issue.id, cycleId: cycle.id, teamId: cycle.teamId, entityId: issue.id },
   });
 
   const recipients = new Set<string>();
@@ -665,7 +699,7 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
     eventId: `issue-cycle-assigned:${issue.id}:${cycle.id}:${recipientUserId}`,
   })));
 
-  await emitCycleEvent(workspaceId, "cycle:updated", { cycleId: cycle.id, issueId: issue.id, action: "issue-assigned" }, `issue-cycle-assigned:${issue.id}:${cycle.id}`);
+  await emitCycleEvent(workspaceId, "cycle:issues-added", { cycleId: cycle.id, issueIds: [issue.id] }, `issue-cycle-assigned:${issue.id}:${cycle.id}`);
 
   const updatedIssue = await prisma.issue.findFirst({
     where: { id: issue.id, workspaceId },
@@ -716,11 +750,11 @@ export async function removeIssueFromCycle(workspaceId: string, issueRouteId: st
   await logActivity({
     workspaceId,
     actorId: userId,
-    type: "ISSUE_CYCLE_REMOVED",
+    type: "ISSUE_REMOVED_FROM_CYCLE",
     targetType: "ISSUE",
     targetId: issue.id,
     message: `Issue ${issue.internalId ?? issue.id} removed from cycle ${cycle.name}`,
-    metadata: { issueId: issue.id, cycleId: cycle.id, teamId: cycle.teamId },
+    metadata: { issueId: issue.id, cycleId: cycle.id, teamId: cycle.teamId, entityId: issue.id },
   });
 
   const recipients = new Set<string>();
@@ -748,5 +782,5 @@ export async function removeIssueFromCycle(workspaceId: string, issueRouteId: st
     eventId: `issue-cycle-removed:${issue.id}:${recipientUserId}`,
   })));
 
-  await emitCycleEvent(workspaceId, "cycle:updated", { cycleId: cycle.id, issueId: issue.id, action: "issue-removed" }, `issue-cycle-removed:${issue.id}`);
+  await emitCycleEvent(workspaceId, "cycle:issue-removed", { cycleId: cycle.id, issueId: issue.id }, `issue-cycle-removed:${issue.id}`);
 }

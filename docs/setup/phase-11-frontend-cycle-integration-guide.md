@@ -132,7 +132,9 @@ Workspace realtime events for cycles:
 - `cycle:deleted`
 - `cycle:completed`
 - `cycle:reopened`
-- `cycle:carry-over`
+- `cycle:issues-added`
+- `cycle:issue-removed`
+- `cycle:issues-carried-over`
 
 Also consume existing issue/comment events from Phase 10 for cross-screen freshness.
 
@@ -177,6 +179,18 @@ Handle expected backend errors:
 - `CYCLE_ASSIGN_COMPLETED_FORBIDDEN`
 - `CYCLE_REOPEN_FORBIDDEN`
 
+## Cycle Activity Tab
+
+Use cycle-scoped activity endpoint:
+
+- `GET /activity?scope=cycle&scopeId=<cycleId>`
+
+Important behavior:
+
+- show only events tagged for that cycle
+- do not merge workspace/team/project generic feeds into cycle tab
+- rely on backend `metadata.cycleId`-scoped filtering
+
 Status mapping:
 
 - `422` invalid input
@@ -212,4 +226,3 @@ Issue create/edit/detail:
 - [ ] Realtime cycle events update UI caches
 - [ ] Notification and unread badge stay in sync
 - [ ] Conflict and validation errors surfaced with actionable UI
-

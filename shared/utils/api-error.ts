@@ -23,11 +23,15 @@ export class AppError extends Error {
   /** Whether this error is operational (expected) vs a programming bug */
   public readonly isOperational: boolean;
 
-  constructor(statusCode: number, code: string, message: string) {
+  /** Optional structured details forwarded to the client */
+  public readonly details?: unknown;
+
+  constructor(statusCode: number, code: string, message: string, details?: unknown) {
     super(message);
     this.statusCode = statusCode;
     this.code = code;
     this.isOperational = true;
+    this.details = details;
 
     // Maintain proper stack trace (only in V8 environments like Node.js)
     Error.captureStackTrace(this, this.constructor);

@@ -43,6 +43,8 @@ export const createIssueSchema = {
     notes: z.string().trim().max(50000).optional(),
     attachments: z.array(attachmentRefSchema).max(100).optional(),
     parentIssueId: z.string().min(1).nullable().optional(),
+    templateId: z.string().uuid().optional(),
+    templateDraftId: z.string().uuid().optional(),
   }),
 };
 

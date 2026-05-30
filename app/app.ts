@@ -47,6 +47,7 @@ import labelRoutes from "../modules/label/label.routes.js";
 import activityRoutes from "../modules/activity/activity.routes.js";
 import notificationRoutes from "../modules/notification/notification.routes.js";
 import cycleRoutes from "../modules/cycle/cycle.routes.js";
+import templateRoutes from "../modules/template/template.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -149,7 +150,7 @@ app.use(labelRoutes);
 app.use(activityRoutes);
 app.use(notificationRoutes);
 app.use(cycleRoutes);
-// Phase 10: app.use("/templates", templateRoutes);
+app.use(templateRoutes);
 // Phase 10: app.use("/api-keys", apiKeyRoutes);
 // Phase 10: app.use("/integrations", integrationRoutes);
 // Phase 10: app.use("/billing", billingRoutes);

@@ -62,9 +62,9 @@ export function sendError(
   statusCode: number,
   code: string,
   message: string,
-  details?: unknown[],
+  details?: unknown,
 ) {
-  const error: { code: string; message: string; details?: unknown[] } = {
+  const error: { code: string; message: string; details?: unknown } = {
     code,
     message,
   };

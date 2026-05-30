@@ -137,6 +137,9 @@ function mapIssue(record: any, includeRelations = true) {
     projectId: record.projectId,
     teamId: record.teamId,
     departmentId: record.departmentId,
+    templateId: record.templateId ?? null,
+    templateVersion: record.templateVersion ?? null,
+    templateAppliedAt: record.templateAppliedAt ?? null,
     subtaskStats: {
       total: subtasks.length,
       completed: subtasks.filter((subtask: any) => subtask.completed).length,
@@ -410,12 +413,66 @@ function validateTypeSpecific(input: CreateIssueInput | UpdateIssueInput, curren
 }
 
 export async function createIssue(workspaceId: string, creatorId: string, input: CreateIssueInput) {
-  validateTypeSpecific(input);
-
   return prisma.$transaction(async (tx) => {
+    let template: any = null;
+    if ((input as any).templateId) {
+      template = await (tx as any).template.findFirst({
+        where: { id: (input as any).templateId, workspaceId, deletedAt: null },
+        select: {
+          id: true,
+          activeVersion: true,
+          issueType: true,
+          defaultPriority: true,
+          defaultStatus: true,
+          defaultAssigneeId: true,
+          defaultEstimate: true,
+          defaultDueDateOffset: true,
+          defaultSeverity: true,
+          contentTemplate: true,
+          titleTemplate: true,
+          acceptanceCriteriaTemplate: true,
+          stepsToReproduceTemplate: true,
+          expectedBehaviorTemplate: true,
+          actualBehaviorTemplate: true,
+          notesTemplate: true,
+          checklistItems: true,
+          defaultLabelIds: true,
+        },
+      });
+      if (!template) {
+        throw new AppError(404, ERROR_CODES.TEMPLATE_NOT_FOUND, "Template not found");
+      }
+    }
+
+    const normalizedInput = {
+      ...input,
+      type: template?.issueType ?? input.type,
+      priority: template?.defaultPriority ?? input.priority,
+      status: input.status ?? template?.defaultStatus ?? "backlog",
+      title: input.title || template?.titleTemplate || input.title,
+      description: input.description ?? template?.contentTemplate ?? null,
+      assigneeId: input.assigneeId ?? template?.defaultAssigneeId ?? null,
+      estimate: input.estimate ?? template?.defaultEstimate ?? null,
+      severity: input.severity ?? template?.defaultSeverity ?? undefined,
+      acceptanceCriteria: input.acceptanceCriteria ?? template?.acceptanceCriteriaTemplate ?? undefined,
+      stepsToReproduce: input.stepsToReproduce ?? template?.stepsToReproduceTemplate ?? undefined,
+      expectedBehavior: input.expectedBehavior ?? template?.expectedBehaviorTemplate ?? undefined,
+      actualBehavior: input.actualBehavior ?? template?.actualBehaviorTemplate ?? undefined,
+      notes: input.notes ?? template?.notesTemplate ?? undefined,
+      labels: (input.labels && input.labels.length > 0) ? input.labels : undefined,
+      subtasks: (input.subtasks && input.subtasks.length > 0)
+        ? input.subtasks
+        : (template?.checklistItems ?? []).map((title: string, index: number) => ({ title, order: index })),
+      dueDate: input.dueDate ?? (template?.defaultDueDateOffset !== null && template?.defaultDueDateOffset !== undefined
+        ? new Date(Date.now() + template.defaultDueDateOffset * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+        : undefined),
+    } as CreateIssueInput;
+
+    validateTypeSpecific(normalizedInput);
+
     const project = await assertProjectInWorkspace(tx, workspaceId, input.projectId);
-    if (input.assigneeId) {
-      await assertAssigneeInWorkspace(tx, workspaceId, input.assigneeId);
+    if (normalizedInput.assigneeId) {
+      await assertAssigneeInWorkspace(tx, workspaceId, normalizedInput.assigneeId);
     }
 
     if (input.parentIssueId) {
@@ -443,30 +500,33 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         projectId: input.projectId,
         teamId: project.teamId,
         departmentId: project.departmentId ?? null,
-        title: input.title,
-        description: input.description ?? null,
-        type: typeToDb[input.type],
-        status: statusToDb[input.status ?? "backlog"],
-        priority: priorityToDb[input.priority],
-        assigneeId: input.assigneeId ?? null,
+        title: normalizedInput.title,
+        description: normalizedInput.description ?? null,
+        type: typeToDb[normalizedInput.type],
+        status: statusToDb[normalizedInput.status ?? "backlog"],
+        priority: priorityToDb[normalizedInput.priority],
+        assigneeId: normalizedInput.assigneeId ?? null,
         creatorId,
-        dueDate: input.dueDate ? new Date(input.dueDate) : null,
-        dueTime: parseDueTime(input.dueTime),
-        estimate: input.estimate ?? null,
-        stepsToReproduce: input.stepsToReproduce ?? null,
-        expectedBehavior: input.expectedBehavior ?? null,
-        actualBehavior: input.actualBehavior ?? null,
-        severity: input.severity ? severityToDb[input.severity] : null,
-        acceptanceCriteria: input.acceptanceCriteria ?? null,
-        notes: input.notes ?? null,
+        dueDate: normalizedInput.dueDate ? new Date(normalizedInput.dueDate) : null,
+        dueTime: parseDueTime(normalizedInput.dueTime),
+        estimate: normalizedInput.estimate ?? null,
+        stepsToReproduce: normalizedInput.stepsToReproduce ?? null,
+        expectedBehavior: normalizedInput.expectedBehavior ?? null,
+        actualBehavior: normalizedInput.actualBehavior ?? null,
+        severity: normalizedInput.severity ? severityToDb[normalizedInput.severity] : null,
+        acceptanceCriteria: normalizedInput.acceptanceCriteria ?? null,
+        notes: normalizedInput.notes ?? null,
         parentIssueId: input.parentIssueId ?? null,
+        templateId: template?.id ?? null,
+        templateVersion: template?.activeVersion ?? null,
+        templateAppliedAt: template ? new Date() : null,
       } as any,
       select: { id: true },
     });
 
-    if (input.subtasks && input.subtasks.length > 0) {
+    if (normalizedInput.subtasks && normalizedInput.subtasks.length > 0) {
       await tx.issueSubtask.createMany({
-        data: input.subtasks.map((subtask, index) => ({
+        data: normalizedInput.subtasks.map((subtask, index) => ({
           issueId: issue.id,
           title: subtask.title,
           order: subtask.order ?? index,
@@ -474,8 +534,20 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
       });
     }
 
-    await syncIssueLabels(tx, workspaceId, issue.id, input.labels);
-    await syncRelatedIssues(tx, workspaceId, issue.id, input.relatedIssueKeys);
+    await syncIssueLabels(tx, workspaceId, issue.id, normalizedInput.labels);
+    if ((!input.labels || input.labels.length === 0) && template?.defaultLabelIds?.length > 0) {
+      const existingLabels = await tx.label.findMany({
+        where: { workspaceId, id: { in: template.defaultLabelIds } },
+        select: { id: true },
+      });
+      if (existingLabels.length > 0) {
+        await tx.issueLabel.createMany({
+          data: existingLabels.map((label: { id: string }) => ({ issueId: issue.id, labelId: label.id })),
+          skipDuplicates: true,
+        });
+      }
+    }
+    await syncRelatedIssues(tx, workspaceId, issue.id, normalizedInput.relatedIssueKeys);
 
     if (input.attachments && input.attachments.length > 0) {
       await createIssueAttachments(tx, issue.id, workspaceId, creatorId, input.attachments);
@@ -524,10 +596,12 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
       message: `Issue ${issue.id} created`,
       metadata: {
         entityId: issue.id,
-        entityTitle: input.title,
+        entityTitle: normalizedInput.title,
         issueId: issue.id,
         projectId: input.projectId,
         teamId: project.teamId,
+        templateId: template?.id ?? null,
+        templateVersion: template?.activeVersion ?? null,
       },
     });
 
@@ -694,7 +768,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
   return prisma.$transaction(async (tx) => {
     const current = await tx.issue.findFirst({
       where: { id: issueId, workspaceId },
-      select: { id: true, type: true, status: true, priority: true, assigneeId: true, dueDate: true, projectId: true, teamId: true, creatorId: true },
+      select: { id: true, type: true, status: true, priority: true, assigneeId: true, dueDate: true, projectId: true, teamId: true, creatorId: true, cycleId: true },
     });
 
     if (!current) {
@@ -795,7 +869,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         targetType: "ISSUE",
         targetId: issueId,
         message: `Issue ${issueId} type changed`,
-        metadata: { entityId: issueId, fromType: typeFromDb[current.type], toType: input.type },
+        metadata: { entityId: issueId, fromType: typeFromDb[current.type], toType: input.type, cycleId: current.cycleId ?? null },
       });
     }
     if (input.status !== undefined && statusToDb[input.status] !== current.status) {
@@ -806,7 +880,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         targetType: "ISSUE",
         targetId: issueId,
         message: `Issue ${issueId} status changed`,
-        metadata: { entityId: issueId, fromStatus: statusFromDb[current.status], toStatus: input.status },
+        metadata: { entityId: issueId, fromStatus: statusFromDb[current.status], toStatus: input.status, cycleId: current.cycleId ?? null },
       });
     }
     if (input.priority !== undefined && priorityToDb[input.priority] !== current.priority) {
@@ -817,7 +891,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         targetType: "ISSUE",
         targetId: issueId,
         message: `Issue ${issueId} priority changed`,
-        metadata: { entityId: issueId, fromPriority: priorityFromDb[current.priority], toPriority: input.priority },
+        metadata: { entityId: issueId, fromPriority: priorityFromDb[current.priority], toPriority: input.priority, cycleId: current.cycleId ?? null },
       });
     }
     if (input.assigneeId !== undefined && input.assigneeId !== current.assigneeId) {
@@ -828,7 +902,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         targetType: "ISSUE",
         targetId: issueId,
         message: `Issue ${issueId} assignee changed`,
-        metadata: { entityId: issueId, fromAssigneeId: current.assigneeId, toAssigneeId: input.assigneeId ?? null },
+        metadata: { entityId: issueId, fromAssigneeId: current.assigneeId, toAssigneeId: input.assigneeId ?? null, cycleId: current.cycleId ?? null },
       });
     }
     if (input.dueDate !== undefined) {
@@ -842,7 +916,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
           targetType: "ISSUE",
           targetId: issueId,
           message: `Issue ${issueId} due date changed`,
-          metadata: { entityId: issueId, fromDueDate: before, toDueDate: after },
+          metadata: { entityId: issueId, fromDueDate: before, toDueDate: after, cycleId: current.cycleId ?? null },
         });
       }
     }
@@ -854,7 +928,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         targetType: "ISSUE",
         targetId: issueId,
         message: `Issue ${issueId} scope changed`,
-        metadata: { entityId: issueId, fromProjectId: current.projectId, toProjectId: updated?.projectId, fromTeamId: current.teamId, toTeamId: updated?.teamId },
+        metadata: { entityId: issueId, fromProjectId: current.projectId, toProjectId: updated?.projectId, fromTeamId: current.teamId, toTeamId: updated?.teamId, cycleId: current.cycleId ?? null },
       });
     }
 
@@ -963,7 +1037,7 @@ export async function updateIssueStatus(
 ) {
   const issue = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, cycleId: true },
   });
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
@@ -985,6 +1059,7 @@ export async function updateIssueStatus(
         entityId: issueId,
         fromStatus: statusFromDb[issue.status] ?? "backlog",
         toStatus: status,
+        cycleId: issue.cycleId ?? null,
       },
     });
 
