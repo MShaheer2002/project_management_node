@@ -21,6 +21,10 @@ import { generateToken, hashToken, normalizeEmail } from "../../shared/utils/cry
 import { sendInvitationEmail } from "../../infra/email/index.js";
 import { env } from "../../config/env.js";
 import { logActivity } from "../../shared/utils/activity.js";
+import {
+  enforceFreeWorkspaceCapacity,
+  syncPaidSeatQuantityBestEffort,
+} from "../billing/billing.service.js";
 
 /** Invitations expire after 7 days */
 const INVITE_EXPIRY_DAYS = 7;
@@ -45,6 +49,8 @@ export async function createInvitation(params: {
   workspaceName: string;
 }) {
   const email = normalizeEmail(params.email);
+
+  await enforceFreeWorkspaceCapacity(params.workspaceId, email);
 
   // Check if already a member (by email → find user → check membership)
   const existingUser = await prisma.user.findUnique({
@@ -368,6 +374,8 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
   });
 
   await prisma.$transaction(operations);
+
+  await syncPaidSeatQuantityBestEffort(invitation.workspaceId);
 
   return {
     workspaceId: invitation.workspace.id,

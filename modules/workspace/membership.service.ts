@@ -20,6 +20,7 @@ import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import type { Prisma, WorkspaceRole } from "../../app/generated/prisma/client.js";
 import type { ListWorkspaceMembersQuery } from "./workspace.schemas.js";
+import { syncPaidSeatQuantityBestEffort } from "../billing/billing.service.js";
 
 /**
  * Invite a user to a workspace by email.
@@ -347,6 +348,8 @@ export async function removeMember(workspaceId: string, targetUserId: string) {
       where: { userId_workspaceId: { userId: targetUserId, workspaceId } },
     });
   });
+
+  await syncPaidSeatQuantityBestEffort(workspaceId);
 
   await logActivity({
     workspaceId,

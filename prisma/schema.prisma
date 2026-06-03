@@ -179,11 +179,11 @@ enum IssueRelationType {
   DUPLICATE
 }
 
-/// Subscription tiers — Free (default), Standard ($12/user/mo), Plus ($24/user/mo)
+/// Subscription tiers — Free (default), Standard ($6/user/mo), Premium ($10/user/mo)
 enum SubscriptionPlan {
   FREE
   STANDARD
-  PLUS
+  PREMIUM
 }
 
 /// Stripe subscription lifecycle states
@@ -192,6 +192,8 @@ enum SubscriptionStatus {
   CANCELED
   PAST_DUE
   TRIALING
+  INCOMPLETE
+  UNPAID
 }
 
 /// How often the workspace is billed
@@ -339,6 +341,7 @@ model Workspace {
   subscriptions  Subscription[]
   invoices       Invoice[]
   paymentMethods PaymentMethod[]
+  billingWebhookEvents BillingWebhookEvent[]
 
   @@index([slug])
 }
@@ -1081,16 +1084,23 @@ model Subscription {
   currentPeriodStart   DateTime?
   currentPeriodEnd     DateTime?
   cancelAtPeriodEnd    Boolean            @default(false) // If true, cancels at end of period
+  seatCount            Int                @default(1)
   stripeCustomerId     String? // Stripe customer ID
   stripeSubscriptionId String? // Stripe subscription ID
+  stripeSubscriptionItemId String? // Stripe subscription item for seat quantity changes
+  stripePriceId        String? // Stripe price ID backing the current plan
+  stripePaymentIntentId String? // Latest Stripe payment intent tied to subscription billing
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
   // -- Relations --
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invoices  Invoice[]
 
-  @@index([workspaceId])
+  @@unique([workspaceId])
   @@index([stripeCustomerId])
+  @@unique([stripeSubscriptionId])
+  @@index([stripePaymentIntentId])
 }
 
 /// Invoice — billing invoice records synced from Stripe
@@ -1100,19 +1110,24 @@ model Subscription {
 model Invoice {
   id            String        @id @default(uuid())
   workspaceId   String
+  subscriptionId String?
   invoiceNumber String // e.g., "INV-001"
+  stripeInvoiceId String? @unique
   amount        Int // Amount in cents
   currency      String        @default("usd")
   status        InvoiceStatus @default(UNPAID)
+  hostedInvoiceUrl String?
   pdfUrl        String? // Link to downloadable invoice PDF
   issuedAt      DateTime      @default(now())
   paidAt        DateTime? // Set when payment is confirmed
 
   // -- Relations --
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
 
   @@unique([workspaceId, invoiceNumber]) // Invoice numbers unique within workspace
   @@index([workspaceId])
+  @@index([subscriptionId])
 }
 
 /// PaymentMethod — stored payment methods for a workspace (synced from Stripe)
@@ -1127,11 +1142,29 @@ model PaymentMethod {
   expiryMonth           Int
   expiryYear            Int
   isDefault             Boolean           @default(false) // Primary payment method
+  isActive              Boolean           @default(true)
   stripePaymentMethodId String? // Stripe payment method ID
   createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
   // -- Relations --
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
+  @@unique([stripePaymentMethodId])
+}
+
+/// BillingWebhookEvent — persisted Stripe events for idempotency/debugging
+model BillingWebhookEvent {
+  id            String   @id @default(uuid())
+  stripeEventId String   @unique
+  type          String
+  workspaceId   String?
+  processed     Boolean  @default(false)
+  payload       Json
+  createdAt     DateTime @default(now())
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
 }

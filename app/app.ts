@@ -48,6 +48,7 @@ import activityRoutes from "../modules/activity/activity.routes.js";
 import notificationRoutes from "../modules/notification/notification.routes.js";
 import cycleRoutes from "../modules/cycle/cycle.routes.js";
 import templateRoutes from "../modules/template/template.routes.js";
+import billingRoutes from "../modules/billing/billing.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -64,6 +65,9 @@ app.use(helmet());
 
 // 2. CORS — only allow requests from our frontend origin
 app.use(cors(corsConfig));
+
+// Stripe webhook must receive the raw body for signature verification.
+app.use("/webhooks/stripe", express.raw({ type: "application/json" }));
 
 // 3. Body parsing — parse JSON request bodies (limit 10mb for rich text content)
 app.use(express.json({ limit: "10mb" }));
@@ -151,6 +155,7 @@ app.use(activityRoutes);
 app.use(notificationRoutes);
 app.use(cycleRoutes);
 app.use(templateRoutes);
+app.use(billingRoutes);
 // Phase 10: app.use("/api-keys", apiKeyRoutes);
 // Phase 10: app.use("/integrations", integrationRoutes);
 // Phase 10: app.use("/billing", billingRoutes);
