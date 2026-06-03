@@ -246,6 +246,35 @@ function logBillingSyncFailure(action: string, workspaceId: string, error: unkno
   });
 }
 
+export async function getWorkspaceStorageUsage(workspaceId: string): Promise<number> {
+  const subscription = await prisma.subscription.findUnique({
+    where: { workspaceId },
+    select: { storageUsedBytes: true },
+  });
+
+  return Number(subscription?.storageUsedBytes ?? 0);
+}
+
+export async function incrementStorageUsage(workspaceId: string, bytes: number) {
+  if (bytes <= 0) return;
+
+  await prisma.subscription.update({
+    where: { workspaceId },
+    data: { storageUsedBytes: { increment: bytes } },
+  });
+}
+
+export async function decrementStorageUsage(workspaceId: string, bytes: number) {
+  if (bytes <= 0) return;
+
+  // Use raw query to avoid going negative
+  await prisma.$executeRaw`
+    UPDATE "Subscription"
+    SET "storageUsedBytes" = GREATEST("storageUsedBytes" - ${BigInt(bytes)}, 0)
+    WHERE "workspaceId" = ${workspaceId}
+  `;
+}
+
 async function countAcceptedMembers(workspaceId: string) {
   return prisma.workspaceMembership.count({ where: { workspaceId } });
 }
@@ -309,6 +338,90 @@ async function upsertInvoiceFromStripe(
           : null,
     },
   });
+}
+
+/**
+ * Resolves the PaymentIntent for a subscription's latest invoice.
+ * In Stripe API 2026-05-27.dahlia, `payment_intent` is no longer on the invoice object.
+ * Instead, we list payment intents for the invoice directly.
+ */
+async function resolveInvoicePaymentIntent(
+  invoiceRef: string | Stripe.Invoice | null | undefined,
+): Promise<Stripe.PaymentIntent | null> {
+  try {
+    const invoiceId = typeof invoiceRef === "string"
+      ? invoiceRef
+      : invoiceRef?.id ?? null;
+
+    if (!invoiceId) return null;
+
+    // Try the legacy field first (cast to any since it may not exist in types)
+    const invoice = typeof invoiceRef === "string"
+      ? await stripe.invoices.retrieve(invoiceRef)
+      : invoiceRef;
+
+    const legacyPiId = (invoice as any)?.payment_intent;
+    if (legacyPiId) {
+      const piId = typeof legacyPiId === "string" ? legacyPiId : legacyPiId.id;
+      return await stripe.paymentIntents.retrieve(piId);
+    }
+
+    const invoiceData = invoice as any;
+
+    // Check if there's a `payment` field (newer API)
+    if (invoiceData?.payment) {
+      const paymentId = typeof invoiceData.payment === "string"
+        ? invoiceData.payment
+        : invoiceData.payment?.id;
+      if (paymentId) {
+        // Retrieve the payment and get its payment_intent
+        try {
+          const invoicePayment = await (stripe as any).invoicePayments?.retrieve?.(paymentId);
+          if (invoicePayment?.payment_intent) {
+            const piId = typeof invoicePayment.payment_intent === "string"
+              ? invoicePayment.payment_intent
+              : invoicePayment.payment_intent.id;
+            return await stripe.paymentIntents.retrieve(piId);
+          }
+        } catch {
+          // invoicePayments API may not be available
+        }
+      }
+    }
+
+    // Last resort: search payment intents by metadata or customer
+    // Get the customer from the invoice
+    const customerId = typeof invoiceData?.customer === "string"
+      ? invoiceData.customer
+      : invoiceData?.customer?.id;
+
+    if (customerId) {
+      const recentPIs = await stripe.paymentIntents.list({
+        customer: customerId,
+        limit: 5,
+      });
+
+      // Find the PI that matches this invoice
+      for (const pi of recentPIs.data) {
+        if ((pi as any).invoice === invoiceId) {
+          return pi;
+        }
+      }
+
+      // If there's only one requires_action/requires_confirmation PI, it's likely ours
+      const pendingPI = recentPIs.data.find(
+        (pi) => pi.status === "requires_action" || pi.status === "requires_confirmation" || pi.status === "requires_payment_method",
+      );
+      if (pendingPI) {
+        return pendingPI;
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error("[Billing] Failed to resolve invoice payment intent:", error);
+    return null;
+  }
 }
 
 function getExpandedInvoicePaymentIntent(
@@ -417,7 +530,10 @@ export async function syncPaidSeatQuantity(workspaceId: string) {
 }
 
 export async function getBillingOverview(workspaceId: string, role: WorkspaceRole) {
-  const subscription = await getSubscriptionRecord(workspaceId);
+  const [subscription, storageUsedBytes] = await Promise.all([
+    getSubscriptionRecord(workspaceId),
+    getWorkspaceStorageUsage(workspaceId),
+  ]);
   const accessPlan = getAccessPlan(subscription.plan, subscription.status);
   const entitlements = getEntitlements(accessPlan);
 
@@ -431,6 +547,7 @@ export async function getBillingOverview(workspaceId: string, role: WorkspaceRol
     currentPeriodEnd: subscription.currentPeriodEnd,
     cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
     entitlements,
+    storageUsedBytes,
     permissions: {
       canViewBilling: role === "OWNER" || role === "ADMIN",
       canManageBilling: role === "OWNER",
@@ -445,12 +562,11 @@ export async function getSubscriptionPaymentStatus(workspaceId: string) {
 
   let paymentIntentClientSecret: string | null = null;
   let paymentIntentStatus: Stripe.PaymentIntent.Status | null = null;
+  let paymentIntentId: string | null = subscription.stripePaymentIntentId;
 
-  if (subscription.stripePaymentIntentId) {
+  if (paymentIntentId) {
     try {
-      const paymentIntent = await stripe.paymentIntents.retrieve(
-        subscription.stripePaymentIntentId,
-      );
+      const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
       paymentIntentClientSecret = paymentIntent.client_secret ?? null;
       paymentIntentStatus = paymentIntent.status;
     } catch (error) {
@@ -458,17 +574,37 @@ export async function getSubscriptionPaymentStatus(workspaceId: string) {
     }
   }
 
+  // If subscription is incomplete but we have no payment intent, resolve from Stripe
+  if (!paymentIntentId && subscription.status === "INCOMPLETE" && subscription.stripeSubscriptionId) {
+    try {
+      const stripeSubscription = await stripe.subscriptions.retrieve(subscription.stripeSubscriptionId);
+      const resolved = await resolveInvoicePaymentIntent(stripeSubscription.latest_invoice);
+      if (resolved) {
+        paymentIntentId = resolved.id;
+        paymentIntentClientSecret = resolved.client_secret ?? null;
+        paymentIntentStatus = resolved.status;
+
+        await prisma.subscription.update({
+          where: { workspaceId },
+          data: { stripePaymentIntentId: resolved.id },
+        });
+      }
+    } catch (error) {
+      logBillingSyncFailure("payment_intent_resolve_fallback", workspaceId, error);
+    }
+  }
+
   const requiresAction =
     paymentIntentStatus === "requires_action" ||
     paymentIntentStatus === "requires_confirmation" ||
-    subscription.status === "INCOMPLETE";
+    (subscription.status === "INCOMPLETE" && paymentIntentClientSecret != null);
 
   return {
     plan: subscription.plan,
     accessPlan,
     status: subscription.status,
     hasPaidAccess: hasPaidAccess(subscription.status),
-    paymentIntentId: subscription.stripePaymentIntentId,
+    paymentIntentId,
     paymentIntentStatus,
     clientSecret: paymentIntentClientSecret,
     requiresAction,
@@ -605,27 +741,31 @@ export async function setDefaultPaymentMethod(workspaceId: string, paymentMethod
     throw new AppError(409, ERROR_CODES.STRIPE_CUSTOMER_MISSING, "Stripe customer is missing for this workspace");
   }
 
+  // Accept either DB UUID or Stripe PM ID
   const paymentMethod = await prisma.paymentMethod.findFirst({
     where: {
       workspaceId,
-      stripePaymentMethodId: paymentMethodId,
       isActive: true,
+      OR: [
+        { id: paymentMethodId },
+        { stripePaymentMethodId: paymentMethodId },
+      ],
     },
   });
 
-  if (!paymentMethod) {
+  if (!paymentMethod?.stripePaymentMethodId) {
     throw new AppError(404, ERROR_CODES.PAYMENT_METHOD_NOT_FOUND, "Payment method not found");
   }
 
   await stripe.customers.update(subscription.stripeCustomerId, {
     invoice_settings: {
-      default_payment_method: paymentMethodId,
+      default_payment_method: paymentMethod.stripePaymentMethodId,
     },
   });
 
   if (subscription.stripeSubscriptionId) {
     await stripe.subscriptions.update(subscription.stripeSubscriptionId, {
-      default_payment_method: paymentMethodId,
+      default_payment_method: paymentMethod.stripePaymentMethodId,
     });
   }
 
@@ -701,8 +841,29 @@ export async function createSubscription(
 ) {
   const subscription = await getSubscriptionRecord(workspaceId);
 
-  if (subscription.plan !== "FREE" && subscription.stripeSubscriptionId) {
-    throw new AppError(409, ERROR_CODES.BILLING_ALREADY_ON_PLAN, "Workspace already has a paid subscription");
+  // If there's a stale incomplete/expired/canceled subscription in Stripe, clean it up
+  if (subscription.stripeSubscriptionId) {
+    const isActiveSubscription = hasPaidAccess(subscription.status);
+
+    if (isActiveSubscription) {
+      throw new AppError(409, ERROR_CODES.BILLING_ALREADY_ON_PLAN, "Workspace already has a paid subscription");
+    }
+
+    // Clean up stale Stripe subscription from DB so we can create a fresh one
+    await prisma.subscription.update({
+      where: { workspaceId },
+      data: {
+        plan: "FREE",
+        status: "ACTIVE",
+        stripeSubscriptionId: null,
+        stripeSubscriptionItemId: null,
+        stripePriceId: null,
+        stripePaymentIntentId: null,
+        currentPeriodStart: null,
+        currentPeriodEnd: null,
+        cancelAtPeriodEnd: false,
+      },
+    });
   }
 
   const targetPlan = toSubscriptionPlan(input.plan);
@@ -733,25 +894,22 @@ export async function createSubscription(
 
   await updateWorkspaceSubscriptionFromStripe(workspaceId, stripeSubscription, seatCount);
 
-  const latestInvoice = stripeSubscription.latest_invoice;
-  const paymentIntent =
-    latestInvoice && typeof latestInvoice !== "string"
-      ? getExpandedInvoicePaymentIntent(latestInvoice)
-      : null;
+  // Resolve the payment intent for the latest invoice
+  const paymentIntent = await resolveInvoicePaymentIntent(stripeSubscription.latest_invoice);
 
   await prisma.subscription.update({
     where: { workspaceId },
     data: {
-      stripePaymentIntentId: paymentIntent?.id ?? extractPaymentIntentId(latestInvoice),
+      stripePaymentIntentId: paymentIntent?.id ?? null,
     },
   });
 
   return {
     subscriptionId: stripeSubscription.id,
     status: mapStripeStatus(stripeSubscription.status),
-    paymentIntentId: paymentIntent?.id ?? extractPaymentIntentId(latestInvoice),
+    paymentIntentId: paymentIntent?.id ?? null,
     clientSecret: paymentIntent?.client_secret ?? null,
-    requiresAction: paymentIntent != null && stripeSubscription.status === "incomplete",
+    requiresAction: stripeSubscription.status === "incomplete" && paymentIntent?.client_secret != null,
     seatCount,
     prorationNotice: PRORATION_NOTICE,
   };
@@ -766,6 +924,14 @@ export async function changePlan(
 
   if (!subscription.stripeSubscriptionId || !subscription.stripeSubscriptionItemId) {
     throw new AppError(404, ERROR_CODES.STRIPE_SUBSCRIPTION_MISSING, "Stripe subscription not found for this workspace");
+  }
+
+  if (!hasPaidAccess(subscription.status)) {
+    throw new AppError(
+      409,
+      ERROR_CODES.BILLING_ALREADY_ON_PLAN,
+      "Cannot change plan on an inactive subscription. Cancel and create a new subscription instead.",
+    );
   }
 
   const targetPlan = toSubscriptionPlan(input.plan);
@@ -796,25 +962,27 @@ export async function changePlan(
 
   await updateWorkspaceSubscriptionFromStripe(workspaceId, stripeSubscription, seatCount);
 
-  const latestInvoice = stripeSubscription.latest_invoice;
-  const paymentIntent =
-    latestInvoice && typeof latestInvoice !== "string"
-      ? getExpandedInvoicePaymentIntent(latestInvoice)
-      : null;
+  const paymentIntent = await resolveInvoicePaymentIntent(stripeSubscription.latest_invoice);
+
+  const requiresPayment =
+    paymentIntent != null &&
+    (paymentIntent.status === "requires_action" ||
+      paymentIntent.status === "requires_confirmation" ||
+      paymentIntent.status === "requires_payment_method");
 
   await prisma.subscription.update({
     where: { workspaceId },
     data: {
-      stripePaymentIntentId: paymentIntent?.id ?? extractPaymentIntentId(latestInvoice),
+      stripePaymentIntentId: paymentIntent?.id ?? null,
     },
   });
 
   return {
     subscriptionId: stripeSubscription.id,
     status: mapStripeStatus(stripeSubscription.status),
-    paymentIntentId: paymentIntent?.id ?? extractPaymentIntentId(latestInvoice),
+    paymentIntentId: paymentIntent?.id ?? null,
     clientSecret: paymentIntent?.client_secret ?? null,
-    requiresAction: paymentIntent != null && stripeSubscription.status === "incomplete",
+    requiresAction: requiresPayment,
     seatCount,
     prorationNotice: PRORATION_NOTICE,
   };
@@ -827,6 +995,40 @@ export async function cancelSubscription(workspaceId: string) {
     throw new AppError(404, ERROR_CODES.STRIPE_SUBSCRIPTION_MISSING, "Stripe subscription not found for this workspace");
   }
 
+  // For incomplete/unpaid subscriptions, cancel immediately — there's no active period
+  const shouldCancelImmediately =
+    subscription.status === "INCOMPLETE" ||
+    subscription.status === "UNPAID";
+
+  if (shouldCancelImmediately) {
+    const stripeSubscription = await stripe.subscriptions.cancel(
+      subscription.stripeSubscriptionId,
+    );
+
+    // Reset to free plan
+    await prisma.subscription.update({
+      where: { workspaceId },
+      data: {
+        plan: "FREE",
+        status: "ACTIVE",
+        stripeSubscriptionId: null,
+        stripeSubscriptionItemId: null,
+        stripePriceId: null,
+        stripePaymentIntentId: null,
+        currentPeriodStart: null,
+        currentPeriodEnd: null,
+        cancelAtPeriodEnd: false,
+      },
+    });
+
+    return {
+      cancelAtPeriodEnd: false,
+      canceledImmediately: true,
+      currentPeriodEnd: null,
+    };
+  }
+
+  // For active/trialing/past_due subscriptions, cancel at period end
   const stripeSubscription = await stripe.subscriptions.update(
     subscription.stripeSubscriptionId,
     {
@@ -838,6 +1040,7 @@ export async function cancelSubscription(workspaceId: string) {
 
   return {
     cancelAtPeriodEnd: true,
+    canceledImmediately: false,
     currentPeriodEnd: stripeSubscription.items.data[0]?.current_period_end
       ? new Date(stripeSubscription.items.data[0].current_period_end * 1000)
       : subscription.currentPeriodEnd,
@@ -950,12 +1153,33 @@ export async function handleStripeWebhook(rawBody: Buffer, signature: string) {
 
   switch (event.type) {
     case "customer.subscription.created":
-    case "customer.subscription.updated":
-    case "customer.subscription.deleted": {
+    case "customer.subscription.updated": {
       if (workspaceId) {
         const stripeSubscription = event.data.object as Stripe.Subscription;
         const seatCount = stripeSubscription.items.data[0]?.quantity ?? 1;
         await updateWorkspaceSubscriptionFromStripe(workspaceId, stripeSubscription, seatCount);
+      }
+      break;
+    }
+
+    case "customer.subscription.deleted": {
+      if (workspaceId) {
+        // Subscription was fully canceled — reset workspace to FREE
+        await prisma.subscription.update({
+          where: { workspaceId },
+          data: {
+            plan: "FREE",
+            status: "ACTIVE",
+            stripeSubscriptionId: null,
+            stripeSubscriptionItemId: null,
+            stripePriceId: null,
+            stripePaymentIntentId: null,
+            currentPeriodStart: null,
+            currentPeriodEnd: null,
+            cancelAtPeriodEnd: false,
+            seatCount: await countAcceptedMembers(workspaceId),
+          },
+        });
       }
       break;
     }
@@ -965,12 +1189,13 @@ export async function handleStripeWebhook(rawBody: Buffer, signature: string) {
       if (workspaceId) {
         const stripeInvoice = event.data.object as Stripe.Invoice;
         await upsertInvoiceFromStripe(workspaceId, stripeInvoice);
-        const paymentIntentId = extractPaymentIntentId(stripeInvoice);
 
-        if (paymentIntentId) {
+        // Resolve payment intent using the reliable resolver
+        const resolvedPI = await resolveInvoicePaymentIntent(stripeInvoice);
+        if (resolvedPI) {
           await prisma.subscription.update({
             where: { workspaceId },
-            data: { stripePaymentIntentId: paymentIntentId },
+            data: { stripePaymentIntentId: resolvedPI.id },
           });
         }
 
@@ -993,13 +1218,13 @@ export async function handleStripeWebhook(rawBody: Buffer, signature: string) {
       if (workspaceId) {
         const stripeInvoice = event.data.object as Stripe.Invoice;
         await upsertInvoiceFromStripe(workspaceId, stripeInvoice);
-        const paymentIntentId = extractPaymentIntentId(stripeInvoice);
 
+        const resolvedPI = await resolveInvoicePaymentIntent(stripeInvoice);
         await prisma.subscription.update({
           where: { workspaceId },
           data: {
             status: "INCOMPLETE",
-            stripePaymentIntentId: paymentIntentId,
+            stripePaymentIntentId: resolvedPI?.id ?? null,
           },
         });
       }

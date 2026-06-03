@@ -1,6 +1,7 @@
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { incrementStorageUsage } from "../billing/billing.service.js";
 
 interface AttachmentInput {
   key: string;
@@ -69,4 +70,7 @@ export async function createIssueAttachments(
     })),
     skipDuplicates: true,
   });
+
+  const totalBytes = attachments.reduce((sum, a) => sum + a.size, 0);
+  await incrementStorageUsage(workspaceId, totalBytes);
 }

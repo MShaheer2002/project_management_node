@@ -287,6 +287,7 @@ Recommended fields:
 - `currentPeriodEnd`
 - `cancelAtPeriodEnd`
 - `seatCount`
+- `storageUsedBytes` (BigInt, default 0) — cached total storage usage in bytes
 - `stripeCustomerId`
 - `stripeSubscriptionId`
 - `stripeSubscriptionItemId`
@@ -551,9 +552,20 @@ Behavior:
 2. ensure default payment method exists
 3. create Stripe customer if missing
 4. count accepted members
-5. create Stripe subscription with quantity = accepted member count
+5. create Stripe subscription with `payment_behavior: "default_incomplete"` and quantity = accepted member count
 6. persist preliminary Stripe IDs
-7. trust webhook to finalize subscription state
+7. return `clientSecret` and `requiresAction: true` to the frontend
+
+Important:
+
+- `default_incomplete` means Stripe does NOT auto-charge the card
+- the frontend MUST call `stripe.confirmCardPayment(clientSecret)` to complete the payment
+- this is required for SCA/3DS compliance (mandatory in EU)
+- without frontend confirmation, the subscription stays `incomplete` and auto-cancels after ~23 hours
+- after the frontend confirms payment, Stripe fires `invoice.paid` and `customer.subscription.updated` webhooks
+- the webhook handler updates subscription status to `ACTIVE` and saves the invoice to the database
+
+Do not change `payment_behavior` to `error_if_incomplete` or remove `default_incomplete`. The `default_incomplete` + frontend confirmation pattern is the Stripe-recommended production approach.
 
 ### `PATCH /billing/subscription/change-plan`
 
@@ -566,8 +578,16 @@ Behavior:
 1. ensure workspace has an active paid subscription
 2. choose the target Stripe price
 3. keep quantity in sync with accepted member count
-4. update Stripe subscription item
-5. let webhook finalize the stored state
+4. update Stripe subscription item with `expand: ["latest_invoice.payment_intent"]`
+5. return `clientSecret` and `requiresAction` if proration invoice needs payment confirmation
+6. let webhook finalize the stored state
+
+Important:
+
+- plan changes may generate a proration invoice with a payment intent
+- if the proration amount requires payment, the response includes `clientSecret`
+- the frontend must call `stripe.confirmCardPayment(clientSecret)` to complete the proration payment
+- the same payment confirmation flow used for subscription creation applies here
 
 ### `POST /billing/subscription/cancel`
 
@@ -774,6 +794,53 @@ Recommended implementation pattern:
 This update should happen after the membership mutation commits successfully.
 
 If needed, wrap the recalculation and subscription update in a retry-safe background task later, but Phase 13 can start synchronously if response time stays acceptable.
+
+---
+
+## 15b. Storage Tracking
+
+Storage usage is tracked per workspace using a cached `storageUsedBytes` column on the `Subscription` model.
+
+### Storage limits by plan
+
+- `FREE` — 2 GB
+- `STANDARD` — 50 GB
+- `PREMIUM` — unlimited
+
+### How storage is tracked
+
+The `storageUsedBytes` column is a running total that is incremented and decremented as attachments are created and deleted.
+
+Update triggers:
+
+- **Increment** on:
+  - issue attachment creation (inline during issue create/update, or via add attachments endpoint)
+  - comment attachment creation (inline during comment create/update, or via add attachments endpoint)
+- **Decrement** on:
+  - issue attachment deletion
+  - comment attachment deletion
+
+The cached value avoids repeated `SUM(size)` aggregation queries across attachment tables.
+
+### Storage enforcement
+
+Storage limits are enforced at the presigned URL generation endpoint — the single gateway for all S3 uploads.
+
+Before generating a presigned URL:
+
+1. read `storageUsedBytes`, `plan`, and `status` from the Subscription record (single query)
+2. determine the effective plan's storage limit
+3. if `currentUsage + requestedFileSize > limit`, reject with `STORAGE_LIMIT_EXCEEDED`
+
+Premium workspaces skip the check entirely.
+
+### Billing overview
+
+`GET /billing/subscription` returns `storageUsedBytes` alongside entitlements so the frontend can display a storage usage bar.
+
+### Backfill
+
+When adding the `storageUsedBytes` column, run a backfill migration that calculates the initial value from existing `IssueAttachment` and `CommentAttachment` records.
 
 ---
 

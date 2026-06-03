@@ -2,6 +2,7 @@ import { env } from "../../config/env.js";
 import { buildUploadKey, createPresignedGetUrl, createPresignedPutUrl } from "../../infra/storage/s3.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { AppError } from "../../shared/utils/api-error.js";
+import { prisma } from "../../shared/utils/prisma.js";
 import type {
   BatchUploadFileInput,
   CreatePresignedUrlInput,
@@ -76,6 +77,47 @@ function validateUploadInput(input: CreatePresignedUrlInput | BatchUploadFileInp
   return normalizedContentType;
 }
 
+async function enforceStorageLimit(workspaceId: string, additionalBytes: number) {
+  const subscription = await prisma.subscription.findUnique({
+    where: { workspaceId },
+    select: { plan: true, status: true, storageUsedBytes: true },
+  });
+
+  if (!subscription) return;
+
+  const plan = subscription.status === "ACTIVE" || subscription.status === "TRIALING" || subscription.status === "PAST_DUE"
+    ? subscription.plan
+    : "FREE";
+
+  const GIGABYTE = 1024 * 1024 * 1024;
+  let storageLimitBytes: number | null = null;
+
+  switch (plan) {
+    case "FREE":
+      storageLimitBytes = 2 * GIGABYTE;
+      break;
+    case "STANDARD":
+      storageLimitBytes = 50 * GIGABYTE;
+      break;
+    case "PREMIUM":
+      storageLimitBytes = null; // unlimited
+      break;
+  }
+
+  if (storageLimitBytes === null) return;
+
+  const currentUsage = Number(subscription.storageUsedBytes);
+
+  if (currentUsage + additionalBytes > storageLimitBytes) {
+    const limitLabel = plan === "FREE" ? "2 GB" : "50 GB";
+    throw new AppError(
+      409,
+      ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+      `Workspace storage limit of ${limitLabel} exceeded. Upgrade your plan for more storage.`,
+    );
+  }
+}
+
 async function buildPresignedUpload(workspaceId: string, input: CreatePresignedUrlInput | BatchUploadFileInput) {
   const contentType = validateUploadInput(input);
   const key = buildUploadKey(workspaceId, input.kind, input.fileName, contentType);
@@ -84,10 +126,14 @@ async function buildPresignedUpload(workspaceId: string, input: CreatePresignedU
 }
 
 export async function createPresignedUrl(workspaceId: string, input: CreatePresignedUrlInput) {
+  await enforceStorageLimit(workspaceId, input.size);
   return buildPresignedUpload(workspaceId, input);
 }
 
 export async function createPresignedUrls(workspaceId: string, input: CreatePresignedUrlsInput) {
+  const totalSize = input.files.reduce((sum, file) => sum + file.size, 0);
+  await enforceStorageLimit(workspaceId, totalSize);
+
   const uploads = await Promise.all(
     input.files.map(async (file) => ({
       clientId: file.clientId ?? null,

@@ -1085,6 +1085,7 @@ model Subscription {
   currentPeriodEnd     DateTime?
   cancelAtPeriodEnd    Boolean            @default(false) // If true, cancels at end of period
   seatCount            Int                @default(1)
+  storageUsedBytes     BigInt             @default(0) // Cached total storage usage in bytes
   stripeCustomerId     String? // Stripe customer ID
   stripeSubscriptionId String? // Stripe subscription ID
   stripeSubscriptionItemId String? // Stripe subscription item for seat quantity changes

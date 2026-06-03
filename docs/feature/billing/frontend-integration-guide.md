@@ -139,6 +139,7 @@ Do not permanently trust optimistic UI after a billing mutation. Always reconcil
 - `currentPeriodEnd`
 - `cancelAtPeriodEnd`
 - `entitlements`
+- `storageUsedBytes`
 - `permissions`
 - `prorationNotice`
 
@@ -331,46 +332,168 @@ Do not build UI that depends on raw Stripe payment method IDs being displayed to
 
 ## Payment Confirmation Flow
 
-This is the most important frontend billing flow.
+This is the most important frontend billing flow. **Getting this wrong will cause subscriptions to stay incomplete and invoices to never appear.**
+
+### Why this matters
+
+The backend creates subscriptions with `payment_behavior: "default_incomplete"`. This means:
+
+- Stripe creates the subscription and generates an invoice
+- but does NOT automatically charge the card
+- the frontend MUST confirm the payment using `stripe.confirmCardPayment(clientSecret)`
+- without this step, the subscription stays `incomplete`, the invoice stays `open`, and no webhook fires
+
+This is the Stripe-recommended approach for SCA/3DS compliance (mandatory in EU).
+
+### Backend response shape
 
 When calling:
 
 - `POST /billing/subscription/create`
 - `PATCH /billing/subscription/change-plan`
 
-the response may include:
+the response always includes:
 
-- `clientSecret`
-- `paymentIntentId`
-- `requiresAction`
+```json
+{
+  "subscriptionId": "sub_xxx",
+  "status": "INCOMPLETE",
+  "paymentIntentId": "pi_xxx",
+  "clientSecret": "pi_xxx_secret_xxx",
+  "requiresAction": true,
+  "seatCount": 1,
+  "prorationNotice": "..."
+}
+```
 
-### If `requiresAction = false`
+Important:
 
-1. show temporary processing state
-2. call `GET /billing/subscription/payment-status`
-3. then call `GET /billing/subscription`
-4. update final UI from backend response
+- `clientSecret` is always returned when payment needs confirmation (which is always for `default_incomplete`)
+- `requiresAction` is `true` when the subscription is `incomplete` and `clientSecret` is available
+- the frontend MUST call `stripe.confirmCardPayment(clientSecret)` to complete the payment
 
-### If `requiresAction = true`
+### Required implementation
 
-1. call Stripe.js confirmation using the returned `clientSecret`
-2. handle possible 3DS/SCA redirect or modal
-3. after Stripe returns control, call `GET /billing/subscription/payment-status`
-4. if still processing, poll for a short period
-5. once payment status is stable, call `GET /billing/subscription`
-6. unlock paid UI only when backend state confirms it
+Every call to create or change a subscription must follow this exact sequence:
 
-### Required fallback after refresh
+```ts
+import { loadStripe } from "@stripe/stripe-js";
 
-If the page reloads during payment:
+const stripe = await loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
 
-1. reload workspace context
-2. call `GET /billing/subscription/payment-status`
-3. if `requiresAction = true` and `clientSecret` is still available, resume confirmation UI
-4. if paid access is already active, refresh normal subscription screen
-5. if payment failed, show retry UI
+// Step 1: Call the backend
+const response = await billingApi.createSubscription({ plan, billingCycle });
+// OR: const response = await billingApi.changePlan({ plan });
 
-This is why `GET /billing/subscription/payment-status` exists. The frontend should not depend on in-memory state for billing confirmation.
+// Step 2: ALWAYS confirm payment if clientSecret is returned
+if (response.clientSecret) {
+  const { error } = await stripe.confirmCardPayment(response.clientSecret);
+
+  if (error) {
+    // Payment failed — show error and allow retry
+    // Do NOT unlock paid features
+    showError("Payment could not be completed. Try another card or retry.");
+    return;
+  }
+}
+
+// Step 3: Poll until backend reflects the completed payment
+let stable = false;
+for (let i = 0; i < 10; i++) {
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  const status = await billingApi.getPaymentStatus();
+
+  if (status.hasPaidAccess) {
+    stable = true;
+    break;
+  }
+
+  // Edge case: if still requires action after confirmation, retry
+  if (status.requiresAction && status.clientSecret) {
+    const { error } = await stripe.confirmCardPayment(status.clientSecret);
+    if (error) break;
+  }
+}
+
+// Step 4: Refresh billing state from backend (source of truth)
+await refetchBillingOverview();
+await refetchInvoices();
+
+// Step 5: Only NOW unlock paid UI
+if (stable) {
+  showSuccess("Subscription activated!");
+} else {
+  showWarning("Payment is still processing. Check back shortly.");
+}
+```
+
+### What happens if the frontend skips Step 2
+
+If `stripe.confirmCardPayment()` is never called:
+
+- subscription stays `incomplete` forever
+- Stripe never fires `invoice.paid` webhook
+- your database never gets the invoice record
+- `GET /billing/invoices` returns empty
+- `accessPlan` stays `FREE` even though `plan` shows `STANDARD`
+- the subscription auto-cancels after Stripe's expiry window (typically 23 hours)
+
+This is the single most common billing integration bug.
+
+### End-to-end flow diagram
+
+```
+Frontend                          Backend                         Stripe
+   |                                |                               |
+   |-- POST /subscription/create -->|                               |
+   |                                |-- subscriptions.create ------>|
+   |                                |<-- subscription (incomplete) -|
+   |<-- { clientSecret, requiresAction: true } --|                  |
+   |                                |                               |
+   |-- stripe.confirmCardPayment(clientSecret) ------------------->|
+   |                                |                   (3DS modal if needed)
+   |<-- { paymentIntent: succeeded } ------------------------------|
+   |                                |                               |
+   |                                |<-- webhook: invoice.paid -----|
+   |                                |    (saves invoice to DB)      |
+   |                                |<-- webhook: sub.updated ------|
+   |                                |    (status -> ACTIVE)         |
+   |                                |                               |
+   |-- GET /payment-status -------->|                               |
+   |<-- { hasPaidAccess: true } ----|                               |
+   |                                |                               |
+   |-- GET /billing/subscription -->|                               |
+   |<-- { plan: STANDARD, status: ACTIVE } --|                      |
+   |                                |                               |
+   |-- GET /billing/invoices ------>|                               |
+   |<-- [{ amount: 600, status: PAID }] --|                         |
+```
+
+### Page reload recovery
+
+If the page reloads during payment confirmation:
+
+1. on billing page mount, call `GET /billing/subscription/payment-status`
+2. if `requiresAction = true` and `clientSecret` is available:
+   - show "Payment requires confirmation" UI
+   - call `stripe.confirmCardPayment(clientSecret)` to resume
+3. if `hasPaidAccess = true`:
+   - payment already completed, refresh billing overview
+4. if payment failed:
+   - show retry UI with option to switch card
+
+This is why `GET /billing/subscription/payment-status` exists. The frontend must not depend on in-memory state for billing confirmation.
+
+### 3DS / SCA behavior
+
+`stripe.confirmCardPayment()` automatically handles 3DS:
+
+- if the card does not require 3DS, the payment completes immediately
+- if the card requires 3DS, Stripe shows a modal or redirects the user
+- after the user completes 3DS, control returns to your code
+- test 3DS in sandbox using card number `4000 0025 0000 3155`
+
+The frontend does not need to detect or branch on 3DS. `confirmCardPayment()` handles both paths.
 
 ## Polling Strategy
 
@@ -378,17 +501,16 @@ Use short polling only for payment reconciliation.
 
 Recommended polling cases:
 
-- immediately after create subscription
-- immediately after change plan
+- immediately after `stripe.confirmCardPayment()` succeeds
 - after 3DS/SCA confirmation returns
 - after page reload during payment
 
 Recommended approach:
 
 - poll `GET /billing/subscription/payment-status` every `2-3` seconds
-- stop after `30-60` seconds
-- if state stabilizes earlier, stop immediately
-- then fetch `GET /billing/subscription`
+- stop when `hasPaidAccess = true`
+- stop after `30` seconds maximum
+- then fetch `GET /billing/subscription` and `GET /billing/invoices`
 
 Do not leave endless polling loops running.
 
@@ -407,6 +529,30 @@ This matters for:
 - user capacity messaging
 - storage messaging
 - premium upgrade banners
+
+## Storage Usage UI
+
+`GET /billing/subscription` returns `storageUsedBytes` (number) and `entitlements.storageLimitBytes` (number or null).
+
+### Display
+
+- show a storage usage bar on the billing overview page
+- format both values as human-readable (e.g., "1.2 GB / 2 GB")
+- if `storageLimitBytes` is `null` (Premium), show "Unlimited"
+
+### Upload rejection
+
+When a file upload is rejected with error code `STORAGE_LIMIT_EXCEEDED`:
+
+- block the upload
+- show a clear message: "Workspace storage limit exceeded. Upgrade your plan for more storage."
+- show an upgrade CTA for Standard or Premium
+
+### Refresh
+
+After file uploads or attachment deletions, the billing overview should be refreshed if the storage bar is visible, since the cached `storageUsedBytes` value will have changed.
+
+---
 
 ## Admin Read-Only Behavior
 
@@ -461,6 +607,18 @@ Frontend action:
 - block invite/add action
 - show upgrade prompt
 - route user to `STANDARD` or `PREMIUM`
+
+### `STORAGE_LIMIT_EXCEEDED`
+
+Meaning:
+
+- workspace has reached its storage limit for the current plan
+
+Frontend action:
+
+- block the upload
+- show storage usage and limit
+- prompt upgrade to a higher plan
 
 ### `BILLING_NO_DEFAULT_PAYMENT_METHOD`
 
@@ -668,4 +826,6 @@ The frontend billing integration is correct only if it does all of the following
 - recovers after refresh or navigation loss
 - waits for backend truth before granting paid access
 - uses `accessPlan` for feature gating
+- displays storage usage bar from `storageUsedBytes` and `storageLimitBytes`
+- handles `STORAGE_LIMIT_EXCEEDED` upload errors with upgrade CTA
 - displays proration as informational, not as frontend-calculated source of truth
