@@ -36,6 +36,12 @@ const envSchema = z.object({
     .default("development"),
   FRONTEND_URL: z.string().url().default("http://localhost:3000"),
 
+  // Stripe — workspace billing
+  STRIPE_SECRET_KEY: z.string().min(1, "STRIPE_SECRET_KEY is required"),
+  STRIPE_WEBHOOK_SECRET: z.string().min(1, "STRIPE_WEBHOOK_SECRET is required"),
+  STRIPE_STANDARD_MONTHLY_PRICE_ID: z.string().min(1, "STRIPE_STANDARD_MONTHLY_PRICE_ID is required"),
+  STRIPE_PREMIUM_MONTHLY_PRICE_ID: z.string().min(1, "STRIPE_PREMIUM_MONTHLY_PRICE_ID is required"),
+
   // AWS S3 — direct browser uploads via presigned PUT URLs
   AWS_ACCESS_KEY_ID: z.string().min(1, "AWS_ACCESS_KEY_ID is required"),
   AWS_SECRET_ACCESS_KEY: z.string().min(1, "AWS_SECRET_ACCESS_KEY is required"),

@@ -14,6 +14,7 @@
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { createInitialWorkspaceSubscription } from "../billing/billing.service.js";
 import type { CreateWorkspaceInput, UpdateWorkspaceInput } from "./workspace.schemas.js";
 
 /**
@@ -77,6 +78,9 @@ export async function createWorkspace(userId: string, input: CreateWorkspaceInpu
         teamId: defaultTeam.id,
       },
     });
+
+    // 5. Create the initial FREE workspace subscription state
+    await createInitialWorkspaceSubscription(tx, ws.id);
 
     return { workspace: ws, defaultTeam };
   });

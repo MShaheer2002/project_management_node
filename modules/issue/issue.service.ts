@@ -9,6 +9,7 @@ import { emitIssueCreated, emitIssueDeleted, emitIssueUpdated } from "../../sock
 import { getSocketServer } from "../../socket/index.js";
 import { createNotification } from "../notification/notification.service.js";
 import { createIssueAttachments } from "./issue-attachment.service.js";
+import { decrementStorageUsage } from "../billing/billing.service.js";
 import type {
   CreateIssueInput,
   ListIssuesQuery,
@@ -1304,10 +1305,11 @@ export async function addAttachments(workspaceId: string, issueId: string, creat
 export async function removeAttachment(workspaceId: string, issueId: string, attachmentId: string) {
   const attachment = await (prisma as any).issueAttachment.findFirst({
     where: { id: attachmentId, issueId, workspaceId },
-    select: { id: true },
+    select: { id: true, size: true },
   });
   if (!attachment) {
     throw new AppError(404, ERROR_CODES.ATTACHMENT_NOT_FOUND, "Attachment not found");
   }
   await (prisma as any).issueAttachment.delete({ where: { id: attachmentId } });
+  await decrementStorageUsage(workspaceId, attachment.size);
 }

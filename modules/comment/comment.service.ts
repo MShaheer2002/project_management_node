@@ -8,6 +8,7 @@ import { prisma } from "../../shared/utils/prisma.js";
 import { emitCommentCreated, emitCommentDeleted, emitCommentUpdated } from "../../socket/events.js";
 import { getSocketServer } from "../../socket/index.js";
 import { validateAttachmentRefs } from "../issue/issue-attachment.service.js";
+import { incrementStorageUsage, decrementStorageUsage } from "../billing/billing.service.js";
 import { createNotification } from "../notification/notification.service.js";
 import type { CreateCommentInput, ListCommentsQuery, UpdateCommentInput } from "./comment.schemas.js";
 
@@ -155,6 +156,9 @@ export async function createComment(workspaceId: string, issueId: string, userId
       })),
       skipDuplicates: true,
     });
+
+    const totalBytes = input.attachments.reduce((sum: number, a: any) => sum + a.size, 0);
+    await incrementStorageUsage(workspaceId, totalBytes);
   }
 
   const hydrated = await prisma.comment.findUnique({
@@ -353,6 +357,9 @@ export async function updateComment(workspaceId: string, commentId: string, user
           })),
           skipDuplicates: true,
         });
+
+        const totalBytes = toAdd.reduce((sum: number, a: any) => sum + a.size, 0);
+        await incrementStorageUsage(workspaceId, totalBytes);
       }
     }
 
@@ -473,6 +480,9 @@ export async function addCommentAttachments(workspaceId: string, commentId: stri
     skipDuplicates: true,
   });
 
+  const totalBytes = attachments.reduce((sum: number, a: any) => sum + a.size, 0);
+  await incrementStorageUsage(workspaceId, totalBytes);
+
   const updated = await prisma.comment.findUnique({
     where: { id: commentId },
     include: {
@@ -487,7 +497,7 @@ export async function addCommentAttachments(workspaceId: string, commentId: stri
 export async function removeCommentAttachment(workspaceId: string, commentId: string, attachmentId: string) {
   const attachment = await (prisma as any).commentAttachment.findFirst({
     where: { id: attachmentId, commentId, workspaceId },
-    select: { id: true },
+    select: { id: true, size: true },
   });
 
   if (!attachment) {
@@ -495,4 +505,5 @@ export async function removeCommentAttachment(workspaceId: string, commentId: st
   }
 
   await (prisma as any).commentAttachment.delete({ where: { id: attachmentId } });
+  await decrementStorageUsage(workspaceId, attachment.size);
 }
