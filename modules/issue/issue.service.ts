@@ -93,6 +93,22 @@ function parseDueTime(value: string | null | undefined) {
   return date;
 }
 
+function getCompletedAtForStatusTransition(
+  previousStatus: string,
+  nextStatus: string,
+  currentCompletedAt?: Date | null,
+) {
+  if (previousStatus !== "DONE" && nextStatus === "DONE") {
+    return new Date();
+  }
+
+  if (previousStatus === "DONE" && nextStatus !== "DONE") {
+    return null;
+  }
+
+  return currentCompletedAt;
+}
+
 function mapIssue(record: any, includeRelations = true) {
   const labelObjects = (record.labels ?? []).map((labelLink: any) => ({
     id: labelLink.label.id,
@@ -769,7 +785,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
   return prisma.$transaction(async (tx) => {
     const current = await tx.issue.findFirst({
       where: { id: issueId, workspaceId },
-      select: { id: true, type: true, status: true, priority: true, assigneeId: true, dueDate: true, projectId: true, teamId: true, creatorId: true, cycleId: true },
+      select: { id: true, type: true, status: true, priority: true, assigneeId: true, dueDate: true, projectId: true, teamId: true, creatorId: true, cycleId: true, completedAt: true },
     });
 
     if (!current) {
@@ -798,6 +814,11 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
       }
     }
 
+    const nextStatus = input.status !== undefined ? (statusToDb[input.status] as any) : current.status;
+    const nextCompletedAt = input.status !== undefined
+      ? getCompletedAtForStatusTransition(current.status, nextStatus, current.completedAt)
+      : current.completedAt;
+
     await tx.issue.update({
       where: { id: issueId },
       data: {
@@ -806,6 +827,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         ...(input.type !== undefined ? { type: typeToDb[input.type] as any } : {}),
         ...(input.priority !== undefined ? { priority: priorityToDb[input.priority] as any } : {}),
         ...(input.status !== undefined ? { status: statusToDb[input.status] as any } : {}),
+        ...(input.status !== undefined ? { completedAt: nextCompletedAt } : {}),
         ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
         ...(input.dueDate !== undefined ? { dueDate: input.dueDate ? new Date(input.dueDate) : null } : {}),
         ...(input.dueTime !== undefined ? { dueTime: parseDueTime(input.dueTime) } : {}),
@@ -1038,17 +1060,20 @@ export async function updateIssueStatus(
 ) {
   const issue = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true, status: true, cycleId: true },
+    select: { id: true, status: true, cycleId: true, completedAt: true },
   });
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
   }
 
+  const nextStatus = (statusToDb[status] ?? "BACKLOG") as any;
+  const nextCompletedAt = getCompletedAtForStatusTransition(issue.status, nextStatus, issue.completedAt);
+
   await prisma.issue.update({
     where: { id: issueId },
-    data: { status: (statusToDb[status] ?? "BACKLOG") as any },
+    data: { status: nextStatus, completedAt: nextCompletedAt },
   });
-  if ((statusToDb[status] ?? "BACKLOG") !== issue.status) {
+  if (nextStatus !== issue.status) {
     await logActivity({
       workspaceId,
       actorId: userId,

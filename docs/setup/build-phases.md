@@ -30,9 +30,10 @@ Phase 10 → Realtime        (Socket.IO live updates)
 Phase 11 → Cycles          (time-boxed execution for predictable delivery)
 Phase 12 → Templates       (standardized issue creation)
 Phase 13 → Billing         (plans, limits, Stripe lifecycle)
-Phase 14 → API Keys        (external/system access)
-Phase 15 → Integrations    (GitHub/Slack/etc. connectivity)
-Phase 16 → Intelligence    (MCP server, AI assistant — future scope)
+Phase 14 → Analytics       (workspace, project, team, member metrics)
+Phase 15 → API Keys        (external/system access)
+Phase 16 → Integrations    (GitHub/Slack/etc. connectivity)
+Phase 17 → Intelligence    (MCP server, AI assistant — future scope)
 ```
 
 ---
@@ -1322,7 +1323,137 @@ POST   /webhooks/stripe               — Stripe webhook receiver
 
 ---
 
-## Phase 14 — API Keys
+## Phase 14 — Analytics (Workspace Intelligence)
+
+**Goal:** Provide production-grade analytics across workspace, projects, teams, members, and cycles. All metrics are computed from existing data (issues, activities, memberships) — no new schema models required except adding `completedAt` to the Issue model.
+
+**Dependency:** Phase 13 complete. All core entities (issues, projects, teams, cycles, activity) must be stable.
+
+**Backend contract:** [../feature/analytics/analytics-backend-setup-guide.md](../feature/analytics/analytics-backend-setup-guide.md)
+
+### 14.1 Schema Change
+
+Add `completedAt` to the Issue model:
+
+```prisma
+model Issue {
+  // ... existing fields
+  completedAt DateTime?  // Set when status changes to DONE, cleared when moved back
+}
+```
+
+This enables fast resolution-time queries without scanning the Activity log.
+
+### 14.2 Analytics Endpoints
+
+```
+GET /analytics/workspace              — Workspace-level overview metrics
+GET /analytics/projects/:id           — Project-level metrics
+GET /analytics/teams/:id              — Team-level metrics
+GET /analytics/members/:id            — Member-level metrics
+GET /analytics/cycles/:id             — Cycle-level metrics (extends existing cycle stats)
+GET /analytics/export                 — CSV/JSON export for any analytics scope
+```
+
+All endpoints support:
+- `period` query param: `7d`, `30d`, `90d`, `custom`
+- `from` / `to` for custom date ranges
+- Comparison with previous period (trend %)
+
+### 14.3 Workspace Analytics (`GET /analytics/workspace`)
+
+Summary cards:
+- Tasks completed (count + trend %)
+- Avg resolution time (creation → DONE)
+- Active projects count
+- Team workload % (assigned / capacity estimate)
+- Overdue issues count
+- Open vs closed ratio
+
+Charts:
+- Completion velocity (issues completed per day/week)
+- Issue distribution by status (pie/donut)
+- Issue distribution by priority
+- Issue distribution by type (task/bug/issue)
+- Created vs completed trend line
+
+Tables:
+- Team performance (team name, members, completed, efficiency %)
+- Top contributors (member, completed, avg resolution time)
+- Bottleneck issues (stuck in IN_PROGRESS or REVIEW longest)
+
+### 14.4 Project Analytics (`GET /analytics/projects/:id`)
+
+- Progress % (done / total)
+- Burndown chart (remaining issues over time)
+- Scope changes (issues added after project start)
+- Status breakdown
+- Priority breakdown
+- Member workload within project
+- Timeline health (on track / at risk / behind based on target date vs completion rate)
+
+### 14.5 Team Analytics (`GET /analytics/teams/:id`)
+
+- Team velocity (issues completed per week, trend)
+- Workload distribution per member (bar chart)
+- Completion rate per member
+- Avg resolution time per member
+- Overdue issues per member
+- Cycle-over-cycle comparison (if team uses cycles)
+- Member performance table (assigned, completed, open, overdue, completion %)
+
+### 14.6 Member Analytics (`GET /analytics/members/:id`)
+
+- Issues: assigned, completed, in progress, overdue
+- Completion rate + trend
+- Avg resolution time
+- Activity heatmap (contributions per day)
+- Breakdown by project
+- Breakdown by team
+- Recent activity stream (last 20 actions)
+
+### 14.7 Export (`GET /analytics/export`)
+
+- Query params: `scope` (workspace/project/team/member/cycle), `scopeId`, `format` (csv/json/pdf), `period`
+- Returns downloadable file with the analytics data
+- Access: workspace export is ADMIN+, other scoped exports follow the same access rules as their analytics pages
+
+### 14.8 Access Control
+
+| Endpoint | OWNER | ADMIN | MEMBER | GUEST |
+|---|---|---|---|---|
+| Workspace analytics | Full | Full | Limited (own teams) | None |
+| Project analytics | Full | Full | Projects they're in | None |
+| Team analytics | Full | Full | Teams they're in | None |
+| Member analytics | Full | Full | Own only | None |
+| Export | Full | Full | Scoped access matching page visibility | None |
+
+### 14.9 Module Structure
+
+```
+modules/analytics/
+├── analytics.routes.ts
+├── analytics.controller.ts
+├── analytics.service.ts
+├── analytics.schemas.ts
+└── analytics.utils.ts          # Shared date range, trend calculation helpers
+```
+
+### Done When
+
+- [ ] `completedAt` field added to Issue model and set on status change to DONE
+- [ ] Workspace analytics returns summary cards, charts, and tables
+- [ ] Project analytics returns burndown, scope changes, and status breakdown
+- [ ] Team analytics returns velocity, workload distribution, and member performance
+- [ ] Member analytics returns personal metrics and activity heatmap
+- [ ] All analytics support 7d/30d/90d/custom period with trend comparison
+- [ ] Export endpoint returns CSV/JSON for any scope
+- [ ] Access control enforced per role
+- [ ] Workspace isolation verified (no cross-tenant data leaks)
+
+---
+
+## Phase 15 — API Keys
 
 **Goal:** Enable secure non-user/system access for integrations and automation.
 
@@ -1346,7 +1477,7 @@ DELETE /api-keys/:id                  — Revoke key
 
 ---
 
-## Phase 15 — Integrations
+## Phase 16 — Integrations
 
 **Goal:** Connect external tools (GitHub, Slack, etc.) to workspace workflows.
 
@@ -1366,7 +1497,7 @@ Providers: GitHub, Slack, Discord, Figma (provider-specific OAuth + webhooks).
 
 ---
 
-## Phase 16 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
+## Phase 17 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
 
 **Goal:** Expose workspace data to AI agents via the Model Context Protocol (MCP), and provide an in-app AI assistant that can read, create, and manage issues through natural language.
 
