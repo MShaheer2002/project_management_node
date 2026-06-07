@@ -80,6 +80,21 @@ enum ProjectMembershipRole {
   MEMBER
 }
 
+/// Milestone progress inside a project roadmap
+enum MilestoneStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  MISSED
+}
+
+/// Lifecycle of a project-to-project roadmap dependency
+enum ProjectDependencyStatus {
+  ACTIVE
+  RESOLVED
+  CANCELLED
+}
+
 /// Sprint/cycle lifecycle — auto-transitions based on dates
 enum CycleStatus {
   UPCOMING
@@ -155,6 +170,16 @@ enum ActivityType {
   TEMPLATE_ACTIVATED
   TEMPLATE_DEACTIVATED
   TEMPLATE_APPLIED
+  ROADMAP_SCHEDULE_UPDATED
+  ROADMAP_MILESTONE_CREATED
+  ROADMAP_MILESTONE_UPDATED
+  ROADMAP_MILESTONE_COMPLETED
+  ROADMAP_MILESTONE_DELETED
+  ROADMAP_MILESTONES_REORDERED
+  ROADMAP_DEPENDENCY_CREATED
+  ROADMAP_DEPENDENCY_RESOLVED
+  ROADMAP_DEPENDENCY_CANCELLED
+  ROADMAP_DEPENDENCY_DELETED
 }
 
 /// What kind of entity an activity log entry refers to
@@ -290,6 +315,12 @@ model User {
   createdTemplates      Template[] @relation("TemplateCreator") // Templates created by this user
   updatedTemplates      Template[] @relation("TemplateUpdater") // Templates last updated by this user
   templateApplications  TemplateApplication[] // Template apply sessions for this user
+  ownedProjectMilestones ProjectMilestone[] @relation("RoadmapMilestoneOwner")
+  createdProjectMilestones ProjectMilestone[] @relation("RoadmapMilestoneCreator")
+  completedProjectMilestones ProjectMilestone[] @relation("RoadmapMilestoneCompleter")
+  createdProjectDependencies ProjectDependency[] @relation("RoadmapDependencyCreator")
+  resolvedProjectDependencies ProjectDependency[] @relation("RoadmapDependencyResolver")
+  cancelledProjectDependencies ProjectDependency[] @relation("RoadmapDependencyCanceller")
   createdApiKeys        ApiKey[] // API keys created by this user
   connectedIntegrations Integration[] // Integrations connected by this user
   createdIssueAttachments IssueAttachment[]
@@ -332,6 +363,8 @@ model Workspace {
   commentAttachments CommentAttachment[]
   labels         Label[]
   cycles         Cycle[]
+  roadmapMilestones ProjectMilestone[]
+  roadmapDependencies ProjectDependency[]
   notifications  Notification[]
   activities     Activity[]
   templates      Template[]
@@ -545,6 +578,9 @@ model Project {
   lead       User?       @relation("ProjectLead", fields: [leadId], references: [id], onDelete: SetNull)
   memberships ProjectMembership[]
   issues     Issue[] // All issues in this project
+  milestones ProjectMilestone[]
+  blockingDependencies ProjectDependency[] @relation("RoadmapBlockingProject")
+  blockedDependencies ProjectDependency[] @relation("RoadmapBlockedProject")
 
   @@unique([workspaceId, name]) // Project names must be unique within a workspace
   @@unique([workspaceId, slug])
@@ -862,6 +898,66 @@ model Cycle {
   @@unique([teamId, number])
   @@index([workspaceId, teamId, status])
   @@index([workspaceId, startsAt, endsAt])
+}
+
+// ============================================================================
+// ROADMAP
+// ============================================================================
+
+/// ProjectMilestone — dated checkpoint on a project roadmap
+model ProjectMilestone {
+  id            String          @id @default(uuid())
+  workspaceId    String
+  projectId      String
+  name           String
+  description    String?        @db.Text
+  dueDate        DateTime
+  ownerId        String?
+  status         MilestoneStatus @default(PLANNED)
+  completedAt    DateTime?
+  completedById  String?
+  sortOrder      Int            @default(0)
+  createdById    String
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner       User?     @relation("RoadmapMilestoneOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  completedBy User?     @relation("RoadmapMilestoneCompleter", fields: [completedById], references: [id], onDelete: SetNull)
+  createdBy   User      @relation("RoadmapMilestoneCreator", fields: [createdById], references: [id])
+
+  @@index([workspaceId, projectId, dueDate])
+  @@index([workspaceId, status, dueDate])
+  @@index([ownerId])
+}
+
+/// ProjectDependency — project-to-project blocking relationship on the roadmap
+model ProjectDependency {
+  id                String                  @id @default(uuid())
+  workspaceId       String
+  blockingProjectId String
+  blockedProjectId  String
+  status            ProjectDependencyStatus @default(ACTIVE)
+  note              String?                 @db.Text
+  resolvedAt        DateTime?
+  resolvedById      String?
+  cancelledAt       DateTime?
+  cancelledById     String?
+  createdById       String
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  blockingProject Project   @relation("RoadmapBlockingProject", fields: [blockingProjectId], references: [id], onDelete: Cascade)
+  blockedProject  Project   @relation("RoadmapBlockedProject", fields: [blockedProjectId], references: [id], onDelete: Cascade)
+  createdBy       User      @relation("RoadmapDependencyCreator", fields: [createdById], references: [id])
+  resolvedBy      User?     @relation("RoadmapDependencyResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  cancelledBy     User?     @relation("RoadmapDependencyCanceller", fields: [cancelledById], references: [id], onDelete: SetNull)
+
+  @@unique([blockingProjectId, blockedProjectId])
+  @@index([workspaceId, blockingProjectId, status])
+  @@index([workspaceId, blockedProjectId, status])
 }
 
 // ============================================================================

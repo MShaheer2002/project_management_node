@@ -31,9 +31,10 @@ Phase 11 → Cycles          (time-boxed execution for predictable delivery)
 Phase 12 → Templates       (standardized issue creation)
 Phase 13 → Billing         (plans, limits, Stripe lifecycle)
 Phase 14 → Analytics       (workspace, project, team, member metrics)
-Phase 15 → API Keys        (external/system access)
-Phase 16 → Integrations    (GitHub/Slack/etc. connectivity)
-Phase 17 → Intelligence    (MCP server, AI assistant — future scope)
+Phase 15 → Roadmap         (planning timeline, milestones, dependencies)
+Phase 16 → API Keys        (external/system access)
+Phase 17 → Integrations    (GitHub/Slack/etc. connectivity)
+Phase 18 → Intelligence    (MCP server, AI assistant — future scope)
 ```
 
 ---
@@ -1453,7 +1454,129 @@ modules/analytics/
 
 ---
 
-## Phase 15 — API Keys
+## Phase 15 — Roadmap
+
+**Goal:** Turn the current mock-driven roadmap UI into a production-grade planning surface backed by real project dates, milestones, and dependency health. This phase should make roadmap useful for daily planning, not just visual reporting.
+
+**Dependency:** Phase 14 complete. Analytics must exist first so roadmap can reuse progress, throughput, and risk signals instead of inventing separate logic.
+
+**Backend contract:** [phase15-backend-contract.md](./phase15-backend-contract.md)
+
+**Current frontend baseline already exists:**
+- `/roadmap` route is wired
+- team-scoped filtering exists via `?team=...`
+- quarterly/monthly toggle UI exists
+- prev/next navigation exists
+- project bars render with progress %
+- current implementation is still mock-driven and uses synthetic widths/offsets
+
+### 15.1 Schema Changes
+
+Use the existing `Project.startDate`, `Project.targetDate`, and `Project.features.roadmap` fields as the core schedule data. Add roadmap-specific tables for planning detail:
+
+```prisma
+model ProjectMilestone {
+  id          String   @id @default(uuid())
+  workspaceId String
+  projectId   String
+  name        String
+  dueDate     DateTime
+  status      MilestoneStatus @default(PLANNED)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ProjectDependency {
+  id                String   @id @default(uuid())
+  workspaceId       String
+  blockingProjectId String
+  blockedProjectId  String
+  createdAt         DateTime @default(now())
+
+  @@unique([blockingProjectId, blockedProjectId])
+}
+```
+
+### 15.2 Roadmap Endpoints
+
+```
+GET    /roadmap                                 — Timeline data across workspace/team/project scope
+GET    /roadmap/projects/:id                    — Single project roadmap detail
+POST   /roadmap/projects/:id/milestones         — Create milestone
+PATCH  /roadmap/projects/:id/milestones/:mid    — Update milestone
+DELETE /roadmap/projects/:id/milestones/:mid    — Delete milestone
+POST   /roadmap/dependencies                    — Create dependency between projects
+DELETE /roadmap/dependencies/:id                — Remove dependency
+PATCH  /roadmap/projects/:id/schedule           — Update startDate/targetDate in one operation
+```
+
+Core query params:
+- `teamId`
+- `departmentId`
+- `projectId`
+- `view=month|quarter`
+- `from` / `to`
+- `include=milestones,dependencies,health`
+
+### 15.3 Timeline Payload Requirements
+
+Each roadmap item should return:
+- project identity: `id`, `name`, `slug`, `status`, `visibility`
+- schedule: `startDate`, `targetDate`, computed duration, current position within range
+- progress: `% complete`, open/completed issue counts
+- ownership: `lead`, `team`, `department`
+- health: `onTrack | atRisk | offTrack`
+- milestone summary: total, completed, overdue
+- dependency summary: blocked by / blocking counts
+
+The roadmap API is an aggregation endpoint. It should not force the frontend to stitch together projects, analytics, milestones, and dependencies client-side.
+
+### 15.4 Productivity-Focused Behaviors
+
+- Fast filtering by team, department, owner, status, and date range
+- Stable sorting for large workspaces (target date, updated date, progress, risk)
+- Inline rescheduling support via one PATCH endpoint
+- Team-scoped views must be first-class, because the sidebar already links roadmap per team
+- Empty/loading/error states must be explicit so the page is usable outside the happy path
+- Response shape must support both workspace roadmap and embedded project roadmap tab without extra adapter logic
+
+### 15.5 Access Control
+
+| Endpoint | OWNER | ADMIN | MEMBER | GUEST |
+|---|---|---|---|---|
+| Workspace roadmap | Full | Full | Teams/projects they can access | None |
+| Project roadmap detail | Full | Full | Projects they're in | Public projects only |
+| Milestone CRUD | Full | Full | Project lead or team lead | None |
+| Dependency CRUD | Full | Full | Project lead or team lead | None |
+| Schedule update | Full | Full | Project lead or team lead | None |
+
+### 15.6 Module Structure
+
+```
+modules/roadmap/
+├── roadmap.routes.ts
+├── roadmap.controller.ts
+├── roadmap.service.ts
+├── roadmap.schemas.ts
+└── roadmap.utils.ts          # date-window, layout, health helpers
+```
+
+### Done When
+
+- [ ] `/roadmap` returns real timeline data from DB, not mock projects
+- [ ] Team-scoped roadmap works via `teamId` filters
+- [ ] Project dates are persisted and editable through a dedicated schedule endpoint
+- [ ] Milestones can be created, updated, ordered, and deleted
+- [ ] Project dependencies are created safely with cycle/self-dependency validation
+- [ ] Health status is computed from target date, progress, and completion rate
+- [ ] Timeline payload supports both workspace roadmap page and project detail roadmap tab
+- [ ] Access control enforced per role and project visibility
+- [ ] Workspace isolation verified
+
+---
+
+## Phase 16 — API Keys
 
 **Goal:** Enable secure non-user/system access for integrations and automation.
 
@@ -1477,7 +1600,7 @@ DELETE /api-keys/:id                  — Revoke key
 
 ---
 
-## Phase 16 — Integrations
+## Phase 17 — Integrations
 
 **Goal:** Connect external tools (GitHub, Slack, etc.) to workspace workflows.
 
@@ -1497,21 +1620,21 @@ Providers: GitHub, Slack, Discord, Figma (provider-specific OAuth + webhooks).
 
 ---
 
-## Phase 17 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
+## Phase 18 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
 
 **Goal:** Expose workspace data to AI agents via the Model Context Protocol (MCP), and provide an in-app AI assistant that can read, create, and manage issues through natural language.
 
-**Dependency:** Phase 15 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
+**Dependency:** Phase 16 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
 
 **Plan tier:** Basic AI on Standard plan, full AI on Plus plan.
 
-### 16.1 What is MCP
+### 18.1 What is MCP
 
 MCP (Model Context Protocol) is an open standard that lets AI models (Claude, GPT, etc.) call **tools** exposed by your server. Instead of the AI scraping your UI, it calls structured endpoints with typed parameters and gets structured responses.
 
 Think of it as: **an API designed for AI agents, not humans.**
 
-### 16.2 MCP Server Setup
+### 18.2 MCP Server Setup
 
 The MCP server runs as a separate module alongside the Express API. It exposes workspace data as tools that any MCP-compatible AI client can call.
 
@@ -1531,7 +1654,7 @@ mcp/
     └── workspace.ts          # Workspace summary resource
 ```
 
-### 16.3 MCP Tools
+### 18.3 MCP Tools
 
 These are the actions an AI agent can perform:
 
@@ -1551,7 +1674,7 @@ These are the actions an AI agent can perform:
 | `get_my_issues`         | Issues assigned to the authenticated user             | `status?`                                        |
 | `get_team_workload`     | Issue distribution across team members                | `teamId`                                         |
 
-### 16.4 MCP Resources (Read-Only Context)
+### 18.4 MCP Resources (Read-Only Context)
 
 Resources are data the AI can read to understand the workspace context before taking action:
 
@@ -1562,16 +1685,16 @@ Resources are data the AI can read to understand the workspace context before ta
 | Project summary         | `linearis://projects/{id}`   | Status, progress, recent activity         |
 | Current sprint          | `linearis://cycles/current`  | Active cycle, issue breakdown by status   |
 
-### 16.5 Authentication for MCP
+### 18.5 Authentication for MCP
 
 MCP sessions authenticate via:
 
-1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 14.
+1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 16.
 2. **Clerk session** — for the in-app AI assistant (user's own permissions apply).
 
 All MCP tool calls are **workspace-scoped** and **permission-checked** — an AI agent cannot do anything the authenticated user can't do themselves.
 
-### 16.6 In-App AI Assistant
+### 18.6 In-App AI Assistant
 
 A guided chatbot in the Linearis UI that uses the MCP tools internally:
 
@@ -1687,3 +1810,4 @@ modules/<name>/
 - Simple CRUD (`prisma.issue.create(...)`)
 - Query is only used in one place
 - You're just wrapping Prisma with no added value
+a

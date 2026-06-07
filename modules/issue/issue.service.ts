@@ -1068,10 +1068,14 @@ export async function updateIssueStatus(
 
   const nextStatus = (statusToDb[status] ?? "BACKLOG") as any;
   const nextCompletedAt = getCompletedAtForStatusTransition(issue.status, nextStatus, issue.completedAt);
+  const updateData: Record<string, unknown> = { status: nextStatus };
+  if (nextCompletedAt !== undefined) {
+    updateData.completedAt = nextCompletedAt;
+  }
 
   await prisma.issue.update({
     where: { id: issueId },
-    data: { status: nextStatus, completedAt: nextCompletedAt },
+    data: updateData as any,
   });
   if (nextStatus !== issue.status) {
     await logActivity({
