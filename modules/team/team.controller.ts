@@ -11,7 +11,7 @@ import type {
 
 export const create: RequestHandler = async (req, res, next) => {
   try {
-    const team = await teamService.createTeam(req.workspace!.id, req.body);
+    const team = await teamService.createTeam(req.workspace!.id, req.user!.id, req.body);
     sendSuccess(res, 201, team);
   } catch (error) {
     next(error);

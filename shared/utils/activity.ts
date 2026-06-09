@@ -10,7 +10,8 @@ type ActivityTargetType =
   | "LABEL"
   | "MEMBER"
   | "CYCLE"
-  | "TEMPLATE";
+  | "TEMPLATE"
+  | "DOCUMENT";
 
 type ActivityType =
   | "ISSUE_CREATED"
@@ -75,7 +76,10 @@ type ActivityType =
   | "ROADMAP_DEPENDENCY_CREATED"
   | "ROADMAP_DEPENDENCY_RESOLVED"
   | "ROADMAP_DEPENDENCY_CANCELLED"
-  | "ROADMAP_DEPENDENCY_DELETED";
+  | "ROADMAP_DEPENDENCY_DELETED"
+  | "DOCUMENT_CREATED"
+  | "DOCUMENT_UPDATED"
+  | "DOCUMENT_DELETED";
 
 interface LogActivityInput {
   workspaceId: string;

@@ -180,6 +180,9 @@ enum ActivityType {
   ROADMAP_DEPENDENCY_RESOLVED
   ROADMAP_DEPENDENCY_CANCELLED
   ROADMAP_DEPENDENCY_DELETED
+  DOCUMENT_CREATED
+  DOCUMENT_UPDATED
+  DOCUMENT_DELETED
 }
 
 /// What kind of entity an activity log entry refers to
@@ -194,6 +197,7 @@ enum ActivityTargetType {
   MEMBER
   CYCLE
   TEMPLATE
+  DOCUMENT
 }
 
 /// How two issues are related to each other
@@ -265,6 +269,13 @@ enum IntegrationProvider {
   FIGMA
 }
 
+/// Where a document belongs in the product model
+enum DocumentScope {
+  WORKSPACE
+  TEAM
+  PROJECT
+}
+
 // ============================================================================
 // CORE IDENTITY
 // ============================================================================
@@ -325,6 +336,7 @@ model User {
   connectedIntegrations Integration[] // Integrations connected by this user
   createdIssueAttachments IssueAttachment[]
   createdCommentAttachments CommentAttachment[]
+  uploadedDocuments     EntityDocument[] @relation("EntityDocumentUploader")
 
   @@index([email])
 }
@@ -361,6 +373,7 @@ model Workspace {
   issues         Issue[]
   issueAttachments IssueAttachment[]
   commentAttachments CommentAttachment[]
+  documents      EntityDocument[]
   labels         Label[]
   cycles         Cycle[]
   roadmapMilestones ProjectMilestone[]
@@ -519,6 +532,7 @@ model Team {
   issues      Issue[] // Issues under this team
   cycles      Cycle[] // Sprints scoped to this team
   invitations WorkspaceInvitation[] // Invitations targeting this team
+  documents   EntityDocument[]
 
   @@unique([workspaceId, name]) // Team names must be unique within a workspace
   @@index([workspaceId])
@@ -581,6 +595,7 @@ model Project {
   milestones ProjectMilestone[]
   blockingDependencies ProjectDependency[] @relation("RoadmapBlockingProject")
   blockedDependencies ProjectDependency[] @relation("RoadmapBlockedProject")
+  documents  EntityDocument[]
 
   @@unique([workspaceId, name]) // Project names must be unique within a workspace
   @@unique([workspaceId, slug])
@@ -602,6 +617,35 @@ model ProjectMembership {
 
   @@id([projectId, userId])
   @@index([userId])
+}
+
+/// EntityDocument — uploaded document metadata attached to a workspace, team, or project
+model EntityDocument {
+  id           String        @id @default(uuid())
+  workspaceId  String
+  scope        DocumentScope
+  teamId       String?
+  projectId    String?
+  name         String
+  description  String?
+  key          String
+  fileName     String
+  fileUrl      String?
+  mimeType     String
+  sizeBytes    Int
+  uploadedById String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  team       Team?     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  project    Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploadedBy User      @relation("EntityDocumentUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, scope, createdAt])
+  @@index([teamId, createdAt])
+  @@index([projectId, createdAt])
+  @@unique([workspaceId, key])
 }
 
 // ============================================================================

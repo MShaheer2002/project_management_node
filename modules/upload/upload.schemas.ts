@@ -5,6 +5,7 @@ const uploadKindSchema = z.enum([
   "avatar",
   "attachment",
   "video",
+  "document",
 ]);
 
 const fileNameSchema = z

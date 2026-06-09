@@ -51,6 +51,7 @@ import templateRoutes from "../modules/template/template.routes.js";
 import billingRoutes from "../modules/billing/billing.routes.js";
 import analyticsRoutes from "../modules/analytics/analytics.routes.js";
 import roadmapRoutes from "../modules/roadmap/roadmap.routes.js";
+import documentsRoutes from "../modules/documents/documents.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -160,6 +161,7 @@ app.use(templateRoutes);
 app.use(billingRoutes);
 app.use(analyticsRoutes);
 app.use(roadmapRoutes);
+app.use(documentsRoutes);
 // Phase 10: app.use("/api-keys", apiKeyRoutes);
 // Phase 10: app.use("/integrations", integrationRoutes);
 // Phase 10: app.use("/billing", billingRoutes);

@@ -32,9 +32,10 @@ Phase 12 → Templates       (standardized issue creation)
 Phase 13 → Billing         (plans, limits, Stripe lifecycle)
 Phase 14 → Analytics       (workspace, project, team, member metrics)
 Phase 15 → Roadmap         (planning timeline, milestones, dependencies)
-Phase 16 → API Keys        (external/system access)
-Phase 17 → Integrations    (GitHub/Slack/etc. connectivity)
-Phase 18 → Intelligence    (MCP server, AI assistant — future scope)
+Phase 16 → Docs            (workspace, team, project documents)
+Phase 17 → API Keys        (external/system access)
+Phase 18 → Integrations    (GitHub/Slack/etc. connectivity)
+Phase 19 → Intelligence    (MCP server, AI assistant — future scope)
 ```
 
 ---
@@ -1576,7 +1577,194 @@ modules/roadmap/
 
 ---
 
-## Phase 16 — API Keys
+## Phase 16 — Docs
+
+**Goal:** Add first-class document management for workspaces, teams, and projects so key operating context lives with the entity it belongs to instead of being scattered across chat, drives, and issue comments.
+
+**Dependency:** Phase 15 complete. Documents should attach cleanly to the roadmap/planning structure that already exists across workspace, teams, and projects.
+
+### 16.1 Scope
+
+The docs system in this phase must support three scopes:
+
+- `WORKSPACE` docs
+- `TEAM` docs
+- `PROJECT` docs
+
+Rules by scope:
+- workspace docs can be uploaded and managed only by `OWNER` and `ADMIN`
+- team docs can be added during team creation and after team creation
+- project docs can be added during project creation and after project creation
+- workspace docs can be added after workspace creation
+- docs must always remain visible inside the entity they belong to, not in one flat mixed list
+
+Primary use cases:
+- workspace handbook, policies, onboarding, process docs
+- team briefs, working agreements, team SOPs
+- project PRDs, technical specs, kickoff docs, delivery notes
+
+### 16.2 Schema Changes
+
+Use one shared document model with scoped ownership:
+
+```prisma
+enum DocumentScope {
+  WORKSPACE
+  TEAM
+  PROJECT
+}
+
+model EntityDocument {
+  id           String        @id @default(uuid())
+  workspaceId  String
+  scope        DocumentScope
+  teamId       String?
+  projectId    String?
+  title        String
+  description  String?
+  fileName     String
+  fileUrl      String
+  mimeType     String
+  sizeBytes    Int
+  uploadedById String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([workspaceId, scope, createdAt])
+  @@index([teamId, createdAt])
+  @@index([projectId, createdAt])
+}
+```
+
+Validation rules:
+- `WORKSPACE` doc: `teamId=null`, `projectId=null`
+- `TEAM` doc: `teamId` required, `projectId=null`
+- `PROJECT` doc: `projectId` required
+- all docs must belong to the same workspace as the parent entity
+- file metadata must be stored in DB even if binary storage is external
+
+### 16.3 Endpoints
+
+```
+POST   /workspaces/:workspaceId/documents              — Upload workspace doc (ADMIN/OWNER)
+GET    /workspaces/:workspaceId/documents              — List workspace docs
+PATCH  /workspaces/:workspaceId/documents/:id          — Update workspace doc metadata
+DELETE /workspaces/:workspaceId/documents/:id          — Delete workspace doc
+
+POST   /teams                                          — Create team, optional initial docs[]
+GET    /teams/:id/documents                            — List team docs
+POST   /teams/:id/documents                            — Upload team doc
+PATCH  /teams/:id/documents/:id                        — Update team doc metadata
+DELETE /teams/:id/documents/:id                        — Delete team doc
+
+POST   /projects                                       — Create project, optional initial docs[]
+GET    /projects/:id/documents                         — List project docs
+POST   /projects/:id/documents                         — Upload project doc
+PATCH  /projects/:id/documents/:id                     — Update project doc metadata
+DELETE /projects/:id/documents/:id                     — Delete project doc
+```
+
+Recommended create payload additions:
+
+```ts
+type CreateTeamInput = {
+  name: string;
+  // existing fields...
+  docs?: Array<{
+    title: string;
+    description?: string | null;
+    fileToken: string;
+  }>;
+};
+
+type CreateProjectInput = {
+  name: string;
+  // existing fields...
+  docs?: Array<{
+    title: string;
+    description?: string | null;
+    fileToken: string;
+  }>;
+};
+```
+
+### 16.4 Upload Flow
+
+The API should support a production-safe upload flow:
+
+1. frontend requests upload intent or uploads through an existing file service
+2. file storage returns a temporary `fileToken` or stored file reference
+3. docs endpoint creates the document record with title, description, and file metadata
+4. document is attached to workspace, team, or project atomically
+
+Required metadata returned to frontend:
+- `id`
+- `title`
+- `description`
+- `scope`
+- `fileName`
+- `fileUrl`
+- `mimeType`
+- `sizeBytes`
+- `uploadedBy`
+- `createdAt`
+
+### 16.5 UX/Product Rules
+
+- team create flow may include an optional docs step, but skipping docs must never block team creation
+- project create flow may include an optional docs step, but skipping docs must never block project creation
+- workspace docs must have a dedicated page or section under workspace settings or workspace overview
+- team docs must appear inside the team detail experience
+- project docs must appear inside the project detail experience
+- users should understand the purpose of the section from copy like:
+  - `Workspace docs keep policies, onboarding, and shared references in one place.`
+  - `Team docs keep operating notes, rituals, and working agreements close to the team.`
+  - `Project docs keep specs, plans, and delivery context attached to the work.`
+- document lists should show file type, uploaded by, uploaded date, and optional description
+- empty states should explain what belongs here instead of just saying no documents found
+
+### 16.6 Access Control
+
+| Action | OWNER | ADMIN | MEMBER | GUEST |
+|--------|-------|-------|--------|-------|
+| View workspace docs | Full | Full | Members of workspace | None |
+| Upload workspace docs | Full | Full | None | None |
+| Edit/delete workspace docs | Full | Full | None | None |
+| View team docs | Full | Full | Team/workspace members with access | None |
+| Upload team docs | Full | Full | Team lead or allowed team manager flows | None |
+| Edit/delete team docs | Full | Full | Team lead or uploader if allowed by policy | None |
+| View project docs | Full | Full | Project-visible members | None |
+| Upload project docs | Full | Full | Project lead or allowed project manager flows | None |
+| Edit/delete project docs | Full | Full | Project lead or uploader if allowed by policy | None |
+
+Final permission behavior must stay consistent with the rest of the app's shared permission helpers.
+
+### 16.7 Module Structure
+
+```
+modules/documents/
+├── documents.routes.ts
+├── documents.controller.ts
+├── documents.service.ts
+├── documents.schemas.ts
+└── documents.storage.ts      # Upload intent / file reference integration
+```
+
+### Done When
+
+- [ ] Workspace docs can be uploaded only by `OWNER` and `ADMIN`
+- [ ] Team docs can be attached during team creation and after creation
+- [ ] Project docs can be attached during project creation and after creation
+- [ ] Workspace docs can be added after workspace creation
+- [ ] Workspace/team/project doc lists are scoped correctly and never mixed
+- [ ] Stored file metadata is persisted and returned consistently
+- [ ] Empty/loading/error states are defined for each docs surface
+- [ ] Access control enforced per scope
+- [ ] Workspace isolation verified
+
+---
+
+## Phase 17 — API Keys
 
 **Goal:** Enable secure non-user/system access for integrations and automation.
 
@@ -1600,7 +1788,7 @@ DELETE /api-keys/:id                  — Revoke key
 
 ---
 
-## Phase 17 — Integrations
+## Phase 18 — Integrations
 
 **Goal:** Connect external tools (GitHub, Slack, etc.) to workspace workflows.
 
@@ -1620,21 +1808,21 @@ Providers: GitHub, Slack, Discord, Figma (provider-specific OAuth + webhooks).
 
 ---
 
-## Phase 18 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
+## Phase 19 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
 
 **Goal:** Expose workspace data to AI agents via the Model Context Protocol (MCP), and provide an in-app AI assistant that can read, create, and manage issues through natural language.
 
-**Dependency:** Phase 16 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
+**Dependency:** Phase 17 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
 
 **Plan tier:** Basic AI on Standard plan, full AI on Plus plan.
 
-### 18.1 What is MCP
+### 19.1 What is MCP
 
 MCP (Model Context Protocol) is an open standard that lets AI models (Claude, GPT, etc.) call **tools** exposed by your server. Instead of the AI scraping your UI, it calls structured endpoints with typed parameters and gets structured responses.
 
 Think of it as: **an API designed for AI agents, not humans.**
 
-### 18.2 MCP Server Setup
+### 19.2 MCP Server Setup
 
 The MCP server runs as a separate module alongside the Express API. It exposes workspace data as tools that any MCP-compatible AI client can call.
 
@@ -1654,7 +1842,7 @@ mcp/
     └── workspace.ts          # Workspace summary resource
 ```
 
-### 18.3 MCP Tools
+### 19.3 MCP Tools
 
 These are the actions an AI agent can perform:
 
@@ -1674,7 +1862,7 @@ These are the actions an AI agent can perform:
 | `get_my_issues`         | Issues assigned to the authenticated user             | `status?`                                        |
 | `get_team_workload`     | Issue distribution across team members                | `teamId`                                         |
 
-### 18.4 MCP Resources (Read-Only Context)
+### 19.4 MCP Resources (Read-Only Context)
 
 Resources are data the AI can read to understand the workspace context before taking action:
 
@@ -1685,16 +1873,16 @@ Resources are data the AI can read to understand the workspace context before ta
 | Project summary         | `linearis://projects/{id}`   | Status, progress, recent activity         |
 | Current sprint          | `linearis://cycles/current`  | Active cycle, issue breakdown by status   |
 
-### 18.5 Authentication for MCP
+### 19.5 Authentication for MCP
 
 MCP sessions authenticate via:
 
-1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 16.
+1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 17.
 2. **Clerk session** — for the in-app AI assistant (user's own permissions apply).
 
 All MCP tool calls are **workspace-scoped** and **permission-checked** — an AI agent cannot do anything the authenticated user can't do themselves.
 
-### 18.6 In-App AI Assistant
+### 19.6 In-App AI Assistant
 
 A guided chatbot in the Linearis UI that uses the MCP tools internally:
 
@@ -1712,7 +1900,7 @@ User message → Backend AI endpoint → Claude API (with MCP tools) → Tool ca
 
 The backend acts as a **proxy** — it sends the user's message to Claude along with the MCP tool definitions. Claude decides which tools to call, the backend executes them against the DB, and returns the results.
 
-### 16.7 AI-Powered Suggestions (Plus Plan)
+### 19.7 AI-Powered Suggestions (Plus Plan)
 
 Passive AI features that run in the background:
 
@@ -1725,7 +1913,7 @@ Passive AI features that run in the background:
 
 These use background jobs (queues/workers from Phase 8+) — not blocking the user's request.
 
-### 16.8 Business Rules
+### 19.8 Business Rules
 
 - MCP server respects the same permission matrix as the REST API
 - AI actions create real Activity entries (actor = user, not "AI")
