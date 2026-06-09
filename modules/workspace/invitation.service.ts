@@ -25,6 +25,7 @@ import {
   enforceFreeWorkspaceCapacity,
   syncPaidSeatQuantityBestEffort,
 } from "../billing/billing.service.js";
+import { createNotification } from "../notification/notification.service.js";
 
 /** Invitations expire after 7 days */
 const INVITE_EXPIRY_DAYS = 7;
@@ -70,7 +71,7 @@ export async function createInvitation(params: {
     });
 
     if (existingMembership) {
-      throw new AppError(409, ERROR_CODES.MEMBER_ALREADY_EXISTS, "This user is already a member of this workspace");
+      throw new AppError(409, ERROR_CODES.ALREADY_MEMBER, `${email} is already a member of this workspace`);
     }
   }
 
@@ -172,7 +173,39 @@ export async function createInvitation(params: {
     });
   }
 
-  return invitation;
+  // Send in-app notification to existing platform users so they can accept
+  // from their notification inbox without needing to check email.
+  if (existingUser) {
+    await createNotification({
+      workspaceId: params.workspaceId,
+      recipientUserId: existingUser.id,
+      actorUserId: params.invitedById,
+      type: "WORKSPACE_INVITATION",
+      category: "membership",
+      title: "Workspace invitation",
+      message: `${params.inviterName} invited you to join ${params.workspaceName} as ${params.role}`,
+      target: {
+        type: "workspace",
+        id: params.workspaceId,
+        url: `/invite?token=${rawToken}`,
+      },
+      metadata: {
+        workspaceId: params.workspaceId,
+        workspaceName: params.workspaceName,
+        role: params.role,
+        invitationId: invitation.id,
+        invitedBy: params.inviterName,
+      },
+      eventId: `invitation:${invitation.id}`,
+    }).catch(() => {
+      // Non-critical — invitation was created successfully, notification is best-effort
+    });
+  }
+
+  return {
+    ...invitation,
+    existingUser: !!existingUser,
+  };
 }
 
 /**
@@ -206,7 +239,15 @@ export async function resolveInvitation(rawToken: string) {
   });
 
   if (!invitation) {
-    throw new AppError(404, ERROR_CODES.NOT_FOUND, "Invitation not found or has been revoked");
+    throw new AppError(404, ERROR_CODES.INVITATION_NOT_FOUND, "Invitation not found or has been revoked");
+  }
+
+  if (invitation.status === "ACCEPTED") {
+    throw new AppError(400, ERROR_CODES.INVITATION_ALREADY_ACCEPTED, "This invitation has already been accepted");
+  }
+
+  if (invitation.status === "REVOKED") {
+    throw new AppError(410, ERROR_CODES.INVITATION_REVOKED, "This invitation has been revoked");
   }
 
   if (invitation.status !== "PENDING") {
@@ -219,7 +260,7 @@ export async function resolveInvitation(rawToken: string) {
       where: { id: invitation.id },
       data: { status: "EXPIRED" },
     });
-    throw new AppError(400, ERROR_CODES.CONFLICT, "This invitation has expired");
+    throw new AppError(410, ERROR_CODES.INVITATION_EXPIRED, "This invitation has expired");
   }
 
   return {
@@ -255,13 +296,13 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
     where: { tokenHash },
     include: {
       workspace: {
-        select: { id: true, name: true, slug: true },
+        select: { id: true, name: true, slug: true, logo: true },
       },
     },
   });
 
   if (!invitation) {
-    throw new AppError(404, ERROR_CODES.NOT_FOUND, "Invitation not found or has been revoked");
+    throw new AppError(404, ERROR_CODES.INVITATION_NOT_FOUND, "Invitation not found or has been revoked");
   }
 
   // ─── Email ownership verification ──────────────────────────────────────
@@ -270,7 +311,7 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
   if (normalizedUserEmail !== invitation.email) {
     throw new AppError(
       403,
-      ERROR_CODES.FORBIDDEN,
+      ERROR_CODES.INVITATION_EMAIL_MISMATCH,
       "This invitation was sent to a different email address. Sign in with the invited email.",
     );
   }
@@ -279,12 +320,19 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
   if (invitation.status === "ACCEPTED") {
     // Idempotent — already accepted, return success (double-click safe)
     return {
-      workspaceId: invitation.workspace.id,
-      workspaceName: invitation.workspace.name,
-      workspaceSlug: invitation.workspace.slug,
+      workspace: {
+        id: invitation.workspace.id,
+        name: invitation.workspace.name,
+        slug: invitation.workspace.slug,
+        logo: invitation.workspace.logo,
+      },
       role: invitation.role,
       alreadyAccepted: true,
     };
+  }
+
+  if (invitation.status === "REVOKED") {
+    throw new AppError(410, ERROR_CODES.INVITATION_REVOKED, "This invitation has been revoked");
   }
 
   if (invitation.status !== "PENDING") {
@@ -296,7 +344,7 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
       where: { id: invitation.id },
       data: { status: "EXPIRED" },
     });
-    throw new AppError(400, ERROR_CODES.CONFLICT, "This invitation has expired");
+    throw new AppError(410, ERROR_CODES.INVITATION_EXPIRED, "This invitation has expired");
   }
 
   // ─── Check if already a member (extra idempotency) ────────────────────
@@ -317,9 +365,12 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
     });
 
     return {
-      workspaceId: invitation.workspace.id,
-      workspaceName: invitation.workspace.name,
-      workspaceSlug: invitation.workspace.slug,
+      workspace: {
+        id: invitation.workspace.id,
+        name: invitation.workspace.name,
+        slug: invitation.workspace.slug,
+        logo: invitation.workspace.logo,
+      },
       role: existingMembership.role,
       alreadyAccepted: true,
     };
@@ -363,6 +414,9 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
     );
   }
 
+  await prisma.$transaction(operations);
+
+  // Log activity and sync billing AFTER transaction succeeds
   await logActivity({
     workspaceId: invitation.workspaceId,
     actorId: userId,
@@ -373,14 +427,15 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
     metadata: { member: { id: userId, email: normalizedUserEmail }, roleAfter: invitation.role },
   });
 
-  await prisma.$transaction(operations);
-
   await syncPaidSeatQuantityBestEffort(invitation.workspaceId);
 
   return {
-    workspaceId: invitation.workspace.id,
-    workspaceName: invitation.workspace.name,
-    workspaceSlug: invitation.workspace.slug,
+    workspace: {
+      id: invitation.workspace.id,
+      name: invitation.workspace.name,
+      slug: invitation.workspace.slug,
+      logo: invitation.workspace.logo,
+    },
     role: invitation.role,
     alreadyAccepted: false,
   };

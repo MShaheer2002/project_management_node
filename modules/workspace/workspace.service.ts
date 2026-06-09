@@ -99,8 +99,8 @@ export async function createWorkspace(userId: string, input: CreateWorkspaceInpu
 
 /**
  * List all workspaces the user belongs to.
- * Returns workspace details + the user's role in each.
- * Used by frontend to determine if onboarding is needed (empty list = new user).
+ * Returns workspace details + the user's role in each + default team + unread notifications.
+ * Used by frontend to populate workspace switcher and determine onboarding state.
  */
 export async function listWorkspaces(userId: string) {
   const memberships = await prisma.workspaceMembership.findMany({
@@ -120,10 +120,49 @@ export async function listWorkspaces(userId: string) {
     orderBy: { joinedAt: "desc" },
   });
 
+  const workspaceIds = memberships.map((m) => m.workspaceId);
+
+  if (workspaceIds.length === 0) {
+    return [];
+  }
+
+  // Batch: per-workspace unread notification counts + default team per workspace
+  const [unreadCounts, defaultTeams] = await Promise.all([
+    (prisma as any).notification.groupBy({
+      by: ["workspaceId"],
+      where: {
+        recipientUserId: userId,
+        readAt: null,
+        workspaceId: { in: workspaceIds },
+      },
+      _count: true,
+    }),
+    prisma.team.findMany({
+      where: { workspaceId: { in: workspaceIds } },
+      select: { id: true, workspaceId: true },
+      orderBy: { createdAt: "asc" },
+      distinct: ["workspaceId"],
+    }),
+  ]);
+
+  const unreadMap = new Map<string, number>(
+    unreadCounts.map((c: any) => [c.workspaceId, c._count]),
+  );
+  const defaultTeamMap = new Map<string, string>(
+    defaultTeams.map((t: { id: string; workspaceId: string }) => [t.workspaceId, t.id]),
+  );
+
   return memberships.map((m) => ({
-    ...m.workspace,
+    id: m.workspace.id,
+    name: m.workspace.name,
+    slug: m.workspace.slug,
+    logo: m.workspace.logo,
+    teamSize: m.workspace.teamSize,
     role: m.role,
+    defaultTeamId: defaultTeamMap.get(m.workspace.id) ?? null,
+    unreadNotifications: unreadMap.get(m.workspace.id) ?? 0,
     joinedAt: m.joinedAt,
+    createdAt: m.workspace.createdAt,
   }));
 }
 

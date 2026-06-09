@@ -33,9 +33,10 @@ Phase 13 → Billing         (plans, limits, Stripe lifecycle)
 Phase 14 → Analytics       (workspace, project, team, member metrics)
 Phase 15 → Roadmap         (planning timeline, milestones, dependencies)
 Phase 16 → Docs            (workspace, team, project documents)
-Phase 17 → API Keys        (external/system access)
-Phase 18 → Integrations    (GitHub/Slack/etc. connectivity)
-Phase 19 → Intelligence    (MCP server, AI assistant — future scope)
+Phase 17 → Multi-Workspace (workspace switching, cross-org membership)
+Phase 18 → API Keys        (external/system access)
+Phase 19 → Integrations    (GitHub/Slack/etc. connectivity)
+Phase 20 → Intelligence    (MCP server, AI assistant — future scope)
 ```
 
 ---
@@ -1764,7 +1765,152 @@ modules/documents/
 
 ---
 
-## Phase 17 — API Keys
+## Phase 17 — Multi-Workspace (Cross-Org Membership & Switching)
+
+**Goal:** Enable users to own multiple workspaces, be members of workspaces owned by others, and switch between them seamlessly. A single Clerk identity maps to many workspace memberships with independent roles per workspace.
+
+**Dependency:** Phase 16 complete. All entity-scoped features (teams, projects, issues, docs) must be stable, because workspace switching resets the entire app context.
+
+**Backend contract:** [phase17-multi-workspace-guide.md](./phase17-multi-workspace-guide.md)
+
+### 17.1 Core Principle
+
+A **User** is a global identity (Clerk). A **Role** is local to a workspace. The same person can be:
+- `OWNER` of "Agency X"
+- `ADMIN` in "Startup Z"
+- `GUEST` in "Client Corp"
+- `MEMBER` in "Side Project"
+
+All simultaneously. No artificial caps on workspace count per user (billing plan can gate this later).
+
+### 17.2 What Already Exists (Phase 2 Baseline)
+
+The schema already supports multi-workspace:
+- `User` ↔ `WorkspaceMembership` ↔ `Workspace` is many-to-many
+- `GET /workspaces` returns all workspaces for the authenticated user
+- `X-Workspace-Id` header scopes every API call
+- `requireWorkspace` middleware verifies membership per request
+- Frontend Zustand store holds active workspace; interceptor injects header dynamically
+- `useWorkspaces()` hook fetches all workspaces
+- Sidebar has a "Switch workspace" placeholder (not yet functional)
+
+**This phase completes the UX and handles every edge case around switching, inviting existing users, and stale workspace detection.**
+
+### 17.3 Workspace Switcher
+
+Replace the sidebar placeholder with a real workspace switcher:
+
+- Dropdown/modal showing all workspaces from `GET /workspaces`
+- Each entry: workspace name, logo, user's role badge (Owner/Admin/Member/Guest)
+- Active workspace visually highlighted
+- "Create new workspace" action at the bottom
+- Keyboard shortcut for quick switching (e.g., `Cmd+K` → workspace filter)
+
+**On switch:**
+1. Update Zustand store (`setWorkspace()`)
+2. Invalidate all workspace-scoped React Query cache
+3. Navigate to new workspace's dashboard (reset deep routes)
+4. Sidebar re-renders with new workspace's teams, projects, badges
+
+### 17.4 Invite Flow for Existing Users
+
+When a user who already has a Clerk account is invited to a new workspace:
+
+```
+Owner/Admin sends invite (email + role)
+  → Backend checks if email matches existing User in DB
+  → If YES: create WorkspaceMembership directly + send notification
+  → If NO: send email invitation link → sign up → accept → membership created
+```
+
+**Existing user flow:**
+1. Invitation created with `status: PENDING`
+2. In-app notification sent to the invitee (if they're online via Socket.IO)
+3. Email notification sent regardless
+4. User accepts from notification inbox or email link
+5. New workspace appears in their switcher immediately
+6. User can switch to it or continue in current workspace
+
+**New user flow (unchanged):**
+1. Email invitation with sign-up link + token
+2. User creates Clerk account
+3. Redirected to accept invitation page
+4. Membership created, lands in new workspace
+
+### 17.5 Workspace Lifecycle Scenarios
+
+| Scenario | Behavior |
+|---|---|
+| User creates first workspace | Becomes OWNER, this is their active workspace |
+| User creates additional workspace | Becomes OWNER, optionally switch to it or stay in current |
+| User accepts invite to new workspace | Membership created, workspace appears in switcher |
+| User is removed from a workspace | Workspace disappears from switcher; if it was active → redirect to next available |
+| User's active workspace is deleted by its owner | On next API call → 403/404 → clear stale workspace → redirect to workspace selector |
+| User has zero workspaces (all removed/deleted) | Redirect to "Create workspace" page |
+| Owner deletes their own workspace | Cascade delete all data; owner's other workspaces unaffected |
+| User invited to workspace they're already in | Backend returns 409; frontend shows "Already a member" |
+| User with expired/revoked invitation tries to accept | Backend returns 410 Gone; frontend shows "Invitation expired" |
+
+### 17.6 Active Workspace Persistence & Recovery
+
+- Last active workspace persisted in localStorage (`linearis-auth` key — already exists)
+- On app load / login:
+  1. Read stored workspace ID
+  2. Verify it still exists and user is still a member (`GET /workspaces`)
+  3. If valid → restore as active workspace
+  4. If invalid → select first available workspace from list
+  5. If no workspaces → redirect to create workspace page
+- On 403/404 from workspace-scoped API call → trigger stale workspace recovery flow
+
+### 17.7 Notifications Across Workspaces
+
+- Notification badge in switcher shows per-workspace unread counts
+- When user is in Workspace A, notifications from Workspace B are still received via Socket.IO (`user:<userId>` room is workspace-agnostic)
+- Clicking a cross-workspace notification switches to that workspace first, then navigates to the target entity
+
+### 17.8 Permission Rules
+
+No new permissions needed. Existing per-workspace role system applies:
+- Each `WorkspaceMembership` has its own `role`
+- Switching workspace changes `req.workspace.role` on all subsequent API calls
+- A user who is OWNER in Workspace A has zero special privileges in Workspace B where they are GUEST
+
+### 17.9 Route & Navigation Behavior on Switch
+
+- Switching workspace while on a deep route (e.g., `/projects/abc123/issues`) → navigate to `/dashboard` of new workspace
+- URL structure remains workspace-agnostic (workspace resolved via header, not URL path)
+- Browser back button after switch → returns to previous workspace's last route (standard browser history)
+
+### 17.10 Frontend Module Structure
+
+```
+src/features/workspace/
+├── components/
+│   └── WorkspaceSwitcher.tsx       # Dropdown/modal for switching
+├── hooks/
+│   ├── useWorkspaces.ts            # Already exists — fetches all workspaces
+│   ├── useWorkspaceSwitch.ts       # Switch logic (store + cache + navigate)
+│   └── useStaleWorkspaceRecovery.ts # Detect and recover from deleted/removed workspace
+└── services/
+    └── workspaceService.ts         # Already exists — add invitation acceptance helpers
+```
+
+### Done When
+
+- [ ] User can own and operate multiple workspaces independently
+- [ ] User can be a member of workspaces owned by others with independent roles
+- [ ] Workspace switcher shows all workspaces with role badges
+- [ ] Switching workspace invalidates all scoped data and resets navigation
+- [ ] Inviting an existing platform user creates membership without requiring sign-up
+- [ ] Stale workspace (deleted/removed) is detected and recovered gracefully
+- [ ] Zero-workspace state redirects to create workspace page
+- [ ] Cross-workspace notifications are delivered and navigable
+- [ ] Workspace isolation is preserved — no data leaks between workspaces
+- [ ] Active workspace persists across sessions and recovers on failure
+
+---
+
+## Phase 18 — API Keys
 
 **Goal:** Enable secure non-user/system access for integrations and automation.
 
@@ -1788,7 +1934,7 @@ DELETE /api-keys/:id                  — Revoke key
 
 ---
 
-## Phase 18 — Integrations
+## Phase 19 — Integrations
 
 **Goal:** Connect external tools (GitHub, Slack, etc.) to workspace workflows.
 
@@ -1808,21 +1954,21 @@ Providers: GitHub, Slack, Discord, Figma (provider-specific OAuth + webhooks).
 
 ---
 
-## Phase 19 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
+## Phase 20 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
 
 **Goal:** Expose workspace data to AI agents via the Model Context Protocol (MCP), and provide an in-app AI assistant that can read, create, and manage issues through natural language.
 
-**Dependency:** Phase 17 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
+**Dependency:** Phase 18 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
 
 **Plan tier:** Basic AI on Standard plan, full AI on Plus plan.
 
-### 19.1 What is MCP
+### 20.1 What is MCP
 
 MCP (Model Context Protocol) is an open standard that lets AI models (Claude, GPT, etc.) call **tools** exposed by your server. Instead of the AI scraping your UI, it calls structured endpoints with typed parameters and gets structured responses.
 
 Think of it as: **an API designed for AI agents, not humans.**
 
-### 19.2 MCP Server Setup
+### 20.2 MCP Server Setup
 
 The MCP server runs as a separate module alongside the Express API. It exposes workspace data as tools that any MCP-compatible AI client can call.
 
@@ -1842,7 +1988,7 @@ mcp/
     └── workspace.ts          # Workspace summary resource
 ```
 
-### 19.3 MCP Tools
+### 20.3 MCP Tools
 
 These are the actions an AI agent can perform:
 
@@ -1862,7 +2008,7 @@ These are the actions an AI agent can perform:
 | `get_my_issues`         | Issues assigned to the authenticated user             | `status?`                                        |
 | `get_team_workload`     | Issue distribution across team members                | `teamId`                                         |
 
-### 19.4 MCP Resources (Read-Only Context)
+### 20.4 MCP Resources (Read-Only Context)
 
 Resources are data the AI can read to understand the workspace context before taking action:
 
@@ -1873,16 +2019,16 @@ Resources are data the AI can read to understand the workspace context before ta
 | Project summary         | `linearis://projects/{id}`   | Status, progress, recent activity         |
 | Current sprint          | `linearis://cycles/current`  | Active cycle, issue breakdown by status   |
 
-### 19.5 Authentication for MCP
+### 20.5 Authentication for MCP
 
 MCP sessions authenticate via:
 
-1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 17.
+1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 18.
 2. **Clerk session** — for the in-app AI assistant (user's own permissions apply).
 
 All MCP tool calls are **workspace-scoped** and **permission-checked** — an AI agent cannot do anything the authenticated user can't do themselves.
 
-### 19.6 In-App AI Assistant
+### 20.6 In-App AI Assistant
 
 A guided chatbot in the Linearis UI that uses the MCP tools internally:
 
@@ -1900,7 +2046,7 @@ User message → Backend AI endpoint → Claude API (with MCP tools) → Tool ca
 
 The backend acts as a **proxy** — it sends the user's message to Claude along with the MCP tool definitions. Claude decides which tools to call, the backend executes them against the DB, and returns the results.
 
-### 19.7 AI-Powered Suggestions (Plus Plan)
+### 20.7 AI-Powered Suggestions (Plus Plan)
 
 Passive AI features that run in the background:
 
@@ -1913,7 +2059,7 @@ Passive AI features that run in the background:
 
 These use background jobs (queues/workers from Phase 8+) — not blocking the user's request.
 
-### 19.8 Business Rules
+### 20.8 Business Rules
 
 - MCP server respects the same permission matrix as the REST API
 - AI actions create real Activity entries (actor = user, not "AI")
@@ -1998,4 +2144,3 @@ modules/<name>/
 - Simple CRUD (`prisma.issue.create(...)`)
 - Query is only used in one place
 - You're just wrapping Prisma with no added value
-a
