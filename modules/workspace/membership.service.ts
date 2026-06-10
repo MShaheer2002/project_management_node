@@ -344,6 +344,11 @@ export async function removeMember(workspaceId: string, targetUserId: string) {
       },
     });
 
+    // Delete API keys created by this member (prevents orphaned key access)
+    await tx.apiKey.deleteMany({
+      where: { workspaceId, createdById: targetUserId },
+    });
+
     await tx.workspaceMembership.delete({
       where: { userId_workspaceId: { userId: targetUserId, workspaceId } },
     });

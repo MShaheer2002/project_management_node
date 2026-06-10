@@ -79,7 +79,9 @@ type ActivityType =
   | "ROADMAP_DEPENDENCY_DELETED"
   | "DOCUMENT_CREATED"
   | "DOCUMENT_UPDATED"
-  | "DOCUMENT_DELETED";
+  | "DOCUMENT_DELETED"
+  | "API_KEY_CREATED"
+  | "API_KEY_REVOKED";
 
 interface LogActivityInput {
   workspaceId: string;

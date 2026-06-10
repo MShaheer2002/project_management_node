@@ -183,6 +183,8 @@ enum ActivityType {
   DOCUMENT_CREATED
   DOCUMENT_UPDATED
   DOCUMENT_DELETED
+  API_KEY_CREATED
+  API_KEY_REVOKED
 }
 
 /// What kind of entity an activity log entry refers to
@@ -1187,26 +1189,26 @@ model Integration {
 
 /// ApiKey — workspace API keys for external integrations and MCP server
 ///
-/// Keys are hashed before storage — the raw key is shown once on creation, never again.
-/// `keyPrefix` stores the first 8 chars for identification (e.g., "lin_live").
+/// Keys are hashed (SHA-256) before storage — the raw key is returned once on creation, never again.
+/// `keyPrefix` stores the first 16 chars for display identification (e.g., "lin_live_a8f3bc91").
+/// Lookup is by exact keyHash match (unique indexed) — O(1), no scanning.
 /// Format: lin_live_* (production), lin_test_* (development).
 model ApiKey {
   id          String    @id @default(uuid())
   workspaceId String
   name        String // Human-readable label (e.g., "CI/CD Pipeline")
-  keyHash     String // bcrypt hash of the full API key
-  keyPrefix   String // First 8 chars for identification without revealing the key
+  keyHash     String    @unique // SHA-256 hash of full key — unique index for O(1) lookup
+  keyPrefix   String // First 16 chars for display (e.g., "lin_live_a8f3bc91")
   createdById String
   createdAt   DateTime  @default(now())
-  lastUsedAt  DateTime? // Updated on each API request using this key
-  expiresAt   DateTime? // Optional expiration date
+  lastUsedAt  DateTime? // Updated periodically on API requests (debounced)
+  expiresAt   DateTime? // Optional expiration — null means never expires
 
   // -- Relations --
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy User      @relation(fields: [createdById], references: [id])
 
   @@index([workspaceId])
-  @@index([keyPrefix]) // Look up API key by prefix for fast auth
 }
 
 // ============================================================================

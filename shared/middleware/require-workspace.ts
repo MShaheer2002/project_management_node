@@ -23,6 +23,11 @@ import { ERROR_CODES } from "../errors/error-codes.js";
 
 export const requireWorkspace: RequestHandler = async (req, _res, next) => {
   try {
+    // ─── API key auth already resolved workspace — skip ─────────────────
+    if (req.apiKey && req.workspace) {
+      return next();
+    }
+
     // ─── Extract workspace ID from param or header ──────────────────────
     const workspaceId =
       (req.params.workspaceId as string | undefined) ||

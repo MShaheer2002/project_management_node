@@ -39,6 +39,13 @@ declare global {
         id: string; // Workspace UUID
         role: WorkspaceRole; // User's role in this workspace (OWNER, ADMIN, MEMBER, GUEST)
       };
+
+      /** API key context — set by API key auth middleware when request uses an API key */
+      apiKey?: {
+        id: string; // ApiKey UUID
+        name: string; // Human-readable label
+        workspaceId: string; // Workspace this key is scoped to
+      };
     }
   }
 }

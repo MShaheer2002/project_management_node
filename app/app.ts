@@ -52,6 +52,7 @@ import billingRoutes from "../modules/billing/billing.routes.js";
 import analyticsRoutes from "../modules/analytics/analytics.routes.js";
 import roadmapRoutes from "../modules/roadmap/roadmap.routes.js";
 import documentsRoutes from "../modules/documents/documents.routes.js";
+import apiKeyRoutes from "../modules/api-key/api-key.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -162,9 +163,8 @@ app.use(billingRoutes);
 app.use(analyticsRoutes);
 app.use(roadmapRoutes);
 app.use(documentsRoutes);
-// Phase 10: app.use("/api-keys", apiKeyRoutes);
-// Phase 10: app.use("/integrations", integrationRoutes);
-// Phase 10: app.use("/billing", billingRoutes);
+app.use("/api-keys", apiKeyRoutes);
+// Phase 19: app.use("/integrations", integrationRoutes);
 
 // ─── Error Handling (must be LAST in the stack) ──────────────────────────────
 

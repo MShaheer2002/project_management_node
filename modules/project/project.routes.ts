@@ -1,7 +1,7 @@
 import type { RequestHandler } from "express";
 import { Router } from "express";
 
-import { authenticate } from "../../shared/middleware/authenticate.js";
+import { authenticateDual as authenticate } from "../../shared/middleware/authenticate-dual.js";
 import { requireOwnership } from "../../shared/middleware/require-ownership.js";
 import { requireRole } from "../../shared/middleware/require-role.js";
 import { requireWorkspace } from "../../shared/middleware/require-workspace.js";

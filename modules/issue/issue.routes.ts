@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { authenticate } from "../../shared/middleware/authenticate.js";
+import { authenticateDual as authenticate } from "../../shared/middleware/authenticate-dual.js";
 import { requireRole } from "../../shared/middleware/require-role.js";
 import { requireWorkspace } from "../../shared/middleware/require-workspace.js";
 import { validate } from "../../shared/middleware/validate.js";
