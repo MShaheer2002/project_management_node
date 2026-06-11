@@ -1934,23 +1934,88 @@ DELETE /api-keys/:id                  — Revoke key
 
 ---
 
-## Phase 19 — Integrations
+## Phase 19 — Integrations & Data Import
 
-**Goal:** Connect external tools (GitHub, Slack, etc.) to workspace workflows.
+**Goal:** Connect Linearis to the tools teams already use (GitHub, Slack, Discord, Figma) and enable one-time data migration from competing platforms (Linear, Jira, ClickUp, Asana, Trello).
 
-```
-POST   /integrations/:provider/connect      — Connect integration
-DELETE /integrations/:provider/disconnect   — Disconnect integration
-GET    /integrations                         — List integration status
-```
+**Dependency:** Phase 18 complete. API keys enable external system access; integrations build on the same authentication and workspace-scoping infrastructure.
 
-Providers: GitHub, Slack, Discord, Figma (provider-specific OAuth + webhooks).
+**Product requirements document:** [phase19-integrations-guide.md](./phase19-integrations-guide.md)
+
+### Sub-Phases
+
+| Phase | Scope | Type | Priority |
+|---|---|---|---|
+| **19a — GitHub** | Branches, commits, PRs linked to issues. Auto-status on PR merge. | Live integration | Highest |
+| **19b — Slack** | Channel notifications, slash commands, DM alerts. | Live integration | High |
+| **19c — Figma** | Design file linking, thumbnail previews on issues and projects. | Link integration | Medium |
+| **19d — Discord** | Outbound notifications to configured channels. | Notification | Medium |
+| **19e — Data Import** | One-time migration from Linear, Jira, ClickUp, Asana, Trello. | Migration | High |
+
+Recommended build order: **19a → 19e → 19b → 19c → 19d**
+
+### 19a — GitHub Integration
+
+**User value:** Developers never manually update issue status. Branches, commits, and PRs referencing `LIN-XXX` automatically link to issues. PR merge can auto-complete the issue. Engineering managers see real delivery velocity driven by code activity.
+
+**Key behaviors:**
+- Branch with `LIN-24` in name → linked to issue LIN-24
+- Commit with `LIN-24` in message → shown in issue activity feed
+- PR opened with `LIN-24` → issue moves to "Review" (configurable)
+- PR merged → issue moves to "Done" (configurable)
+- PR review activity → notifications to issue assignee
+
+### 19b — Slack Integration
+
+**User value:** Important updates appear in Slack channels automatically. Engineers create issues and check status from Slack without opening Linearis. Personal DMs for assignments, mentions, and due date reminders.
+
+**Key behaviors:**
+- Outbound: issue created/completed/assigned, cycle completed, urgent issues → configured channels
+- Inbound: `/linearis create`, `/linearis status LIN-42`, `/linearis my-issues`, `/linearis cycle`
+- DMs: assignment, mention, due date approaching, issue blocked
+
+### 19c — Figma Integration
+
+**User value:** Designs are linked to issues and projects. Developers open an issue and see the relevant design with a thumbnail preview. No more hunting for Figma links across Slack and email.
+
+**Key behaviors:**
+- Paste Figma URL in issue → rich link with preview, file name, last modified
+- Project-level design tab → all linked Figma files for the project
+- Read-only — Figma remains the design tool, Linearis shows the link
+
+### 19d — Discord Integration
+
+**User value:** Workspace events broadcast to Discord channels. Popular with open-source communities and startups using Discord for team chat.
+
+**Key behaviors:**
+- Outbound only: issue created, completed, cycle completed, milestone reached → configured channels
+- Bot-based connection, no per-user OAuth required
+
+### 19e — Data Import
+
+**User value:** Teams migrate from Linear, Jira, ClickUp, Asana, or Trello without losing project history. One-time import with preview, mapping, progress tracking, and summary.
+
+**Key behaviors:**
+- Source selection → OAuth for read access → preview (counts of projects, issues, labels, members)
+- Status, priority, team, and member mapping with smart defaults
+- Background import with live progress updates via Socket.IO
+- Import summary with success counts, warnings, and skipped items
+- Import history for audit
+- Duplicate detection on re-import
 
 ### Done When
 
-- [ ] At least one provider (GitHub) works end-to-end
-- [ ] Disconnect cleans tokens/webhooks safely
-- [ ] Failed syncs are observable and retryable
+- [ ] GitHub: PR merge auto-completes linked issues end-to-end
+- [ ] GitHub: Commit and branch activity visible on issue detail
+- [ ] Slack: Channel notifications post for key workspace events
+- [ ] Slack: `/linearis create` and `/linearis status` slash commands work
+- [ ] Figma: Design links show thumbnail previews on issues
+- [ ] Discord: Workspace events post to configured channels
+- [ ] Import: At least one source (Linear) imports projects, issues, labels, comments end-to-end
+- [ ] Import: Preview → mapping → progress → summary flow complete
+- [ ] All integrations: workspace-scoped, admin-only connect/disconnect
+- [ ] All integrations: disconnect cleans up tokens/webhooks safely
+- [ ] All integrations: failed syncs logged and observable
 
 ---
 

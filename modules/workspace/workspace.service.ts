@@ -28,6 +28,59 @@ import type { CreateWorkspaceInput, UpdateWorkspaceInput } from "./workspace.sch
  * The default team ensures the workspace is immediately usable (issues, projects, cycles
  * all belong to a team, so at least one team must exist).
  */
+/**
+ * Generate an issue prefix from the workspace name.
+ * Takes first 2-3 uppercase letters, deduplicates by appending a digit if taken.
+ *
+ * Examples: "Vative" → "VAT", "Fission" → "FIS", "My App" → "MA"
+ */
+async function generateUniquePrefix(name: string, explicitPrefix?: string): Promise<string> {
+  if (explicitPrefix) {
+    const normalized = explicitPrefix.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 5);
+    if (normalized.length < 2) {
+      throw new AppError(400, ERROR_CODES.VALIDATION_ERROR, "Issue prefix must be at least 2 uppercase letters");
+    }
+    const existing = await prisma.workspace.findUnique({
+      where: { issuePrefix: normalized },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new AppError(409, ERROR_CODES.WORKSPACE_PREFIX_TAKEN, `Issue prefix "${normalized}" is already taken`);
+    }
+    return normalized;
+  }
+
+  // Auto-generate from name: take uppercase consonants + first letter, 2-3 chars
+  const letters = name.replace(/[^a-zA-Z]/g, "").toUpperCase();
+  const base = letters.length >= 3 ? letters.slice(0, 3) : letters.slice(0, Math.max(2, letters.length));
+
+  if (base.length < 2) {
+    // Fallback for very short names
+    return generateUniquePrefix(name, `${base}X`);
+  }
+
+  // Check if base is available
+  const existing = await prisma.workspace.findUnique({
+    where: { issuePrefix: base },
+    select: { id: true },
+  });
+
+  if (!existing) return base;
+
+  // Try with suffix: VAT → VAT2 → VAT3 → ...
+  for (let i = 2; i <= 99; i++) {
+    const candidate = `${base.slice(0, 3)}${i}`;
+    const taken = await prisma.workspace.findUnique({
+      where: { issuePrefix: candidate },
+      select: { id: true },
+    });
+    if (!taken) return candidate;
+  }
+
+  // Extremely unlikely fallback
+  throw new AppError(409, ERROR_CODES.WORKSPACE_PREFIX_TAKEN, "Could not generate a unique issue prefix");
+}
+
 export async function createWorkspace(userId: string, input: CreateWorkspaceInput) {
   // Check if slug is already taken
   const existing = await prisma.workspace.findUnique({
@@ -39,6 +92,9 @@ export async function createWorkspace(userId: string, input: CreateWorkspaceInpu
     throw new AppError(409, ERROR_CODES.WORKSPACE_SLUG_TAKEN, "This workspace URL is already taken");
   }
 
+  // Generate or validate issue prefix
+  const issuePrefix = await generateUniquePrefix(input.name, (input as any).issuePrefix);
+
   // Create workspace + OWNER membership + default team atomically
   const result = await prisma.$transaction(async (tx) => {
     // 1. Create the workspace
@@ -46,6 +102,7 @@ export async function createWorkspace(userId: string, input: CreateWorkspaceInpu
       data: {
         name: input.name,
         slug: input.slug,
+        issuePrefix,
         teamSize: input.teamSize ?? null,
         createdById: userId,
       },
@@ -91,6 +148,7 @@ export async function createWorkspace(userId: string, input: CreateWorkspaceInpu
     slug: result.workspace.slug,
     logo: result.workspace.logo,
     teamSize: result.workspace.teamSize,
+    issuePrefix: result.workspace.issuePrefix,
     role: "OWNER" as const,
     defaultTeamId: result.defaultTeam.id,
     createdAt: result.workspace.createdAt,
@@ -113,6 +171,7 @@ export async function listWorkspaces(userId: string) {
           slug: true,
           logo: true,
           teamSize: true,
+          issuePrefix: true,
           createdAt: true,
         },
       },
@@ -158,6 +217,7 @@ export async function listWorkspaces(userId: string) {
     slug: m.workspace.slug,
     logo: m.workspace.logo,
     teamSize: m.workspace.teamSize,
+    issuePrefix: m.workspace.issuePrefix,
     role: m.role,
     defaultTeamId: defaultTeamMap.get(m.workspace.id) ?? null,
     unreadNotifications: unreadMap.get(m.workspace.id) ?? 0,
@@ -179,6 +239,7 @@ export async function getWorkspaceById(workspaceId: string) {
       slug: true,
       logo: true,
       teamSize: true,
+      issuePrefix: true,
       issueCounter: true,
       createdById: true,
       createdAt: true,

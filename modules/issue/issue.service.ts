@@ -505,10 +505,10 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
     const workspace = await tx.workspace.update({
       where: { id: workspaceId },
       data: { issueCounter: { increment: 1 } },
-      select: { issueCounter: true },
+      select: { issueCounter: true, issuePrefix: true },
     });
 
-    const issueId = `LIN-${workspace.issueCounter}`;
+    const issueId = `${workspace.issuePrefix}-${workspace.issueCounter}`;
     const issue = await tx.issue.create({
       data: {
         id: issueId,

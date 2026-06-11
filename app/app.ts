@@ -53,6 +53,7 @@ import analyticsRoutes from "../modules/analytics/analytics.routes.js";
 import roadmapRoutes from "../modules/roadmap/roadmap.routes.js";
 import documentsRoutes from "../modules/documents/documents.routes.js";
 import apiKeyRoutes from "../modules/api-key/api-key.routes.js";
+import integrationRoutes, { webhookRouter as githubWebhookRouter } from "../modules/integration/integration.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -164,7 +165,8 @@ app.use(analyticsRoutes);
 app.use(roadmapRoutes);
 app.use(documentsRoutes);
 app.use("/api-keys", apiKeyRoutes);
-// Phase 19: app.use("/integrations", integrationRoutes);
+app.use("/integrations", integrationRoutes);
+app.use("/webhooks", githubWebhookRouter);
 
 // ─── Error Handling (must be LAST in the stack) ──────────────────────────────
 

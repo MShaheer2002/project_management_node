@@ -11,7 +11,8 @@ type ActivityTargetType =
   | "MEMBER"
   | "CYCLE"
   | "TEMPLATE"
-  | "DOCUMENT";
+  | "DOCUMENT"
+  | "INTEGRATION";
 
 type ActivityType =
   | "ISSUE_CREATED"
@@ -81,7 +82,15 @@ type ActivityType =
   | "DOCUMENT_UPDATED"
   | "DOCUMENT_DELETED"
   | "API_KEY_CREATED"
-  | "API_KEY_REVOKED";
+  | "API_KEY_REVOKED"
+  | "INTEGRATION_CONNECTED"
+  | "INTEGRATION_DISCONNECTED"
+  | "GITHUB_COMMIT_LINKED"
+  | "GITHUB_BRANCH_LINKED"
+  | "GITHUB_PR_OPENED"
+  | "GITHUB_PR_MERGED"
+  | "GITHUB_PR_CLOSED"
+  | "GITHUB_PR_REVIEW";
 
 interface LogActivityInput {
   workspaceId: string;

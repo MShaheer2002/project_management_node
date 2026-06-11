@@ -185,6 +185,14 @@ enum ActivityType {
   DOCUMENT_DELETED
   API_KEY_CREATED
   API_KEY_REVOKED
+  INTEGRATION_CONNECTED
+  INTEGRATION_DISCONNECTED
+  GITHUB_COMMIT_LINKED
+  GITHUB_BRANCH_LINKED
+  GITHUB_PR_OPENED
+  GITHUB_PR_MERGED
+  GITHUB_PR_CLOSED
+  GITHUB_PR_REVIEW
 }
 
 /// What kind of entity an activity log entry refers to
@@ -200,6 +208,7 @@ enum ActivityTargetType {
   CYCLE
   TEMPLATE
   DOCUMENT
+  INTEGRATION
 }
 
 /// How two issues are related to each other
@@ -351,14 +360,16 @@ model User {
 ///
 /// ALL data is scoped to a workspace. One user can belong to multiple workspaces.
 /// The `slug` is globally unique and used in URLs: <slug>.linearis.app
-/// The `issueCounter` is atomically incremented to generate issue IDs (LIN-1, LIN-2, ...).
+/// The `issuePrefix` is a unique uppercase identifier for issue IDs (e.g., "VAT" → VAT-1, VAT-2).
+/// The `issueCounter` is atomically incremented per workspace to generate issue numbers.
 model Workspace {
   id           String @id @default(uuid())
   name         String // Display name (e.g., "Acme Corp")
   slug         String @unique // URL slug (e.g., "acme-corp") — must be globally unique
   logo         String? // URL to workspace logo
   teamSize     TeamSize? // Selected during onboarding (1-5, 6-20, 21-50, 50+)
-  issueCounter Int    @default(0) // Atomic counter for human-readable issue IDs (LIN-N)
+  issuePrefix  String @unique // Uppercase prefix for issue IDs (e.g., "VAT" → VAT-1, VAT-2)
+  issueCounter Int    @default(0) // Atomic counter for human-readable issue IDs per workspace
   createdById  String // FK → User who created this workspace (becomes OWNER)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -667,7 +678,7 @@ model EntityDocument {
 ///
 /// Kanban flow: BACKLOG → TODO → IN_PROGRESS → REVIEW → DONE (any transition allowed)
 model Issue {
-  id           String        @id // Human-readable ID: "LIN-101" — generated from workspace.issueCounter
+  id           String        @id // Human-readable ID: "{prefix}-N" (e.g., "VAT-42") — workspace.issuePrefix + workspace.issueCounter
   internalId   String        @unique @default(uuid()) // UUID for internal use
   number       Int // Sequential number within workspace (used to build the ID)
   workspaceId  String
