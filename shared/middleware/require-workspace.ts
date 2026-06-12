@@ -23,6 +23,11 @@ import { ERROR_CODES } from "../errors/error-codes.js";
 
 export const requireWorkspace: RequestHandler = async (req, _res, next) => {
   try {
+    // ─── API key auth already resolved workspace — skip ─────────────────
+    if (req.apiKey && req.workspace) {
+      return next();
+    }
+
     // ─── Extract workspace ID from param or header ──────────────────────
     const workspaceId =
       (req.params.workspaceId as string | undefined) ||
@@ -31,8 +36,22 @@ export const requireWorkspace: RequestHandler = async (req, _res, next) => {
     if (!workspaceId) {
       throw new AppError(
         400,
-        ERROR_CODES.WORKSPACE_NOT_FOUND,
+        ERROR_CODES.VALIDATION_ERROR,
         "Workspace ID is required. Provide it as a route parameter or X-Workspace-Id header.",
+      );
+    }
+
+    // ─── Verify workspace exists ──────────────────────────────────────────
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { id: true },
+    });
+
+    if (!workspace) {
+      throw new AppError(
+        404,
+        ERROR_CODES.WORKSPACE_NOT_FOUND,
+        "Workspace not found",
       );
     }
 

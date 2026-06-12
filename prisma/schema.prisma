@@ -80,6 +80,21 @@ enum ProjectMembershipRole {
   MEMBER
 }
 
+/// Milestone progress inside a project roadmap
+enum MilestoneStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  MISSED
+}
+
+/// Lifecycle of a project-to-project roadmap dependency
+enum ProjectDependencyStatus {
+  ACTIVE
+  RESOLVED
+  CANCELLED
+}
+
 /// Sprint/cycle lifecycle — auto-transitions based on dates
 enum CycleStatus {
   UPCOMING
@@ -155,6 +170,29 @@ enum ActivityType {
   TEMPLATE_ACTIVATED
   TEMPLATE_DEACTIVATED
   TEMPLATE_APPLIED
+  ROADMAP_SCHEDULE_UPDATED
+  ROADMAP_MILESTONE_CREATED
+  ROADMAP_MILESTONE_UPDATED
+  ROADMAP_MILESTONE_COMPLETED
+  ROADMAP_MILESTONE_DELETED
+  ROADMAP_MILESTONES_REORDERED
+  ROADMAP_DEPENDENCY_CREATED
+  ROADMAP_DEPENDENCY_RESOLVED
+  ROADMAP_DEPENDENCY_CANCELLED
+  ROADMAP_DEPENDENCY_DELETED
+  DOCUMENT_CREATED
+  DOCUMENT_UPDATED
+  DOCUMENT_DELETED
+  API_KEY_CREATED
+  API_KEY_REVOKED
+  INTEGRATION_CONNECTED
+  INTEGRATION_DISCONNECTED
+  GITHUB_COMMIT_LINKED
+  GITHUB_BRANCH_LINKED
+  GITHUB_PR_OPENED
+  GITHUB_PR_MERGED
+  GITHUB_PR_CLOSED
+  GITHUB_PR_REVIEW
 }
 
 /// What kind of entity an activity log entry refers to
@@ -169,6 +207,8 @@ enum ActivityTargetType {
   MEMBER
   CYCLE
   TEMPLATE
+  DOCUMENT
+  INTEGRATION
 }
 
 /// How two issues are related to each other
@@ -240,6 +280,13 @@ enum IntegrationProvider {
   FIGMA
 }
 
+/// Where a document belongs in the product model
+enum DocumentScope {
+  WORKSPACE
+  TEAM
+  PROJECT
+}
+
 // ============================================================================
 // CORE IDENTITY
 // ============================================================================
@@ -290,10 +337,17 @@ model User {
   createdTemplates      Template[] @relation("TemplateCreator") // Templates created by this user
   updatedTemplates      Template[] @relation("TemplateUpdater") // Templates last updated by this user
   templateApplications  TemplateApplication[] // Template apply sessions for this user
+  ownedProjectMilestones ProjectMilestone[] @relation("RoadmapMilestoneOwner")
+  createdProjectMilestones ProjectMilestone[] @relation("RoadmapMilestoneCreator")
+  completedProjectMilestones ProjectMilestone[] @relation("RoadmapMilestoneCompleter")
+  createdProjectDependencies ProjectDependency[] @relation("RoadmapDependencyCreator")
+  resolvedProjectDependencies ProjectDependency[] @relation("RoadmapDependencyResolver")
+  cancelledProjectDependencies ProjectDependency[] @relation("RoadmapDependencyCanceller")
   createdApiKeys        ApiKey[] // API keys created by this user
   connectedIntegrations Integration[] // Integrations connected by this user
   createdIssueAttachments IssueAttachment[]
   createdCommentAttachments CommentAttachment[]
+  uploadedDocuments     EntityDocument[] @relation("EntityDocumentUploader")
 
   @@index([email])
 }
@@ -306,14 +360,16 @@ model User {
 ///
 /// ALL data is scoped to a workspace. One user can belong to multiple workspaces.
 /// The `slug` is globally unique and used in URLs: <slug>.linearis.app
-/// The `issueCounter` is atomically incremented to generate issue IDs (LIN-1, LIN-2, ...).
+/// The `issuePrefix` is a unique uppercase identifier for issue IDs (e.g., "VAT" → VAT-1, VAT-2).
+/// The `issueCounter` is atomically incremented per workspace to generate issue numbers.
 model Workspace {
   id           String @id @default(uuid())
   name         String // Display name (e.g., "Acme Corp")
   slug         String @unique // URL slug (e.g., "acme-corp") — must be globally unique
   logo         String? // URL to workspace logo
   teamSize     TeamSize? // Selected during onboarding (1-5, 6-20, 21-50, 50+)
-  issueCounter Int    @default(0) // Atomic counter for human-readable issue IDs (LIN-N)
+  issuePrefix  String @unique // Uppercase prefix for issue IDs (e.g., "VAT" → VAT-1, VAT-2)
+  issueCounter Int    @default(0) // Atomic counter for human-readable issue IDs per workspace
   createdById  String // FK → User who created this workspace (becomes OWNER)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -330,8 +386,11 @@ model Workspace {
   issues         Issue[]
   issueAttachments IssueAttachment[]
   commentAttachments CommentAttachment[]
+  documents      EntityDocument[]
   labels         Label[]
   cycles         Cycle[]
+  roadmapMilestones ProjectMilestone[]
+  roadmapDependencies ProjectDependency[]
   notifications  Notification[]
   activities     Activity[]
   templates      Template[]
@@ -486,6 +545,7 @@ model Team {
   issues      Issue[] // Issues under this team
   cycles      Cycle[] // Sprints scoped to this team
   invitations WorkspaceInvitation[] // Invitations targeting this team
+  documents   EntityDocument[]
 
   @@unique([workspaceId, name]) // Team names must be unique within a workspace
   @@index([workspaceId])
@@ -545,6 +605,10 @@ model Project {
   lead       User?       @relation("ProjectLead", fields: [leadId], references: [id], onDelete: SetNull)
   memberships ProjectMembership[]
   issues     Issue[] // All issues in this project
+  milestones ProjectMilestone[]
+  blockingDependencies ProjectDependency[] @relation("RoadmapBlockingProject")
+  blockedDependencies ProjectDependency[] @relation("RoadmapBlockedProject")
+  documents  EntityDocument[]
 
   @@unique([workspaceId, name]) // Project names must be unique within a workspace
   @@unique([workspaceId, slug])
@@ -568,6 +632,35 @@ model ProjectMembership {
   @@index([userId])
 }
 
+/// EntityDocument — uploaded document metadata attached to a workspace, team, or project
+model EntityDocument {
+  id           String        @id @default(uuid())
+  workspaceId  String
+  scope        DocumentScope
+  teamId       String?
+  projectId    String?
+  name         String
+  description  String?
+  key          String
+  fileName     String
+  fileUrl      String?
+  mimeType     String
+  sizeBytes    Int
+  uploadedById String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  team       Team?     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  project    Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploadedBy User      @relation("EntityDocumentUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, scope, createdAt])
+  @@index([teamId, createdAt])
+  @@index([projectId, createdAt])
+  @@unique([workspaceId, key])
+}
+
 // ============================================================================
 // ISSUES — the core product entity
 // ============================================================================
@@ -585,7 +678,7 @@ model ProjectMembership {
 ///
 /// Kanban flow: BACKLOG → TODO → IN_PROGRESS → REVIEW → DONE (any transition allowed)
 model Issue {
-  id           String        @id // Human-readable ID: "LIN-101" — generated from workspace.issueCounter
+  id           String        @id // Human-readable ID: "{prefix}-N" (e.g., "VAT-42") — workspace.issuePrefix + workspace.issueCounter
   internalId   String        @unique @default(uuid()) // UUID for internal use
   number       Int // Sequential number within workspace (used to build the ID)
   workspaceId  String
@@ -621,6 +714,7 @@ model Issue {
   acceptanceCriteria String? @db.Text
   notes              String? @db.Text
 
+  completedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -655,6 +749,7 @@ model Issue {
   @@index([creatorId])
   @@index([workspaceId, status]) // Dashboard: filter issues by status
   @@index([workspaceId, assigneeId]) // "My Issues" page
+  @@index([workspaceId, completedAt]) // Analytics: resolution time and completion trends
   @@index([parentIssueId])
   @@index([templateId])
 }
@@ -863,6 +958,66 @@ model Cycle {
 }
 
 // ============================================================================
+// ROADMAP
+// ============================================================================
+
+/// ProjectMilestone — dated checkpoint on a project roadmap
+model ProjectMilestone {
+  id            String          @id @default(uuid())
+  workspaceId    String
+  projectId      String
+  name           String
+  description    String?        @db.Text
+  dueDate        DateTime
+  ownerId        String?
+  status         MilestoneStatus @default(PLANNED)
+  completedAt    DateTime?
+  completedById  String?
+  sortOrder      Int            @default(0)
+  createdById    String
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner       User?     @relation("RoadmapMilestoneOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  completedBy User?     @relation("RoadmapMilestoneCompleter", fields: [completedById], references: [id], onDelete: SetNull)
+  createdBy   User      @relation("RoadmapMilestoneCreator", fields: [createdById], references: [id])
+
+  @@index([workspaceId, projectId, dueDate])
+  @@index([workspaceId, status, dueDate])
+  @@index([ownerId])
+}
+
+/// ProjectDependency — project-to-project blocking relationship on the roadmap
+model ProjectDependency {
+  id                String                  @id @default(uuid())
+  workspaceId       String
+  blockingProjectId String
+  blockedProjectId  String
+  status            ProjectDependencyStatus @default(ACTIVE)
+  note              String?                 @db.Text
+  resolvedAt        DateTime?
+  resolvedById      String?
+  cancelledAt       DateTime?
+  cancelledById     String?
+  createdById       String
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  blockingProject Project   @relation("RoadmapBlockingProject", fields: [blockingProjectId], references: [id], onDelete: Cascade)
+  blockedProject  Project   @relation("RoadmapBlockedProject", fields: [blockedProjectId], references: [id], onDelete: Cascade)
+  createdBy       User      @relation("RoadmapDependencyCreator", fields: [createdById], references: [id])
+  resolvedBy      User?     @relation("RoadmapDependencyResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  cancelledBy     User?     @relation("RoadmapDependencyCanceller", fields: [cancelledById], references: [id], onDelete: SetNull)
+
+  @@unique([blockingProjectId, blockedProjectId])
+  @@index([workspaceId, blockingProjectId, status])
+  @@index([workspaceId, blockedProjectId, status])
+}
+
+// ============================================================================
 // ACTIVITY & NOTIFICATIONS
 // ============================================================================
 
@@ -1045,26 +1200,26 @@ model Integration {
 
 /// ApiKey — workspace API keys for external integrations and MCP server
 ///
-/// Keys are hashed before storage — the raw key is shown once on creation, never again.
-/// `keyPrefix` stores the first 8 chars for identification (e.g., "lin_live").
+/// Keys are hashed (SHA-256) before storage — the raw key is returned once on creation, never again.
+/// `keyPrefix` stores the first 16 chars for display identification (e.g., "lin_live_a8f3bc91").
+/// Lookup is by exact keyHash match (unique indexed) — O(1), no scanning.
 /// Format: lin_live_* (production), lin_test_* (development).
 model ApiKey {
   id          String    @id @default(uuid())
   workspaceId String
   name        String // Human-readable label (e.g., "CI/CD Pipeline")
-  keyHash     String // bcrypt hash of the full API key
-  keyPrefix   String // First 8 chars for identification without revealing the key
+  keyHash     String    @unique // SHA-256 hash of full key — unique index for O(1) lookup
+  keyPrefix   String // First 16 chars for display (e.g., "lin_live_a8f3bc91")
   createdById String
   createdAt   DateTime  @default(now())
-  lastUsedAt  DateTime? // Updated on each API request using this key
-  expiresAt   DateTime? // Optional expiration date
+  lastUsedAt  DateTime? // Updated periodically on API requests (debounced)
+  expiresAt   DateTime? // Optional expiration — null means never expires
 
   // -- Relations --
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy User      @relation(fields: [createdById], references: [id])
 
   @@index([workspaceId])
-  @@index([keyPrefix]) // Look up API key by prefix for fast auth
 }
 
 // ============================================================================

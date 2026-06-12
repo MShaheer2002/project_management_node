@@ -23,6 +23,21 @@ const videoContentTypes = new Set([
   "video/webm",
 ]);
 
+const documentContentTypes = new Set([
+  "application/msword",
+  "application/pdf",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/csv",
+  "text/markdown",
+  "text/plain",
+]);
+
+const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+
 function normalizeContentType(contentType: string) {
   return contentType.trim().toLowerCase();
 }
@@ -35,6 +50,10 @@ function isVideoContentType(contentType: string) {
   return videoContentTypes.has(contentType);
 }
 
+function isDocumentContentType(contentType: string) {
+  return documentContentTypes.has(contentType);
+}
+
 function isAllowedContentType(kind: UploadKind, contentType: string) {
   switch (kind) {
     case "workspace-logo":
@@ -44,10 +63,16 @@ function isAllowedContentType(kind: UploadKind, contentType: string) {
       return isVideoContentType(contentType);
     case "attachment":
       return isImageContentType(contentType) || isVideoContentType(contentType);
+    case "document":
+      return isDocumentContentType(contentType);
   }
 }
 
-function getMaxAllowedBytes(contentType: string) {
+function getMaxAllowedBytes(kind: UploadKind, contentType: string) {
+  if (kind === "document") {
+    return DOCUMENT_MAX_BYTES;
+  }
+
   return isVideoContentType(contentType)
     ? env.UPLOAD_VIDEO_MAX_BYTES
     : env.UPLOAD_IMAGE_MAX_BYTES;
@@ -64,7 +89,7 @@ function validateUploadInput(input: CreatePresignedUrlInput | BatchUploadFileInp
     );
   }
 
-  const maxAllowedBytes = getMaxAllowedBytes(normalizedContentType);
+  const maxAllowedBytes = getMaxAllowedBytes(input.kind, normalizedContentType);
 
   if (input.size > maxAllowedBytes) {
     throw new AppError(

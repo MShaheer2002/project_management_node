@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { documentDraftSchema } from "../documents/documents.schemas.js";
 
 const visibilitySchema = z.enum(["PUBLIC", "PRIVATE"]);
 const teamSortSchema = z.enum(["name:asc", "name:desc", "createdAt:asc", "createdAt:desc"]);
@@ -13,6 +14,16 @@ export const createTeamSchema = {
     departmentId: z.string().uuid("Invalid department ID").nullable().optional(),
     visibility: visibilitySchema.optional(),
     memberIds: z.array(z.string().min(1)).max(100).optional(),
+    docs: z.array(documentDraftSchema).max(20).optional(),
+  }).superRefine((value, ctx) => {
+    const keys = (value.docs ?? []).map((document) => document.file.key);
+    if (new Set(keys).size !== keys.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Document keys must be unique",
+        path: ["docs"],
+      });
+    }
   }),
 };
 

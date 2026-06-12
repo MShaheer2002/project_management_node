@@ -49,6 +49,11 @@ import notificationRoutes from "../modules/notification/notification.routes.js";
 import cycleRoutes from "../modules/cycle/cycle.routes.js";
 import templateRoutes from "../modules/template/template.routes.js";
 import billingRoutes from "../modules/billing/billing.routes.js";
+import analyticsRoutes from "../modules/analytics/analytics.routes.js";
+import roadmapRoutes from "../modules/roadmap/roadmap.routes.js";
+import documentsRoutes from "../modules/documents/documents.routes.js";
+import apiKeyRoutes from "../modules/api-key/api-key.routes.js";
+import integrationRoutes, { webhookRouter as githubWebhookRouter } from "../modules/integration/integration.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -71,6 +76,16 @@ app.use("/webhooks/stripe", express.raw({ type: "application/json" }));
 
 // 3. Body parsing — parse JSON request bodies (limit 10mb for rich text content)
 app.use(express.json({ limit: "10mb" }));
+
+// Slack sends slash commands as application/x-www-form-urlencoded
+// Preserve raw body for Slack signature verification
+app.use(express.urlencoded({
+  extended: true,
+  verify: (req: any, _res, buf) => {
+    // Store raw body for Slack signature verification
+    req.rawBody = buf.toString();
+  },
+}));
 
 // 4. Rate limiting — 100 requests/min per IP (protects against abuse)
 app.use(globalRateLimiter);
@@ -156,9 +171,12 @@ app.use(notificationRoutes);
 app.use(cycleRoutes);
 app.use(templateRoutes);
 app.use(billingRoutes);
-// Phase 10: app.use("/api-keys", apiKeyRoutes);
-// Phase 10: app.use("/integrations", integrationRoutes);
-// Phase 10: app.use("/billing", billingRoutes);
+app.use(analyticsRoutes);
+app.use(roadmapRoutes);
+app.use(documentsRoutes);
+app.use("/api-keys", apiKeyRoutes);
+app.use("/integrations", integrationRoutes);
+app.use("/webhooks", githubWebhookRouter);
 
 // ─── Error Handling (must be LAST in the stack) ──────────────────────────────
 

@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { documentDraftSchema } from "../documents/documents.schemas.js";
 
 const visibilitySchema = z.enum(["PUBLIC", "PRIVATE"]);
 const projectStatusSchema = z.enum(["ACTIVE", "ARCHIVED", "COMPLETED"]);
@@ -34,6 +35,16 @@ export const createProjectSchema = {
     startDate: z.string().date().optional(),
     targetDate: z.string().date().optional(),
     features: featuresSchema.optional(),
+    docs: z.array(documentDraftSchema).max(20).optional(),
+  }).superRefine((value, ctx) => {
+    const keys = (value.docs ?? []).map((document) => document.file.key);
+    if (new Set(keys).size !== keys.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Document keys must be unique",
+        path: ["docs"],
+      });
+    }
   }),
 };
 

@@ -7,6 +7,7 @@ import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { createNotification } from "../notification/notification.service.js";
 import { createProjectMembershipNotification } from "../notification/notification.service.js";
+import { attachInitialProjectDocuments } from "../documents/documents.service.js";
 import type {
   CreateProjectInput,
   ListProjectsQuery,
@@ -350,6 +351,10 @@ export async function createProject(workspaceId: string, actorUserId: string, in
         })),
         skipDuplicates: true,
       });
+    }
+
+    if ((input.docs?.length ?? 0) > 0) {
+      await attachInitialProjectDocuments(tx, workspaceId, createdProject.id, actorUserId, input.docs ?? []);
     }
 
     return {

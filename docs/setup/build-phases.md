@@ -30,9 +30,13 @@ Phase 10 → Realtime        (Socket.IO live updates)
 Phase 11 → Cycles          (time-boxed execution for predictable delivery)
 Phase 12 → Templates       (standardized issue creation)
 Phase 13 → Billing         (plans, limits, Stripe lifecycle)
-Phase 14 → API Keys        (external/system access)
-Phase 15 → Integrations    (GitHub/Slack/etc. connectivity)
-Phase 16 → Intelligence    (MCP server, AI assistant — future scope)
+Phase 14 → Analytics       (workspace, project, team, member metrics)
+Phase 15 → Roadmap         (planning timeline, milestones, dependencies)
+Phase 16 → Docs            (workspace, team, project documents)
+Phase 17 → Multi-Workspace (workspace switching, cross-org membership)
+Phase 18 → API Keys        (external/system access)
+Phase 19 → Integrations    (GitHub/Slack/etc. connectivity)
+Phase 20 → Intelligence    (MCP server, AI assistant — future scope)
 ```
 
 ---
@@ -1322,7 +1326,591 @@ POST   /webhooks/stripe               — Stripe webhook receiver
 
 ---
 
-## Phase 14 — API Keys
+## Phase 14 — Analytics (Workspace Intelligence)
+
+**Goal:** Provide production-grade analytics across workspace, projects, teams, members, and cycles. All metrics are computed from existing data (issues, activities, memberships) — no new schema models required except adding `completedAt` to the Issue model.
+
+**Dependency:** Phase 13 complete. All core entities (issues, projects, teams, cycles, activity) must be stable.
+
+**Backend contract:** [../feature/analytics/analytics-backend-setup-guide.md](../feature/analytics/analytics-backend-setup-guide.md)
+
+### 14.1 Schema Change
+
+Add `completedAt` to the Issue model:
+
+```prisma
+model Issue {
+  // ... existing fields
+  completedAt DateTime?  // Set when status changes to DONE, cleared when moved back
+}
+```
+
+This enables fast resolution-time queries without scanning the Activity log.
+
+### 14.2 Analytics Endpoints
+
+```
+GET /analytics/workspace              — Workspace-level overview metrics
+GET /analytics/projects/:id           — Project-level metrics
+GET /analytics/teams/:id              — Team-level metrics
+GET /analytics/members/:id            — Member-level metrics
+GET /analytics/cycles/:id             — Cycle-level metrics (extends existing cycle stats)
+GET /analytics/export                 — CSV/JSON export for any analytics scope
+```
+
+All endpoints support:
+- `period` query param: `7d`, `30d`, `90d`, `custom`
+- `from` / `to` for custom date ranges
+- Comparison with previous period (trend %)
+
+### 14.3 Workspace Analytics (`GET /analytics/workspace`)
+
+Summary cards:
+- Tasks completed (count + trend %)
+- Avg resolution time (creation → DONE)
+- Active projects count
+- Team workload % (assigned / capacity estimate)
+- Overdue issues count
+- Open vs closed ratio
+
+Charts:
+- Completion velocity (issues completed per day/week)
+- Issue distribution by status (pie/donut)
+- Issue distribution by priority
+- Issue distribution by type (task/bug/issue)
+- Created vs completed trend line
+
+Tables:
+- Team performance (team name, members, completed, efficiency %)
+- Top contributors (member, completed, avg resolution time)
+- Bottleneck issues (stuck in IN_PROGRESS or REVIEW longest)
+
+### 14.4 Project Analytics (`GET /analytics/projects/:id`)
+
+- Progress % (done / total)
+- Burndown chart (remaining issues over time)
+- Scope changes (issues added after project start)
+- Status breakdown
+- Priority breakdown
+- Member workload within project
+- Timeline health (on track / at risk / behind based on target date vs completion rate)
+
+### 14.5 Team Analytics (`GET /analytics/teams/:id`)
+
+- Team velocity (issues completed per week, trend)
+- Workload distribution per member (bar chart)
+- Completion rate per member
+- Avg resolution time per member
+- Overdue issues per member
+- Cycle-over-cycle comparison (if team uses cycles)
+- Member performance table (assigned, completed, open, overdue, completion %)
+
+### 14.6 Member Analytics (`GET /analytics/members/:id`)
+
+- Issues: assigned, completed, in progress, overdue
+- Completion rate + trend
+- Avg resolution time
+- Activity heatmap (contributions per day)
+- Breakdown by project
+- Breakdown by team
+- Recent activity stream (last 20 actions)
+
+### 14.7 Export (`GET /analytics/export`)
+
+- Query params: `scope` (workspace/project/team/member/cycle), `scopeId`, `format` (csv/json/pdf), `period`
+- Returns downloadable file with the analytics data
+- Access: workspace export is ADMIN+, other scoped exports follow the same access rules as their analytics pages
+
+### 14.8 Access Control
+
+| Endpoint | OWNER | ADMIN | MEMBER | GUEST |
+|---|---|---|---|---|
+| Workspace analytics | Full | Full | Limited (own teams) | None |
+| Project analytics | Full | Full | Projects they're in | None |
+| Team analytics | Full | Full | Teams they're in | None |
+| Member analytics | Full | Full | Own only | None |
+| Export | Full | Full | Scoped access matching page visibility | None |
+
+### 14.9 Module Structure
+
+```
+modules/analytics/
+├── analytics.routes.ts
+├── analytics.controller.ts
+├── analytics.service.ts
+├── analytics.schemas.ts
+└── analytics.utils.ts          # Shared date range, trend calculation helpers
+```
+
+### Done When
+
+- [ ] `completedAt` field added to Issue model and set on status change to DONE
+- [ ] Workspace analytics returns summary cards, charts, and tables
+- [ ] Project analytics returns burndown, scope changes, and status breakdown
+- [ ] Team analytics returns velocity, workload distribution, and member performance
+- [ ] Member analytics returns personal metrics and activity heatmap
+- [ ] All analytics support 7d/30d/90d/custom period with trend comparison
+- [ ] Export endpoint returns CSV/JSON for any scope
+- [ ] Access control enforced per role
+- [ ] Workspace isolation verified (no cross-tenant data leaks)
+
+---
+
+## Phase 15 — Roadmap
+
+**Goal:** Turn the current mock-driven roadmap UI into a production-grade planning surface backed by real project dates, milestones, and dependency health. This phase should make roadmap useful for daily planning, not just visual reporting.
+
+**Dependency:** Phase 14 complete. Analytics must exist first so roadmap can reuse progress, throughput, and risk signals instead of inventing separate logic.
+
+**Backend contract:** [phase15-backend-contract.md](./phase15-backend-contract.md)
+
+**Current frontend baseline already exists:**
+- `/roadmap` route is wired
+- team-scoped filtering exists via `?team=...`
+- quarterly/monthly toggle UI exists
+- prev/next navigation exists
+- project bars render with progress %
+- current implementation is still mock-driven and uses synthetic widths/offsets
+
+### 15.1 Schema Changes
+
+Use the existing `Project.startDate`, `Project.targetDate`, and `Project.features.roadmap` fields as the core schedule data. Add roadmap-specific tables for planning detail:
+
+```prisma
+model ProjectMilestone {
+  id          String   @id @default(uuid())
+  workspaceId String
+  projectId   String
+  name        String
+  dueDate     DateTime
+  status      MilestoneStatus @default(PLANNED)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ProjectDependency {
+  id                String   @id @default(uuid())
+  workspaceId       String
+  blockingProjectId String
+  blockedProjectId  String
+  createdAt         DateTime @default(now())
+
+  @@unique([blockingProjectId, blockedProjectId])
+}
+```
+
+### 15.2 Roadmap Endpoints
+
+```
+GET    /roadmap                                 — Timeline data across workspace/team/project scope
+GET    /roadmap/projects/:id                    — Single project roadmap detail
+POST   /roadmap/projects/:id/milestones         — Create milestone
+PATCH  /roadmap/projects/:id/milestones/:mid    — Update milestone
+DELETE /roadmap/projects/:id/milestones/:mid    — Delete milestone
+POST   /roadmap/dependencies                    — Create dependency between projects
+DELETE /roadmap/dependencies/:id                — Remove dependency
+PATCH  /roadmap/projects/:id/schedule           — Update startDate/targetDate in one operation
+```
+
+Core query params:
+- `teamId`
+- `departmentId`
+- `projectId`
+- `view=month|quarter`
+- `from` / `to`
+- `include=milestones,dependencies,health`
+
+### 15.3 Timeline Payload Requirements
+
+Each roadmap item should return:
+- project identity: `id`, `name`, `slug`, `status`, `visibility`
+- schedule: `startDate`, `targetDate`, computed duration, current position within range
+- progress: `% complete`, open/completed issue counts
+- ownership: `lead`, `team`, `department`
+- health: `onTrack | atRisk | offTrack`
+- milestone summary: total, completed, overdue
+- dependency summary: blocked by / blocking counts
+
+The roadmap API is an aggregation endpoint. It should not force the frontend to stitch together projects, analytics, milestones, and dependencies client-side.
+
+### 15.4 Productivity-Focused Behaviors
+
+- Fast filtering by team, department, owner, status, and date range
+- Stable sorting for large workspaces (target date, updated date, progress, risk)
+- Inline rescheduling support via one PATCH endpoint
+- Team-scoped views must be first-class, because the sidebar already links roadmap per team
+- Empty/loading/error states must be explicit so the page is usable outside the happy path
+- Response shape must support both workspace roadmap and embedded project roadmap tab without extra adapter logic
+
+### 15.5 Access Control
+
+| Endpoint | OWNER | ADMIN | MEMBER | GUEST |
+|---|---|---|---|---|
+| Workspace roadmap | Full | Full | Teams/projects they can access | None |
+| Project roadmap detail | Full | Full | Projects they're in | Public projects only |
+| Milestone CRUD | Full | Full | Project lead or team lead | None |
+| Dependency CRUD | Full | Full | Project lead or team lead | None |
+| Schedule update | Full | Full | Project lead or team lead | None |
+
+### 15.6 Module Structure
+
+```
+modules/roadmap/
+├── roadmap.routes.ts
+├── roadmap.controller.ts
+├── roadmap.service.ts
+├── roadmap.schemas.ts
+└── roadmap.utils.ts          # date-window, layout, health helpers
+```
+
+### Done When
+
+- [ ] `/roadmap` returns real timeline data from DB, not mock projects
+- [ ] Team-scoped roadmap works via `teamId` filters
+- [ ] Project dates are persisted and editable through a dedicated schedule endpoint
+- [ ] Milestones can be created, updated, ordered, and deleted
+- [ ] Project dependencies are created safely with cycle/self-dependency validation
+- [ ] Health status is computed from target date, progress, and completion rate
+- [ ] Timeline payload supports both workspace roadmap page and project detail roadmap tab
+- [ ] Access control enforced per role and project visibility
+- [ ] Workspace isolation verified
+
+---
+
+## Phase 16 — Docs
+
+**Goal:** Add first-class document management for workspaces, teams, and projects so key operating context lives with the entity it belongs to instead of being scattered across chat, drives, and issue comments.
+
+**Dependency:** Phase 15 complete. Documents should attach cleanly to the roadmap/planning structure that already exists across workspace, teams, and projects.
+
+### 16.1 Scope
+
+The docs system in this phase must support three scopes:
+
+- `WORKSPACE` docs
+- `TEAM` docs
+- `PROJECT` docs
+
+Rules by scope:
+- workspace docs can be uploaded and managed only by `OWNER` and `ADMIN`
+- team docs can be added during team creation and after team creation
+- project docs can be added during project creation and after project creation
+- workspace docs can be added after workspace creation
+- docs must always remain visible inside the entity they belong to, not in one flat mixed list
+
+Primary use cases:
+- workspace handbook, policies, onboarding, process docs
+- team briefs, working agreements, team SOPs
+- project PRDs, technical specs, kickoff docs, delivery notes
+
+### 16.2 Schema Changes
+
+Use one shared document model with scoped ownership:
+
+```prisma
+enum DocumentScope {
+  WORKSPACE
+  TEAM
+  PROJECT
+}
+
+model EntityDocument {
+  id           String        @id @default(uuid())
+  workspaceId  String
+  scope        DocumentScope
+  teamId       String?
+  projectId    String?
+  title        String
+  description  String?
+  fileName     String
+  fileUrl      String
+  mimeType     String
+  sizeBytes    Int
+  uploadedById String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([workspaceId, scope, createdAt])
+  @@index([teamId, createdAt])
+  @@index([projectId, createdAt])
+}
+```
+
+Validation rules:
+- `WORKSPACE` doc: `teamId=null`, `projectId=null`
+- `TEAM` doc: `teamId` required, `projectId=null`
+- `PROJECT` doc: `projectId` required
+- all docs must belong to the same workspace as the parent entity
+- file metadata must be stored in DB even if binary storage is external
+
+### 16.3 Endpoints
+
+```
+POST   /workspaces/:workspaceId/documents              — Upload workspace doc (ADMIN/OWNER)
+GET    /workspaces/:workspaceId/documents              — List workspace docs
+PATCH  /workspaces/:workspaceId/documents/:id          — Update workspace doc metadata
+DELETE /workspaces/:workspaceId/documents/:id          — Delete workspace doc
+
+POST   /teams                                          — Create team, optional initial docs[]
+GET    /teams/:id/documents                            — List team docs
+POST   /teams/:id/documents                            — Upload team doc
+PATCH  /teams/:id/documents/:id                        — Update team doc metadata
+DELETE /teams/:id/documents/:id                        — Delete team doc
+
+POST   /projects                                       — Create project, optional initial docs[]
+GET    /projects/:id/documents                         — List project docs
+POST   /projects/:id/documents                         — Upload project doc
+PATCH  /projects/:id/documents/:id                     — Update project doc metadata
+DELETE /projects/:id/documents/:id                     — Delete project doc
+```
+
+Recommended create payload additions:
+
+```ts
+type CreateTeamInput = {
+  name: string;
+  // existing fields...
+  docs?: Array<{
+    title: string;
+    description?: string | null;
+    fileToken: string;
+  }>;
+};
+
+type CreateProjectInput = {
+  name: string;
+  // existing fields...
+  docs?: Array<{
+    title: string;
+    description?: string | null;
+    fileToken: string;
+  }>;
+};
+```
+
+### 16.4 Upload Flow
+
+The API should support a production-safe upload flow:
+
+1. frontend requests upload intent or uploads through an existing file service
+2. file storage returns a temporary `fileToken` or stored file reference
+3. docs endpoint creates the document record with title, description, and file metadata
+4. document is attached to workspace, team, or project atomically
+
+Required metadata returned to frontend:
+- `id`
+- `title`
+- `description`
+- `scope`
+- `fileName`
+- `fileUrl`
+- `mimeType`
+- `sizeBytes`
+- `uploadedBy`
+- `createdAt`
+
+### 16.5 UX/Product Rules
+
+- team create flow may include an optional docs step, but skipping docs must never block team creation
+- project create flow may include an optional docs step, but skipping docs must never block project creation
+- workspace docs must have a dedicated page or section under workspace settings or workspace overview
+- team docs must appear inside the team detail experience
+- project docs must appear inside the project detail experience
+- users should understand the purpose of the section from copy like:
+  - `Workspace docs keep policies, onboarding, and shared references in one place.`
+  - `Team docs keep operating notes, rituals, and working agreements close to the team.`
+  - `Project docs keep specs, plans, and delivery context attached to the work.`
+- document lists should show file type, uploaded by, uploaded date, and optional description
+- empty states should explain what belongs here instead of just saying no documents found
+
+### 16.6 Access Control
+
+| Action | OWNER | ADMIN | MEMBER | GUEST |
+|--------|-------|-------|--------|-------|
+| View workspace docs | Full | Full | Members of workspace | None |
+| Upload workspace docs | Full | Full | None | None |
+| Edit/delete workspace docs | Full | Full | None | None |
+| View team docs | Full | Full | Team/workspace members with access | None |
+| Upload team docs | Full | Full | Team lead or allowed team manager flows | None |
+| Edit/delete team docs | Full | Full | Team lead or uploader if allowed by policy | None |
+| View project docs | Full | Full | Project-visible members | None |
+| Upload project docs | Full | Full | Project lead or allowed project manager flows | None |
+| Edit/delete project docs | Full | Full | Project lead or uploader if allowed by policy | None |
+
+Final permission behavior must stay consistent with the rest of the app's shared permission helpers.
+
+### 16.7 Module Structure
+
+```
+modules/documents/
+├── documents.routes.ts
+├── documents.controller.ts
+├── documents.service.ts
+├── documents.schemas.ts
+└── documents.storage.ts      # Upload intent / file reference integration
+```
+
+### Done When
+
+- [ ] Workspace docs can be uploaded only by `OWNER` and `ADMIN`
+- [ ] Team docs can be attached during team creation and after creation
+- [ ] Project docs can be attached during project creation and after creation
+- [ ] Workspace docs can be added after workspace creation
+- [ ] Workspace/team/project doc lists are scoped correctly and never mixed
+- [ ] Stored file metadata is persisted and returned consistently
+- [ ] Empty/loading/error states are defined for each docs surface
+- [ ] Access control enforced per scope
+- [ ] Workspace isolation verified
+
+---
+
+## Phase 17 — Multi-Workspace (Cross-Org Membership & Switching)
+
+**Goal:** Enable users to own multiple workspaces, be members of workspaces owned by others, and switch between them seamlessly. A single Clerk identity maps to many workspace memberships with independent roles per workspace.
+
+**Dependency:** Phase 16 complete. All entity-scoped features (teams, projects, issues, docs) must be stable, because workspace switching resets the entire app context.
+
+**Backend contract:** [phase17-multi-workspace-guide.md](./phase17-multi-workspace-guide.md)
+
+### 17.1 Core Principle
+
+A **User** is a global identity (Clerk). A **Role** is local to a workspace. The same person can be:
+- `OWNER` of "Agency X"
+- `ADMIN` in "Startup Z"
+- `GUEST` in "Client Corp"
+- `MEMBER` in "Side Project"
+
+All simultaneously. No artificial caps on workspace count per user (billing plan can gate this later).
+
+### 17.2 What Already Exists (Phase 2 Baseline)
+
+The schema already supports multi-workspace:
+- `User` ↔ `WorkspaceMembership` ↔ `Workspace` is many-to-many
+- `GET /workspaces` returns all workspaces for the authenticated user
+- `X-Workspace-Id` header scopes every API call
+- `requireWorkspace` middleware verifies membership per request
+- Frontend Zustand store holds active workspace; interceptor injects header dynamically
+- `useWorkspaces()` hook fetches all workspaces
+- Sidebar has a "Switch workspace" placeholder (not yet functional)
+
+**This phase completes the UX and handles every edge case around switching, inviting existing users, and stale workspace detection.**
+
+### 17.3 Workspace Switcher
+
+Replace the sidebar placeholder with a real workspace switcher:
+
+- Dropdown/modal showing all workspaces from `GET /workspaces`
+- Each entry: workspace name, logo, user's role badge (Owner/Admin/Member/Guest)
+- Active workspace visually highlighted
+- "Create new workspace" action at the bottom
+- Keyboard shortcut for quick switching (e.g., `Cmd+K` → workspace filter)
+
+**On switch:**
+1. Update Zustand store (`setWorkspace()`)
+2. Invalidate all workspace-scoped React Query cache
+3. Navigate to new workspace's dashboard (reset deep routes)
+4. Sidebar re-renders with new workspace's teams, projects, badges
+
+### 17.4 Invite Flow for Existing Users
+
+When a user who already has a Clerk account is invited to a new workspace:
+
+```
+Owner/Admin sends invite (email + role)
+  → Backend checks if email matches existing User in DB
+  → If YES: create WorkspaceMembership directly + send notification
+  → If NO: send email invitation link → sign up → accept → membership created
+```
+
+**Existing user flow:**
+1. Invitation created with `status: PENDING`
+2. In-app notification sent to the invitee (if they're online via Socket.IO)
+3. Email notification sent regardless
+4. User accepts from notification inbox or email link
+5. New workspace appears in their switcher immediately
+6. User can switch to it or continue in current workspace
+
+**New user flow (unchanged):**
+1. Email invitation with sign-up link + token
+2. User creates Clerk account
+3. Redirected to accept invitation page
+4. Membership created, lands in new workspace
+
+### 17.5 Workspace Lifecycle Scenarios
+
+| Scenario | Behavior |
+|---|---|
+| User creates first workspace | Becomes OWNER, this is their active workspace |
+| User creates additional workspace | Becomes OWNER, optionally switch to it or stay in current |
+| User accepts invite to new workspace | Membership created, workspace appears in switcher |
+| User is removed from a workspace | Workspace disappears from switcher; if it was active → redirect to next available |
+| User's active workspace is deleted by its owner | On next API call → 403/404 → clear stale workspace → redirect to workspace selector |
+| User has zero workspaces (all removed/deleted) | Redirect to "Create workspace" page |
+| Owner deletes their own workspace | Cascade delete all data; owner's other workspaces unaffected |
+| User invited to workspace they're already in | Backend returns 409; frontend shows "Already a member" |
+| User with expired/revoked invitation tries to accept | Backend returns 410 Gone; frontend shows "Invitation expired" |
+
+### 17.6 Active Workspace Persistence & Recovery
+
+- Last active workspace persisted in localStorage (`linearis-auth` key — already exists)
+- On app load / login:
+  1. Read stored workspace ID
+  2. Verify it still exists and user is still a member (`GET /workspaces`)
+  3. If valid → restore as active workspace
+  4. If invalid → select first available workspace from list
+  5. If no workspaces → redirect to create workspace page
+- On 403/404 from workspace-scoped API call → trigger stale workspace recovery flow
+
+### 17.7 Notifications Across Workspaces
+
+- Notification badge in switcher shows per-workspace unread counts
+- When user is in Workspace A, notifications from Workspace B are still received via Socket.IO (`user:<userId>` room is workspace-agnostic)
+- Clicking a cross-workspace notification switches to that workspace first, then navigates to the target entity
+
+### 17.8 Permission Rules
+
+No new permissions needed. Existing per-workspace role system applies:
+- Each `WorkspaceMembership` has its own `role`
+- Switching workspace changes `req.workspace.role` on all subsequent API calls
+- A user who is OWNER in Workspace A has zero special privileges in Workspace B where they are GUEST
+
+### 17.9 Route & Navigation Behavior on Switch
+
+- Switching workspace while on a deep route (e.g., `/projects/abc123/issues`) → navigate to `/dashboard` of new workspace
+- URL structure remains workspace-agnostic (workspace resolved via header, not URL path)
+- Browser back button after switch → returns to previous workspace's last route (standard browser history)
+
+### 17.10 Frontend Module Structure
+
+```
+src/features/workspace/
+├── components/
+│   └── WorkspaceSwitcher.tsx       # Dropdown/modal for switching
+├── hooks/
+│   ├── useWorkspaces.ts            # Already exists — fetches all workspaces
+│   ├── useWorkspaceSwitch.ts       # Switch logic (store + cache + navigate)
+│   └── useStaleWorkspaceRecovery.ts # Detect and recover from deleted/removed workspace
+└── services/
+    └── workspaceService.ts         # Already exists — add invitation acceptance helpers
+```
+
+### Done When
+
+- [ ] User can own and operate multiple workspaces independently
+- [ ] User can be a member of workspaces owned by others with independent roles
+- [ ] Workspace switcher shows all workspaces with role badges
+- [ ] Switching workspace invalidates all scoped data and resets navigation
+- [ ] Inviting an existing platform user creates membership without requiring sign-up
+- [ ] Stale workspace (deleted/removed) is detected and recovered gracefully
+- [ ] Zero-workspace state redirects to create workspace page
+- [ ] Cross-workspace notifications are delivered and navigable
+- [ ] Workspace isolation is preserved — no data leaks between workspaces
+- [ ] Active workspace persists across sessions and recovers on failure
+
+---
+
+## Phase 18 — API Keys
 
 **Goal:** Enable secure non-user/system access for integrations and automation.
 
@@ -1346,41 +1934,106 @@ DELETE /api-keys/:id                  — Revoke key
 
 ---
 
-## Phase 15 — Integrations
+## Phase 19 — Integrations & Data Import
 
-**Goal:** Connect external tools (GitHub, Slack, etc.) to workspace workflows.
+**Goal:** Connect Linearis to the tools teams already use (GitHub, Slack, Discord, Figma) and enable one-time data migration from competing platforms (Linear, Jira, ClickUp, Asana, Trello).
 
-```
-POST   /integrations/:provider/connect      — Connect integration
-DELETE /integrations/:provider/disconnect   — Disconnect integration
-GET    /integrations                         — List integration status
-```
+**Dependency:** Phase 18 complete. API keys enable external system access; integrations build on the same authentication and workspace-scoping infrastructure.
 
-Providers: GitHub, Slack, Discord, Figma (provider-specific OAuth + webhooks).
+**Product requirements document:** [phase19-integrations-guide.md](./phase19-integrations-guide.md)
+
+### Sub-Phases
+
+| Phase | Scope | Type | Priority |
+|---|---|---|---|
+| **19a — GitHub** | Branches, commits, PRs linked to issues. Auto-status on PR merge. | Live integration | Highest |
+| **19b — Slack** | Channel notifications, slash commands, DM alerts. | Live integration | High |
+| **19c — Figma** | Design file linking, thumbnail previews on issues and projects. | Link integration | Medium |
+| **19d — Discord** | Outbound notifications to configured channels. | Notification | Medium |
+| **19e — Data Import** | One-time migration from Linear, Jira, ClickUp, Asana, Trello. | Migration | High |
+
+Recommended build order: **19a → 19e → 19b → 19c → 19d**
+
+### 19a — GitHub Integration
+
+**User value:** Developers never manually update issue status. Branches, commits, and PRs referencing `LIN-XXX` automatically link to issues. PR merge can auto-complete the issue. Engineering managers see real delivery velocity driven by code activity.
+
+**Key behaviors:**
+- Branch with `LIN-24` in name → linked to issue LIN-24
+- Commit with `LIN-24` in message → shown in issue activity feed
+- PR opened with `LIN-24` → issue moves to "Review" (configurable)
+- PR merged → issue moves to "Done" (configurable)
+- PR review activity → notifications to issue assignee
+
+### 19b — Slack Integration
+
+**User value:** Important updates appear in Slack channels automatically. Engineers create issues and check status from Slack without opening Linearis. Personal DMs for assignments, mentions, and due date reminders.
+
+**Key behaviors:**
+- Outbound: issue created/completed/assigned, cycle completed, urgent issues → configured channels
+- Inbound: `/linearis create`, `/linearis status LIN-42`, `/linearis my-issues`, `/linearis cycle`
+- DMs: assignment, mention, due date approaching, issue blocked
+
+### 19c — Figma Integration
+
+**User value:** Designs are linked to issues and projects. Developers open an issue and see the relevant design with a thumbnail preview. No more hunting for Figma links across Slack and email.
+
+**Key behaviors:**
+- Paste Figma URL in issue → rich link with preview, file name, last modified
+- Project-level design tab → all linked Figma files for the project
+- Read-only — Figma remains the design tool, Linearis shows the link
+
+### 19d — Discord Integration
+
+**User value:** Workspace events broadcast to Discord channels. Popular with open-source communities and startups using Discord for team chat.
+
+**Key behaviors:**
+- Outbound only: issue created, completed, cycle completed, milestone reached → configured channels
+- Bot-based connection, no per-user OAuth required
+
+### 19e — Data Import
+
+**User value:** Teams migrate from Linear, Jira, ClickUp, Asana, or Trello without losing project history. One-time import with preview, mapping, progress tracking, and summary.
+
+**Key behaviors:**
+- Source selection → OAuth for read access → preview (counts of projects, issues, labels, members)
+- Status, priority, team, and member mapping with smart defaults
+- Background import with live progress updates via Socket.IO
+- Import summary with success counts, warnings, and skipped items
+- Import history for audit
+- Duplicate detection on re-import
 
 ### Done When
 
-- [ ] At least one provider (GitHub) works end-to-end
-- [ ] Disconnect cleans tokens/webhooks safely
-- [ ] Failed syncs are observable and retryable
+- [ ] GitHub: PR merge auto-completes linked issues end-to-end
+- [ ] GitHub: Commit and branch activity visible on issue detail
+- [ ] Slack: Channel notifications post for key workspace events
+- [ ] Slack: `/linearis create` and `/linearis status` slash commands work
+- [ ] Figma: Design links show thumbnail previews on issues
+- [ ] Discord: Workspace events post to configured channels
+- [ ] Import: At least one source (Linear) imports projects, issues, labels, comments end-to-end
+- [ ] Import: Preview → mapping → progress → summary flow complete
+- [ ] All integrations: workspace-scoped, admin-only connect/disconnect
+- [ ] All integrations: disconnect cleans up tokens/webhooks safely
+- [ ] All integrations: failed syncs logged and observable
 
 ---
 
-## Phase 16 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
+## Phase 20 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
 
 **Goal:** Expose workspace data to AI agents via the Model Context Protocol (MCP), and provide an in-app AI assistant that can read, create, and manage issues through natural language.
 
-**Dependency:** Phase 15 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
+**Dependency:** Phase 18 complete. The entire product must be stable — AI is a layer *on top* of working features, not a replacement for them.
 
 **Plan tier:** Basic AI on Standard plan, full AI on Plus plan.
 
-### 16.1 What is MCP
+### 20.1 What is MCP
 
 MCP (Model Context Protocol) is an open standard that lets AI models (Claude, GPT, etc.) call **tools** exposed by your server. Instead of the AI scraping your UI, it calls structured endpoints with typed parameters and gets structured responses.
 
 Think of it as: **an API designed for AI agents, not humans.**
 
-### 16.2 MCP Server Setup
+### 20.2 MCP Server Setup
 
 The MCP server runs as a separate module alongside the Express API. It exposes workspace data as tools that any MCP-compatible AI client can call.
 
@@ -1400,7 +2053,7 @@ mcp/
     └── workspace.ts          # Workspace summary resource
 ```
 
-### 16.3 MCP Tools
+### 20.3 MCP Tools
 
 These are the actions an AI agent can perform:
 
@@ -1420,7 +2073,7 @@ These are the actions an AI agent can perform:
 | `get_my_issues`         | Issues assigned to the authenticated user             | `status?`                                        |
 | `get_team_workload`     | Issue distribution across team members                | `teamId`                                         |
 
-### 16.4 MCP Resources (Read-Only Context)
+### 20.4 MCP Resources (Read-Only Context)
 
 Resources are data the AI can read to understand the workspace context before taking action:
 
@@ -1431,16 +2084,16 @@ Resources are data the AI can read to understand the workspace context before ta
 | Project summary         | `linearis://projects/{id}`   | Status, progress, recent activity         |
 | Current sprint          | `linearis://cycles/current`  | Active cycle, issue breakdown by status   |
 
-### 16.5 Authentication for MCP
+### 20.5 Authentication for MCP
 
 MCP sessions authenticate via:
 
-1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 14.
+1. **API Key** — for external AI agents (Claude Desktop, custom agents). Uses the same `lin_live_*` keys from Phase 18.
 2. **Clerk session** — for the in-app AI assistant (user's own permissions apply).
 
 All MCP tool calls are **workspace-scoped** and **permission-checked** — an AI agent cannot do anything the authenticated user can't do themselves.
 
-### 16.6 In-App AI Assistant
+### 20.6 In-App AI Assistant
 
 A guided chatbot in the Linearis UI that uses the MCP tools internally:
 
@@ -1458,7 +2111,7 @@ User message → Backend AI endpoint → Claude API (with MCP tools) → Tool ca
 
 The backend acts as a **proxy** — it sends the user's message to Claude along with the MCP tool definitions. Claude decides which tools to call, the backend executes them against the DB, and returns the results.
 
-### 16.7 AI-Powered Suggestions (Plus Plan)
+### 20.7 AI-Powered Suggestions (Plus Plan)
 
 Passive AI features that run in the background:
 
@@ -1471,7 +2124,7 @@ Passive AI features that run in the background:
 
 These use background jobs (queues/workers from Phase 8+) — not blocking the user's request.
 
-### 16.8 Business Rules
+### 20.8 Business Rules
 
 - MCP server respects the same permission matrix as the REST API
 - AI actions create real Activity entries (actor = user, not "AI")

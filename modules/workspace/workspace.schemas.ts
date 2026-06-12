@@ -70,6 +70,12 @@ export const createWorkspaceSchema = {
       .trim(),
     slug: slugSchema,
     teamSize: teamSizeSchema.optional(),
+    issuePrefix: z
+      .string()
+      .min(2, "Issue prefix must be at least 2 characters")
+      .max(5, "Issue prefix must be at most 5 characters")
+      .regex(/^[A-Z]+$/, "Issue prefix must be uppercase letters only")
+      .optional(),
   }),
 };
 

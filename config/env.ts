@@ -35,6 +35,7 @@ const envSchema = z.object({
     .enum(["development", "staging", "production"])
     .default("development"),
   FRONTEND_URL: z.string().url().default("http://localhost:3000"),
+  BACKEND_URL: z.preprocess(emptyStringToUndefined, z.string().url().optional()),
 
   // Stripe — workspace billing
   STRIPE_SECRET_KEY: z.string().min(1, "STRIPE_SECRET_KEY is required"),
@@ -59,6 +60,16 @@ const envSchema = z.object({
   ),
   UPLOAD_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
   UPLOAD_VIDEO_MAX_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024),
+
+  // GitHub — OAuth App for workspace integration (Phase 19a)
+  GITHUB_CLIENT_ID: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  GITHUB_CLIENT_SECRET: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  GITHUB_WEBHOOK_SECRET: z.preprocess(emptyStringToUndefined, z.string().optional()),
+
+  // Slack — OAuth App for workspace integration (Phase 19b)
+  SLACK_CLIENT_ID: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  SLACK_CLIENT_SECRET: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  SLACK_SIGNING_SECRET: z.preprocess(emptyStringToUndefined, z.string().optional()),
 });
 
 // Validate environment variables — crashes if invalid

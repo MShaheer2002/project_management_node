@@ -8,6 +8,7 @@ import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
+import { attachInitialTeamDocuments } from "../documents/documents.service.js";
 import type {
   CreateTeamInput,
   ListTeamsQuery,
@@ -220,7 +221,7 @@ async function assertDepartmentExists(
   }
 }
 
-export async function createTeam(workspaceId: string, input: CreateTeamInput) {
+export async function createTeam(workspaceId: string, actorUserId: string, input: CreateTeamInput) {
   const existing = await prisma.team.findFirst({
     where: {
       workspaceId,
@@ -274,6 +275,10 @@ export async function createTeam(workspaceId: string, input: CreateTeamInput) {
       })),
       skipDuplicates: true,
     });
+
+    if ((input.docs?.length ?? 0) > 0) {
+      await attachInitialTeamDocuments(tx, workspaceId, created.id, actorUserId, input.docs ?? []);
+    }
 
     return created;
   });
