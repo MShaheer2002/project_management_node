@@ -67,6 +67,34 @@ router.delete(
   controller.disconnect,
 );
 
+// Get provider settings — ADMIN/OWNER only
+router.get(
+  "/:provider/settings",
+  authenticate,
+  validate(connectProviderSchema), // reuse — it just validates params.provider
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  controller.getSettings,
+);
+
+// List Slack channels — ADMIN/OWNER only (for channel picker)
+router.get(
+  "/slack/channels",
+  authenticate,
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  controller.listSlackChannels,
+);
+
+// Set Slack notification channel — ADMIN/OWNER only
+router.post(
+  "/slack/channel",
+  authenticate,
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  controller.setSlackChannel,
+);
+
 // Update settings — ADMIN/OWNER only
 router.patch(
   "/:provider/settings",
@@ -88,4 +116,11 @@ export const webhookRouter = Router();
 webhookRouter.post(
   "/github",
   controller.githubWebhook,
+);
+
+// Slack slash commands — signature verified internally, no Clerk/API key auth
+// Slack sends application/x-www-form-urlencoded, not JSON
+webhookRouter.post(
+  "/slack/commands",
+  controller.slackCommands,
 );

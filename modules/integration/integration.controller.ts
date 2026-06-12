@@ -7,10 +7,12 @@
 
 import type { RequestHandler } from "express";
 import * as integrationService from "./integration.service.js";
+import * as slackService from "./slack.service.js";
 import { sendSuccess } from "../../shared/utils/api-response.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { verifyGitHubSignature } from "./github.utils.js";
+import { verifySlackSignature } from "./slack.utils.js";
 import { env } from "../../config/env.js";
 
 // ─── Integration Management ─────────────────────────────────────────────────
@@ -36,6 +38,12 @@ export const connect: RequestHandler = async (req, res, next) => {
       return;
     }
 
+    if (provider === "slack") {
+      const authUrl = slackService.getSlackAuthUrl(req.workspace!.id, req.user!.id);
+      sendSuccess(res, 200, { authUrl });
+      return;
+    }
+
     // Other providers not yet implemented
     throw new AppError(400, ERROR_CODES.INTEGRATION_PROVIDER_INVALID, `${provider} integration is not yet available`);
   } catch (error) {
@@ -56,12 +64,20 @@ export const oauthCallback: RequestHandler = async (req, res, next) => {
       return;
     }
 
+    if (provider === "slack") {
+      const { code, state } = req.validated?.query as { code: string; state: string } ?? req.query;
+      await slackService.handleSlackCallback(code as string, state as string);
+      res.redirect(`${env.FRONTEND_URL}/integrations?provider=slack&status=connected`);
+      return;
+    }
+
     throw new AppError(400, ERROR_CODES.INTEGRATION_PROVIDER_INVALID, `${provider} callback not supported`);
   } catch (error) {
     // On OAuth failure, redirect to frontend with error
-    if (req.params.provider === "github") {
+    const provider = req.params.provider;
+    if (provider === "github" || provider === "slack") {
       const message = error instanceof AppError ? error.message : "Connection failed";
-      res.redirect(`${env.FRONTEND_URL}/integrations?provider=github&status=error&message=${encodeURIComponent(message)}`);
+      res.redirect(`${env.FRONTEND_URL}/integrations?provider=${provider}&status=error&message=${encodeURIComponent(message)}`);
       return;
     }
     next(error);
@@ -91,6 +107,69 @@ export const updateSettings: RequestHandler = async (req, res, next) => {
       req.body,
     );
     sendSuccess(res, 200, settings);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** GET /integrations/:provider/settings — Get provider settings (safe, no tokens) */
+export const getSettings: RequestHandler = async (req, res, next) => {
+  try {
+    const provider = req.params.provider as string;
+    const dbProvider = provider.toUpperCase();
+
+    const integration = await (await import("../../shared/utils/prisma.js")).prisma.integration.findUnique({
+      where: {
+        workspaceId_provider: {
+          workspaceId: req.workspace!.id,
+          provider: dbProvider as any,
+        },
+      },
+      select: { connected: true, config: true },
+    });
+
+    if (!integration?.connected || !integration.config) {
+      throw new AppError(404, ERROR_CODES.INTEGRATION_NOT_CONNECTED, `${provider} is not connected`);
+    }
+
+    const config = integration.config as Record<string, unknown>;
+    // Strip sensitive fields
+    const { accessToken, ...safeConfig } = config;
+
+    sendSuccess(res, 200, {
+      settings: safeConfig.settings ?? null,
+      channelRouting: safeConfig.channelRouting ?? null,
+      defaultChannelId: safeConfig.defaultChannel ?? null,
+      defaultChannelName: safeConfig.defaultChannelName ?? null,
+      ...(dbProvider === "GITHUB" ? { githubUser: safeConfig.githubUser, repos: safeConfig.repos } : {}),
+      ...(dbProvider === "SLACK" ? { team: safeConfig.team } : {}),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── Slack Channel Management ────────────────────────────────────────────────
+
+/** GET /integrations/slack/channels — List available Slack channels */
+export const listSlackChannels: RequestHandler = async (req, res, next) => {
+  try {
+    const channels = await slackService.listSlackChannels(req.workspace!.id);
+    sendSuccess(res, 200, channels);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** POST /integrations/slack/channel — Set default notification channel */
+export const setSlackChannel: RequestHandler = async (req, res, next) => {
+  try {
+    const { channelId, channelName } = req.body;
+    if (!channelId || !channelName) {
+      throw new AppError(400, ERROR_CODES.VALIDATION_ERROR, "channelId and channelName are required");
+    }
+    const result = await slackService.setDefaultChannel(req.workspace!.id, channelId, channelName);
+    sendSuccess(res, 200, result);
   } catch (error) {
     next(error);
   }
@@ -150,6 +229,36 @@ export const githubWebhook: RequestHandler = async (req, res, next) => {
 
     // Always respond 200 to GitHub (even if processing failed — GitHub will retry on 4xx/5xx)
     res.status(200).json({ received: true });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── Slack Webhook Handler ────────────────────────────────────────────────────
+
+/**
+ * POST /webhooks/slack/commands
+ *
+ * Receives Slack slash command requests. Verified via signing secret.
+ * Slack requires a response within 3 seconds — keep processing fast.
+ */
+export const slackCommands: RequestHandler = async (req, res, next) => {
+  try {
+    if (!env.SLACK_SIGNING_SECRET) {
+      throw new AppError(500, ERROR_CODES.SLACK_NOT_CONFIGURED, "Slack signing secret not configured");
+    }
+
+    // Verify Slack request signature using raw body (before URL-decode parsing)
+    const timestamp = req.headers["x-slack-request-timestamp"] as string | undefined;
+    const signature = req.headers["x-slack-signature"] as string | undefined;
+    const rawBody = (req as any).rawBody as string | undefined;
+
+    if (!rawBody || !verifySlackSignature(rawBody, timestamp, signature, env.SLACK_SIGNING_SECRET)) {
+      throw new AppError(401, ERROR_CODES.SLACK_SIGNATURE_INVALID, "Invalid Slack signature");
+    }
+
+    const response = await slackService.handleSlashCommand(req.body);
+    res.status(200).json(response);
   } catch (error) {
     next(error);
   }

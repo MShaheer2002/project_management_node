@@ -77,6 +77,16 @@ app.use("/webhooks/stripe", express.raw({ type: "application/json" }));
 // 3. Body parsing — parse JSON request bodies (limit 10mb for rich text content)
 app.use(express.json({ limit: "10mb" }));
 
+// Slack sends slash commands as application/x-www-form-urlencoded
+// Preserve raw body for Slack signature verification
+app.use(express.urlencoded({
+  extended: true,
+  verify: (req: any, _res, buf) => {
+    // Store raw body for Slack signature verification
+    req.rawBody = buf.toString();
+  },
+}));
+
 // 4. Rate limiting — 100 requests/min per IP (protects against abuse)
 app.use(globalRateLimiter);
 

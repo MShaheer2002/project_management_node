@@ -40,6 +40,9 @@ declare global {
         role: WorkspaceRole; // User's role in this workspace (OWNER, ADMIN, MEMBER, GUEST)
       };
 
+      /** Raw request body — preserved for webhook signature verification (Slack, Stripe) */
+      rawBody?: string;
+
       /** API key context — set by API key auth middleware when request uses an API key */
       apiKey?: {
         id: string; // ApiKey UUID

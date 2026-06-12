@@ -64,6 +64,7 @@ export async function listIntegrations(workspaceId: string) {
       id: true,
       provider: true,
       connected: true,
+      config: true,
       connectedAt: true,
       connectedBy: {
         select: { id: true, name: true, email: true },
@@ -72,14 +73,34 @@ export async function listIntegrations(workspaceId: string) {
   });
 
   // Return all providers with their status (connected or available)
+  // NEVER return accessToken — only settings, channelRouting, and display info
   const providers = ["GITHUB", "SLACK", "DISCORD", "FIGMA"] as const;
   return providers.map((provider) => {
     const integration = integrations.find((i) => i.provider === provider);
+    let settings: Record<string, unknown> | null = null;
+
+    if (integration?.config && integration.connected) {
+      const config = integration.config as Record<string, unknown>;
+      // Strip sensitive fields — never expose tokens in list response
+      const { accessToken, ...safeConfig } = config;
+      settings = {
+        settings: safeConfig.settings ?? null,
+        channelRouting: safeConfig.channelRouting ?? null,
+        defaultChannelId: safeConfig.defaultChannel ?? null,
+        defaultChannelName: safeConfig.defaultChannelName ?? null,
+        // GitHub-specific display info
+        ...(provider === "GITHUB" ? { githubUser: safeConfig.githubUser, repos: safeConfig.repos } : {}),
+        // Slack-specific display info
+        ...(provider === "SLACK" ? { team: safeConfig.team } : {}),
+      };
+    }
+
     return {
       provider: provider.toLowerCase(),
       connected: integration?.connected ?? false,
       connectedAt: integration?.connectedAt ?? null,
       connectedBy: integration?.connectedBy ?? null,
+      config: settings,
     };
   });
 }
@@ -356,11 +377,13 @@ export async function disconnectProvider(workspaceId: string, provider: string, 
 
 /**
  * Update provider-specific settings.
+ * Handles both simple boolean toggles AND complex objects like channelRouting.
+ * The frontend sends partial updates — we deep-merge into the existing config.
  */
 export async function updateSettings(
   workspaceId: string,
   provider: string,
-  settings: Record<string, boolean>,
+  input: Record<string, unknown>,
 ) {
   const dbProvider = resolveProvider(provider);
 
@@ -374,19 +397,40 @@ export async function updateSettings(
   }
 
   const currentConfig = (integration.config ?? {}) as Record<string, unknown>;
-  const currentSettings = (currentConfig.settings ?? {}) as Record<string, boolean>;
+  const currentSettings = (currentConfig.settings ?? {}) as Record<string, unknown>;
+
+  // Extract special top-level fields that go into config root (not settings)
+  const { channelRouting, defaultChannelId, defaultChannelName, ...toggleSettings } = input;
+
+  const updatedConfig: Record<string, unknown> = { ...currentConfig };
+
+  // Merge boolean toggles into settings
+  if (Object.keys(toggleSettings).length > 0) {
+    updatedConfig.settings = { ...currentSettings, ...toggleSettings };
+  }
+
+  // Merge channel routing (replace, not deep-merge — frontend sends full routing state)
+  if (channelRouting !== undefined) {
+    updatedConfig.channelRouting = channelRouting;
+  }
+
+  // Update default channel
+  if (defaultChannelId !== undefined) {
+    updatedConfig.defaultChannel = defaultChannelId;
+    updatedConfig.defaultChannelName = defaultChannelName ?? null;
+  }
 
   await prisma.integration.update({
     where: { id: integration.id },
-    data: {
-      config: {
-        ...currentConfig,
-        settings: { ...currentSettings, ...settings },
-      },
-    },
+    data: { config: updatedConfig as any },
   });
 
-  return { ...currentSettings, ...settings };
+  return {
+    settings: updatedConfig.settings,
+    channelRouting: updatedConfig.channelRouting ?? null,
+    defaultChannelId: updatedConfig.defaultChannel ?? null,
+    defaultChannelName: updatedConfig.defaultChannelName ?? null,
+  };
 }
 
 /**
