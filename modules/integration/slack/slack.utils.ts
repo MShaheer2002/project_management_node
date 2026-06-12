@@ -142,7 +142,7 @@ export function ephemeralResponse(text: string): { response_type: "ephemeral"; t
 
 /**
  * Parse a slash command text into command + arguments.
- * "/linearis create Fix bug --priority high" → { command: "create", args: "Fix bug --priority high" }
+ * "/linearis create Fix bug --priority high" -> { command: "create", args: "Fix bug --priority high" }
  */
 export function parseSlashCommand(text: string): { command: string; args: string } {
   const trimmed = text.trim();
@@ -158,7 +158,7 @@ export function parseSlashCommand(text: string): { command: string; args: string
 
 /**
  * Parse --flag value pairs from a command string.
- * "Fix bug --priority high --project API" → { text: "Fix bug", priority: "high", project: "API" }
+ * "Fix bug --priority high --project API" -> { text: "Fix bug", priority: "high", project: "API" }
  */
 export function parseCommandFlags(input: string): { text: string; flags: Record<string, string> } {
   const flags: Record<string, string> = {};

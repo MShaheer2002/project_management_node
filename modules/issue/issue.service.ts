@@ -9,7 +9,7 @@ import { emitIssueCreated, emitIssueDeleted, emitIssueUpdated } from "../../sock
 import { getSocketServer } from "../../socket/index.js";
 import { createNotification } from "../notification/notification.service.js";
 import { createIssueAttachments } from "./issue-attachment.service.js";
-import * as slackNotify from "../integration/slack.service.js";
+import { dispatchIntegrationEvent } from "../integration/dispatcher.js";
 import { decrementStorageUsage } from "../billing/billing.service.js";
 import type {
   CreateIssueInput,
@@ -662,28 +662,22 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
       });
     }
 
-    // Slack: notify channel on high/urgent issue creation (fire-and-forget)
-    slackNotify.notifyIssueCreated(workspaceId, {
-      id: created.id,
-      title: created.title,
-      priority: normalizedInput.priority,
-      status: normalizedInput.status ?? "backlog",
-      projectId: created.projectId,
-      teamId: created.teamId,
-      assigneeName: created.assignee?.name,
-      creatorName: created.creator?.name ?? "Unknown",
-      projectName: created.project?.name,
-    }).catch(() => {});
-
-    // Slack: DM assignee on creation with assignment (fire-and-forget)
-    if (created.assigneeId && created.assignee?.email) {
-      slackNotify.dmIssueAssigned(workspaceId, created.assignee.email, {
+    // Integrations: notify on high/urgent issue creation (fire-and-forget)
+    dispatchIntegrationEvent(workspaceId, {
+      type: "issue.created",
+      payload: {
         id: created.id,
         title: created.title,
         priority: normalizedInput.priority,
-        assignedByName: created.creator?.name ?? "Unknown",
-      }).catch(() => {});
-    }
+        status: normalizedInput.status ?? "backlog",
+        projectId: created.projectId,
+        teamId: created.teamId,
+        assigneeName: created.assignee?.name,
+        assigneeEmail: created.assignee?.email,
+        creatorName: created.creator?.name ?? "Unknown",
+        projectName: created.project?.name,
+      },
+    }).catch(() => {});
 
     return mapped;
   });
@@ -1018,23 +1012,19 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
           where: { id: actorUserId },
           select: { name: true },
         });
-        if (newAssignee?.email) {
-          slackNotify.dmIssueAssigned(workspaceId, newAssignee.email, {
+        dispatchIntegrationEvent(workspaceId, {
+          type: "issue.assigned",
+          payload: {
             id: issueId,
             title: updated.title,
-            priority: priorityFromDb[updated.priority] ?? "medium",
+            assigneeName: newAssignee?.name ?? "Unknown",
+            assigneeEmail: newAssignee?.email,
             assignedByName: actor?.name ?? "Unknown",
-          }).catch(() => {});
-        }
-        slackNotify.notifyIssueAssigned(workspaceId, {
-          id: issueId,
-          title: updated.title,
-          assigneeName: newAssignee?.name ?? "Unknown",
-          assignedByName: actor?.name ?? "Unknown",
-          priority: priorityFromDb[updated.priority] ?? "medium",
-          projectId: updated.projectId,
-          teamId: updated.teamId,
-          projectName: updated.project?.name,
+            priority: priorityFromDb[updated.priority] ?? "medium",
+            projectId: updated.projectId,
+            teamId: updated.teamId,
+            projectName: updated.project?.name,
+          },
         }).catch(() => {});
       }
 
@@ -1100,17 +1090,18 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
       });
     }
 
-    // Slack: notify on completion via updateIssue (fire-and-forget)
+    // Integrations: notify on completion via updateIssue (fire-and-forget)
     if (input.status && statusToDb[input.status] === "DONE" && current.status !== "DONE") {
       const actor = await prisma.user.findUnique({ where: { id: actorUserId }, select: { name: true } });
-      slackNotify.notifyIssueCompleted(workspaceId, {
+      const completePayload = {
         id: issueId,
         title: updated.title,
         completedByName: actor?.name ?? "Unknown",
         projectId: updated.projectId,
         teamId: updated.teamId,
         projectName: updated.project?.name,
-      }).catch(() => {});
+      };
+      dispatchIntegrationEvent(workspaceId, { type: "issue.completed", payload: completePayload }).catch(() => {});
     }
 
     return mapped;
@@ -1217,21 +1208,22 @@ export async function updateIssueStatus(
     });
   }
 
-  // Slack: notify channel when issue is completed (fire-and-forget)
+  // Integrations: notify channel when issue is completed (fire-and-forget)
   if (nextStatus === "DONE" && issue.status !== "DONE") {
     const actor = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
     const issueData = await prisma.issue.findFirst({
       where: { id: issueId },
       select: { projectId: true, teamId: true, project: { select: { name: true } } },
     });
-    slackNotify.notifyIssueCompleted(workspaceId, {
+    const completePayload = {
       id: issueId,
       title: (resolved as any)?.title ?? issueId,
       completedByName: actor?.name ?? "Unknown",
       projectId: issueData?.projectId,
       teamId: issueData?.teamId,
       projectName: issueData?.project?.name,
-    }).catch(() => {});
+    };
+    dispatchIntegrationEvent(workspaceId, { type: "issue.completed", payload: completePayload }).catch(() => {});
   }
 
   return resolved;

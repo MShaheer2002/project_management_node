@@ -1177,25 +1177,82 @@ model TemplateApplication {
 // INTEGRATIONS & API KEYS
 // ============================================================================
 
-/// Integration — third-party service connections (GitHub, Slack, Discord, Figma)
+/// Integration — base record for each provider connection per workspace.
 ///
 /// Each provider can only be connected once per workspace (unique constraint).
-/// `config` stores provider-specific settings as JSON.
+/// Provider-specific identity data lives in `providerMeta` (small, stable JSON).
+/// Boolean settings, channels, and webhooks are in normalized child tables.
 model Integration {
   id            String              @id @default(uuid())
   workspaceId   String
   provider      IntegrationProvider
   connected     Boolean             @default(false)
-  config        Json? // Provider-specific configuration
+  accessToken   String?             // OAuth token (GitHub/Slack) — encrypted at app level
+  providerMeta  Json?               // Small stable identity data (GitHub user, Slack team, etc.)
   connectedAt   DateTime?
-  connectedById String? // FK → User who connected this integration
+  connectedById String?             // FK → User who connected this integration
 
   // -- Relations --
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  connectedBy User?     @relation(fields: [connectedById], references: [id], onDelete: SetNull)
+  workspace   Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  connectedBy User?                  @relation(fields: [connectedById], references: [id], onDelete: SetNull)
+  settings    IntegrationSetting[]
+  channels    IntegrationChannel[]
+  webhooks    IntegrationWebhook[]
 
-  @@unique([workspaceId, provider]) // One connection per provider per workspace
+  @@unique([workspaceId, provider])
   @@index([workspaceId])
+}
+
+/// IntegrationSetting — key/value boolean settings per integration.
+/// Each provider defines its own keys (e.g., GitHub: "autoCompleteOnMerge", Slack: "notifyOnIssueCreatedUrgent").
+/// Adding a new setting never requires a migration — just insert a row.
+model IntegrationSetting {
+  id            String  @id @default(uuid())
+  integrationId String
+  key           String  // Setting name (e.g., "autoCompleteOnMerge")
+  enabled       Boolean @default(true)
+
+  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationId, key])
+  @@index([integrationId])
+}
+
+/// IntegrationChannel — Slack channel mappings for notification routing.
+/// Scope determines where this channel is used:
+///   "default" — fallback channel (scopeId is null)
+///   "project" — project-specific (scopeId = projectId)
+///   "team"    — team-specific (scopeId = teamId)
+///   "urgent"  — urgent/high priority overlay (scopeId is null)
+model IntegrationChannel {
+  id            String @id @default(uuid())
+  integrationId String
+  channelId     String // Slack channel ID (e.g., "C0123456789")
+  channelName   String // Display name (e.g., "#engineering")
+  scope         String // "default" | "project" | "team" | "urgent"
+  scopeId       String? // projectId or teamId (null for default/urgent)
+
+  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationId, channelId, scope, scopeId])
+  @@index([integrationId, scope])
+}
+
+/// IntegrationWebhook — Discord webhook URL mappings for notification routing.
+/// Same scope system as IntegrationChannel but stores webhook URLs instead of channel IDs.
+/// The webhook URL IS the credential for Discord (no separate token).
+model IntegrationWebhook {
+  id            String @id @default(uuid())
+  integrationId String
+  url           String // Discord webhook URL
+  label         String // Human-readable name (e.g., "#dev-updates")
+  scope         String // "default" | "project" | "team" | "urgent"
+  scopeId       String? // projectId or teamId (null for default/urgent)
+
+  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationId, scope, scopeId, url])
+  @@index([integrationId, scope])
 }
 
 /// ApiKey — workspace API keys for external integrations and MCP server

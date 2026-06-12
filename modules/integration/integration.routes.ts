@@ -1,126 +1,74 @@
 /**
- * Integration Module — Route Definitions
+ * Integration Module — Route Aggregator
  *
- * Two sets of routes:
- *   1. Integration management (authenticated, workspace-scoped, ADMIN/OWNER)
- *   2. GitHub webhook (unauthenticated, signature-verified)
+ * Mounts provider-specific sub-routers under /integrations/:
+ *   /integrations/         — List all integrations (shared)
+ *   /integrations/github/  — GitHub-specific routes
+ *   /integrations/slack/   — Slack-specific routes
+ *   /integrations/discord/ — Discord-specific routes
  *
- * Routes:
- *   GET    /integrations                        — List all integrations + status
- *   POST   /integrations/:provider/connect      — Start OAuth flow
- *   GET    /integrations/:provider/callback     — OAuth callback (GitHub redirects here)
- *   DELETE /integrations/:provider/disconnect   — Disconnect integration
- *   PATCH  /integrations/:provider/settings     — Update provider settings
- *   POST   /webhooks/github                     — GitHub webhook receiver (no auth)
+ * Each provider has its own routes, controller, service, and schemas.
+ * No shared settings endpoint — each provider validates its own shape.
  */
 
 import { Router } from "express";
 import { authenticate } from "../../shared/middleware/authenticate.js";
 import { requireWorkspace } from "../../shared/middleware/require-workspace.js";
+import { sendSuccess } from "../../shared/utils/api-response.js";
+import { listIntegrations, disconnectProvider } from "./integration.service.js";
 import { requireRole } from "../../shared/middleware/require-role.js";
-import { validate } from "../../shared/middleware/validate.js";
-import * as controller from "./integration.controller.js";
-import {
-  connectProviderSchema,
-  disconnectProviderSchema,
-  oauthCallbackSchema,
-  updateSettingsSchema,
-} from "./integration.schemas.js";
 
 const router = Router();
 
-// ─── Integration Management (authenticated) ─────────────────────────────────
+// ─── Shared: List all integrations ───────────────────────────────────────────
 
-// List integrations — ADMIN/OWNER can see full status, MEMBER can see connection status
-router.get(
-  "/",
-  authenticate,
-  requireWorkspace,
-  controller.list,
-);
+router.get("/", authenticate, requireWorkspace, async (req, res, next) => {
+  try {
+    const integrations = await listIntegrations(req.workspace!.id);
+    sendSuccess(res, 200, integrations);
+  } catch (error) {
+    next(error);
+  }
+});
 
-// Start OAuth flow — ADMIN/OWNER only
-router.post(
-  "/:provider/connect",
-  authenticate,
-  validate(connectProviderSchema),
-  requireWorkspace,
-  requireRole("ADMIN", "OWNER"),
-  controller.connect,
-);
+// ─── Shared: Disconnect any provider ─────────────────────────────────────────
 
-// OAuth callback — NO auth middleware (GitHub redirects the browser here directly)
-// User identity is encoded in the `state` param, verified in the service layer
-router.get(
-  "/:provider/callback",
-  validate(oauthCallbackSchema),
-  controller.oauthCallback,
-);
+router.delete("/:provider/disconnect", authenticate, requireWorkspace, requireRole("ADMIN", "OWNER"), async (req, res, next) => {
+  try {
+    await disconnectProvider(req.workspace!.id, req.params.provider as string, req.user!.id);
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
 
-// Disconnect — ADMIN/OWNER only
-router.delete(
-  "/:provider/disconnect",
-  authenticate,
-  validate(disconnectProviderSchema),
-  requireWorkspace,
-  requireRole("ADMIN", "OWNER"),
-  controller.disconnect,
-);
+// ─── Provider Sub-Routers (lazy-loaded to avoid circular imports) ────────────
 
-// Get provider settings — ADMIN/OWNER only
-router.get(
-  "/:provider/settings",
-  authenticate,
-  validate(connectProviderSchema), // reuse — it just validates params.provider
-  requireWorkspace,
-  requireRole("ADMIN", "OWNER"),
-  controller.getSettings,
-);
+router.use("/github", async (req, res, next) => {
+  try {
+    const { default: githubRoutes } = await import("./github/github.routes.js");
+    return githubRoutes(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+});
 
-// List Slack channels — ADMIN/OWNER only (for channel picker)
-router.get(
-  "/slack/channels",
-  authenticate,
-  requireWorkspace,
-  requireRole("ADMIN", "OWNER"),
-  controller.listSlackChannels,
-);
+router.use("/slack", async (req, res, next) => {
+  try {
+    const { default: slackRoutes } = await import("./slack/slack.routes.js");
+    return slackRoutes(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+});
 
-// Set Slack notification channel — ADMIN/OWNER only
-router.post(
-  "/slack/channel",
-  authenticate,
-  requireWorkspace,
-  requireRole("ADMIN", "OWNER"),
-  controller.setSlackChannel,
-);
-
-// Update settings — ADMIN/OWNER only
-router.patch(
-  "/:provider/settings",
-  authenticate,
-  validate(updateSettingsSchema),
-  requireWorkspace,
-  requireRole("ADMIN", "OWNER"),
-  controller.updateSettings,
-);
+router.use("/discord", async (req, res, next) => {
+  try {
+    const { default: discordRoutes } = await import("./discord/discord.routes.js");
+    return discordRoutes(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+});
 
 export default router;
-
-// ─── Webhook Routes (separate router, no auth) ──────────────────────────────
-// These are mounted separately in app.ts since they don't use auth middleware
-
-export const webhookRouter = Router();
-
-// GitHub webhook — signature verified internally, no Clerk/API key auth
-webhookRouter.post(
-  "/github",
-  controller.githubWebhook,
-);
-
-// Slack slash commands — signature verified internally, no Clerk/API key auth
-// Slack sends application/x-www-form-urlencoded, not JSON
-webhookRouter.post(
-  "/slack/commands",
-  controller.slackCommands,
-);
