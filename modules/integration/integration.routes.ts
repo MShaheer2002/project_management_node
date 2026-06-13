@@ -71,4 +71,13 @@ router.use("/discord", async (req, res, next) => {
   }
 });
 
+router.use("/figma", async (req, res, next) => {
+  try {
+    const { default: figmaRoutes } = await import("./figma/figma.routes.js");
+    return figmaRoutes(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;
