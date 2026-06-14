@@ -16,7 +16,13 @@ import { buildIssueMessage, buildCycleMessage } from "./slack.utils.js";
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface IntegrationEvent {
-  type: "issue.created" | "issue.completed" | "issue.assigned" | "cycle.started" | "cycle.completed";
+  type:
+    | "issue.created"
+    | "issue.completed"
+    | "issue.assigned"
+    | "cycle.started"
+    | "cycle.completed"
+    | "project.completed";
   payload: Record<string, any>;
 }
 
@@ -84,6 +90,8 @@ export async function handleEvent(workspaceId: string, event: IntegrationEvent):
       if (!settings.notifyOnCycleCompleted) return;
       await notifyCycleEvent(integration.accessToken, integration.id, "completed", event.payload as any);
       break;
+    case "project.completed":
+      return;
   }
 }
 

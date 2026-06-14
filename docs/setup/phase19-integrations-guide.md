@@ -836,13 +836,13 @@ Many engineering teams, open-source communities, and startups use Discord as the
 
 ## Workspace Connection Experience
 
-Connecting Discord uses a bot-based approach. The admin adds the Linearis bot to their Discord server and selects notification channels:
+Connecting Discord uses a webhook-based approach. The admin creates one or more Discord webhooks and pastes them into Linearis for default, urgent, project, or team routing:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  Discord Settings                                            │
 │                                                              │
-│  Server: Acme Development                    [Connected ✓]   │
+│  Default webhook: #dev-updates               [Connected ✓]   │
 │                                                              │
 │  Notification Channels                                       │
 │  ┌──────────────────────────────────────────────────────┐   │
@@ -898,18 +898,18 @@ Connecting Discord uses a bot-based approach. The admin adds the Linearis bot to
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Milestone Reached
+### Project Completed
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  🎯 Milestone Reached                                        │
+│  🎉 Project Completed                                        │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   │
 │                                                              │
-│  "Beta Launch" milestone completed                           │
-│  Project: Mobile App v2                                      │
-│  All 5 milestone issues resolved                             │
+│  Mobile App v2                                               │
+│  Team: Product Engineering                                   │
+│  Status moved to Completed                                   │
 │                                                              │
-│  🔗 View Milestone                                          │
+│  🔗 View Project                                            │
 │                                                              │
 │  Linearis · just now                                         │
 └──────────────────────────────────────────────────────────────┘
@@ -919,7 +919,7 @@ Connecting Discord uses a bot-based approach. The admin adds the Linearis bot to
 
 - **Community transparency** — open-source contributors see progress in real-time
 - **Free-tier friendly** — Discord's free plan has no message limits
-- **Low-friction setup** — bot-based connection, no OAuth complexity for team members
+- **Low-friction setup** — webhook-based connection, no OAuth complexity for team members
 - **Channel flexibility** — route different notification types to different channels
 
 ## What Is NOT Included

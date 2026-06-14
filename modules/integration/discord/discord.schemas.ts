@@ -9,6 +9,27 @@ import { z } from "zod/v4";
 const DISCORD_WEBHOOK_URL_REGEX =
   /^https:\/\/(?:discord\.com|discordapp\.com|discordptb\.com)\/api\/webhooks\/\d+\/.+$/;
 
+function validateScopedWebhookInput(
+  input: { scope: "default" | "project" | "team" | "urgent"; scopeId?: string | undefined },
+  ctx: z.RefinementCtx,
+) {
+  if ((input.scope === "project" || input.scope === "team") && !input.scopeId) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["scopeId"],
+      message: `scopeId is required when scope is ${input.scope}`,
+    });
+  }
+
+  if ((input.scope === "default" || input.scope === "urgent") && input.scopeId !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["scopeId"],
+      message: `scopeId must be omitted when scope is ${input.scope}`,
+    });
+  }
+}
+
 /** POST /integrations/discord/connect */
 export const connectDiscordSchema = {
   body: z.object({
@@ -43,7 +64,7 @@ export const addDiscordWebhookSchema = {
     label: z.string().min(1).max(100),
     scope: z.enum(["default", "project", "team", "urgent"]),
     scopeId: z.string().uuid().optional(),
-  }),
+  }).superRefine(validateScopedWebhookInput),
 };
 
 /** DELETE /integrations/discord/webhooks/:webhookDbId */

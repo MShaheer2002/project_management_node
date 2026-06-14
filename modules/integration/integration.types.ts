@@ -10,7 +10,8 @@ export type IntegrationEvent =
   | { type: "issue.completed"; payload: IssueCompletedPayload }
   | { type: "issue.assigned"; payload: IssueAssignedPayload }
   | { type: "cycle.started"; payload: CycleEventPayload }
-  | { type: "cycle.completed"; payload: CycleEventPayload };
+  | { type: "cycle.completed"; payload: CycleEventPayload }
+  | { type: "project.completed"; payload: ProjectCompletedPayload };
 
 export interface IssueEventPayload {
   id: string;
@@ -54,4 +55,12 @@ export interface CycleEventPayload {
   totalIssues?: number | undefined;
   completedIssues?: number | undefined;
   carriedOver?: number | undefined;
+}
+
+export interface ProjectCompletedPayload {
+  id: string;
+  name: string;
+  teamId?: string | null | undefined;
+  teamName?: string | undefined;
+  completedByName?: string | undefined;
 }

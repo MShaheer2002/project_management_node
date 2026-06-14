@@ -8,6 +8,7 @@
  */
 
 import { prisma } from "../../../shared/utils/prisma.js";
+import { createHash } from "node:crypto";
 import { AppError } from "../../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../../shared/errors/error-codes.js";
 import { logActivity } from "../../../shared/utils/activity.js";
@@ -45,8 +46,13 @@ const cache = new Map<string, CacheEntry<unknown>>();
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const CACHE_MAX_ENTRIES = 200;
 
-// Rate limit tracking — if Figma returns 429, don't hit the API again until the cooldown expires
-let rateLimitedUntil = 0;
+// Rate limit tracking is scoped per token so one workspace cannot block another.
+const rateLimitedUntilByToken = new Map<string, number>();
+
+function getTokenCacheKey(token: string, path: string) {
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  return `${tokenHash}:${path}`;
+}
 
 function getCached<T>(key: string): T | undefined {
   const entry = cache.get(key);
@@ -69,13 +75,19 @@ function setCache<T>(key: string, data: T) {
 
 // ─── Figma API Helpers ───────────────────────────────────────────────────────
 
-async function figmaGet<T>(token: string, path: string): Promise<T | null> {
-  // Check cache first
-  const cacheKey = path;
-  const cached = getCached<T>(cacheKey);
-  if (cached !== undefined) return cached;
+async function figmaGet<T>(
+  token: string,
+  path: string,
+  options?: { skipCache?: boolean },
+): Promise<T | null> {
+  const cacheKey = getTokenCacheKey(token, path);
+  if (!options?.skipCache) {
+    const cached = getCached<T>(cacheKey);
+    if (cached !== undefined) return cached;
+  }
 
-  // If rate limited, skip the API call entirely
+  // If this token is rate limited, skip the API call entirely
+  const rateLimitedUntil = rateLimitedUntilByToken.get(cacheKey) ?? 0;
   if (Date.now() < rateLimitedUntil) {
     console.warn("[Figma] Skipping API call — still rate limited");
     return null;
@@ -99,7 +111,7 @@ async function figmaGet<T>(token: string, path: string): Promise<T | null> {
         const retryAfter = Number(response.headers.get("retry-after") ?? "300");
         // Cap at 1 hour max to avoid absurdly long lockouts
         const cappedRetry = Math.min(retryAfter, 3600);
-        rateLimitedUntil = Date.now() + cappedRetry * 1000;
+        rateLimitedUntilByToken.set(cacheKey, Date.now() + cappedRetry * 1000);
         console.warn(`[Figma] Rate limited. Blocking API calls for ${cappedRetry}s`);
         return null;
       }
@@ -108,7 +120,9 @@ async function figmaGet<T>(token: string, path: string): Promise<T | null> {
     }
 
     const data = (await response.json()) as T;
-    setCache(cacheKey, data);
+    if (!options?.skipCache) {
+      setCache(cacheKey, data);
+    }
     return data;
   } catch (err) {
     console.warn("[Figma] API request failed");
@@ -127,7 +141,7 @@ export async function connectFigma(
   accessToken: string,
 ) {
   // Verify the token by calling /v1/me
-  const user = await figmaGet<FigmaUserInfo>(accessToken, "/me");
+  const user = await figmaGet<FigmaUserInfo>(accessToken, "/me", { skipCache: true });
 
   if (!user) {
     throw new AppError(

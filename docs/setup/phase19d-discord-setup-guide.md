@@ -51,19 +51,23 @@ Zero env vars needed for Discord.
 
 | File | Purpose |
 |---|---|
-| `modules/integration/discord.service.ts` | Connect, webhook resolution, notification functions, embed builder |
-| `modules/integration/integration.controller.ts` | Discord connect handler (reuses existing connect endpoint) |
-| `modules/integration/integration.service.ts` | `stripDiscordWebhookUrls()` for safe list response |
-| `modules/integration/integration.schemas.ts` | `connectDiscordSchema` — validates webhook URL format |
+| `modules/integration/discord/discord.routes.ts` | Discord route definitions |
+| `modules/integration/discord/discord.controller.ts` | Connect, settings, webhook CRUD handlers |
+| `modules/integration/discord/discord.service.ts` | Connect flow, webhook CRUD, webhook resolution |
+| `modules/integration/discord/discord.notify.ts` | Outbound Discord notification handler |
+| `modules/integration/discord/discord.schemas.ts` | Webhook/settings validation |
+| `modules/integration/discord/discord.utils.ts` | Safe logging + embed helpers |
 
 ### Endpoints
 
 ```
 POST   /integrations/discord/connect       — Connect with webhook URL (no OAuth)
 DELETE /integrations/discord/disconnect    — Disconnect, clear config
-PATCH  /integrations/discord/settings      — Update settings + webhook routing
 GET    /integrations/discord/settings      — Get current settings (ADMIN only, includes URLs)
-GET    /integrations                       — List integrations (URLs stripped, labels only)
+PATCH  /integrations/discord/settings      — Update notification settings
+POST   /integrations/discord/webhooks      — Add a scoped webhook mapping
+DELETE /integrations/discord/webhooks/:webhookDbId — Remove a scoped webhook mapping
+GET    /integrations                       — List integrations
 ```
 
 ### Connect Flow
@@ -79,9 +83,9 @@ POST /integrations/discord/connect
 On connect, the backend:
 1. Validates URL format (regex: must match `discord.com`, `discordapp.com`, or `discordptb.com` webhook pattern)
 2. Verifies URL is alive by sending a GET request to Discord API
-3. Extracts `channel_id` and `guild_id` from Discord's response
+3. Uses Discord's response to confirm the webhook is alive
 4. Preserves existing `webhookRouting` and `settings` if reconnecting (only updates the default webhook)
-5. Stores in Integration config
+5. Stores the default webhook in `IntegrationWebhook`
 6. Logs `INTEGRATION_CONNECTED` activity
 
 ### Reconnect Behavior
@@ -102,41 +106,15 @@ Clears all config (webhook URLs, routing, settings), sets `connected: false`.
 
 ### Config Shape Stored in DB
 
-```json
-{
-  "defaultWebhook": {
-    "url": "https://discord.com/api/webhooks/123/abc...",
-    "label": "#dev-updates",
-    "channelId": "1234567890",
-    "guildId": "9876543210"
-  },
-  "webhookRouting": {
-    "projects": {
-      "<project-uuid>": [
-        { "url": "https://discord.com/api/webhooks/456/def...", "label": "#mobile-dev" }
-      ]
-    },
-    "teams": {
-      "<team-uuid>": [
-        { "url": "https://discord.com/api/webhooks/789/ghi...", "label": "#backend" }
-      ]
-    },
-    "urgent": {
-      "url": "https://discord.com/api/webhooks/012/jkl...",
-      "label": "#incidents"
-    }
-  },
-  "settings": {
-    "notifyOnIssueCreatedUrgent": true,
-    "notifyOnIssueCompleted": true,
-    "notifyOnIssueAssigned": false,
-    "notifyOnStatusChange": false,
-    "notifyOnCycleStarted": true,
-    "notifyOnCycleCompleted": true,
-    "notifyOnProjectCompleted": true
-  }
-}
-```
+Discord uses the normalized integration schema:
+
+- `Integration` — provider connection state (`connected`, `connectedAt`, `connectedById`)
+- `IntegrationSetting` — one row per toggle
+- `IntegrationWebhook` — one row per webhook mapping with:
+  - `url`
+  - `label`
+  - `scope`: `default | project | team | urgent`
+  - `scopeId`: project/team UUID when required
 
 ### Channel Resolution
 
@@ -200,8 +178,9 @@ Messages use Discord's rich embed format with `?wait=true` for proper error dete
 | Issue created (high/urgent) | `notifyOnIssueCreatedUrgent` | `issue.service.ts` — `createIssue` |
 | Issue completed | `notifyOnIssueCompleted` | `issue.service.ts` — `updateIssue`, `updateIssueStatus` |
 | Issue assigned | `notifyOnIssueAssigned` | `issue.service.ts` — `updateIssue` |
-| Cycle started | `notifyOnCycleStarted` | Not wired yet (needs cycle service hook) |
-| Cycle completed | `notifyOnCycleCompleted` | Not wired yet (needs cycle service hook) |
+| Cycle started | `notifyOnCycleStarted` | `cycle.service.ts` — create/update/reopen when cycle becomes current |
+| Cycle completed | `notifyOnCycleCompleted` | `cycle.service.ts` — `completeCycle` |
+| Project completed | `notifyOnProjectCompleted` | `project.service.ts` — `updateProject` when status becomes completed |
 
 All issue notifications fire to both Slack AND Discord simultaneously (fire-and-forget, independent of each other).
 
@@ -222,11 +201,11 @@ All issue notifications fire to both Slack AND Discord simultaneously (fire-and-
 
 | Rule | Implementation |
 |---|---|
-| Webhook URLs are secrets | Stored in Integration config JSON, treated same as OAuth tokens |
+| Webhook URLs are secrets | Stored in `IntegrationWebhook`, treated same as OAuth tokens |
 | URLs never logged | `maskWebhookUrl()` logs only `webhook:1234567890` (the ID portion, not the token) |
 | URL validation on connect | Regex validates format, GET request verifies URL is alive |
-| `GET /integrations` strips URLs | Returns labels only via `stripDiscordWebhookUrls()` — non-admins never see full URLs |
-| `GET /integrations/discord/settings` returns URLs | Full config including URLs — restricted to ADMIN/OWNER only |
+| `GET /integrations` hides webhook secrets | Shared list endpoint only returns provider-level metadata, not webhook rows |
+| `GET /integrations/discord/settings` returns URLs | Full config including webhook URLs — restricted to ADMIN/OWNER only |
 | URL format enforcement | Only accepts `discord.com`, `discordapp.com`, `discordptb.com` webhook paths |
 
 ## Testing

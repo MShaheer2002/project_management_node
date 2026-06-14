@@ -8,6 +8,7 @@ import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { createNotification } from "../notification/notification.service.js";
 import { createProjectMembershipNotification } from "../notification/notification.service.js";
 import { attachInitialProjectDocuments } from "../documents/documents.service.js";
+import { dispatchIntegrationEvent } from "../integration/dispatcher.js";
 import type {
   CreateProjectInput,
   ListProjectsQuery,
@@ -481,17 +482,19 @@ export async function getProjectById(
 export async function updateProject(workspaceId: string, projectId: string, actorUserId: string, input: UpdateProjectInput) {
   let previousLeadId: string | null = null;
   let resolvedLeadId: string | null = null;
+  let previousStatus: string | null = null;
 
   const updatedId = await prisma.$transaction(async (tx) => {
     const current = await tx.project.findFirst({
       where: { id: projectId, workspaceId },
-      select: { id: true, leadId: true, teamId: true, name: true },
+      select: { id: true, leadId: true, teamId: true, name: true, status: true },
     });
 
     if (!current) {
       throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
     }
     previousLeadId = current.leadId;
+    previousStatus = current.status;
 
     if (input.name && input.name !== current.name) {
       const nameConflict = await tx.project.findFirst({
@@ -631,6 +634,24 @@ export async function updateProject(workspaceId: string, projectId: string, acto
       },
       eventId: `project-lead:${updated.id}:${resolvedLeadId}`,
     });
+  }
+
+  if (previousStatus !== "COMPLETED" && updated.status === "COMPLETED") {
+    const actor = await prisma.user.findUnique({
+      where: { id: actorUserId },
+      select: { name: true },
+    });
+
+    dispatchIntegrationEvent(workspaceId, {
+      type: "project.completed",
+      payload: {
+        id: updated.id,
+        name: updated.name,
+        teamId: updated.team?.id ?? null,
+        teamName: updated.team?.name ?? undefined,
+        completedByName: actor?.name ?? "Unknown",
+      },
+    }).catch(() => {});
   }
 
   return mapProject(updated);

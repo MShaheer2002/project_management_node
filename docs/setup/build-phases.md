@@ -1988,8 +1988,8 @@ Recommended build order: **19a → 19e → 19b → 19c → 19d**
 **User value:** Workspace events broadcast to Discord channels. Popular with open-source communities and startups using Discord for team chat.
 
 **Key behaviors:**
-- Outbound only: issue created, completed, cycle completed, milestone reached → configured channels
-- Bot-based connection, no per-user OAuth required
+- Outbound only: issue created, completed, cycle completed, project completed → configured channels
+- Webhook-based connection, no per-user OAuth required
 
 ### 19e — Data Import
 

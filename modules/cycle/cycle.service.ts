@@ -7,6 +7,7 @@ import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { prisma } from "../../shared/utils/prisma.js";
 import { createNotification } from "../notification/notification.service.js";
 import { resolveIssueRouteId } from "../issue/issue.service.js";
+import { dispatchIntegrationEvent } from "../integration/dispatcher.js";
 import { getSocketServer } from "../../socket/index.js";
 import { createRealtimeEnvelope } from "../../socket/serializers.js";
 import type {
@@ -239,6 +240,11 @@ function mapCycleSummary(cycle: any, stats: any) {
   };
 }
 
+function formatCycleDateRange(startsAt: Date, endsAt: Date) {
+  const formatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+  return `${formatter.format(startsAt)} - ${formatter.format(endsAt)}`;
+}
+
 export async function createCycle(workspaceId: string, userId: string, role: WorkspaceRole, input: CreateCycleInput) {
   await assertTeamInWorkspace(workspaceId, input.teamId);
   await assertCycleManageAccess(workspaceId, userId, role, input.teamId);
@@ -291,6 +297,18 @@ export async function createCycle(workspaceId: string, userId: string, role: Wor
   await emitCycleEvent(workspaceId, "cycle:created", { cycleId: cycle.id, full: cycle }, `cycle-created:${cycle.id}`);
 
   const computed = await computeCycleStats(workspaceId, cycle.id, cycle.startsAt, cycle.endsAt);
+  if (cycle.status === "CURRENT") {
+    dispatchIntegrationEvent(workspaceId, {
+      type: "cycle.started",
+      payload: {
+        cycleName: cycle.name,
+        teamId: cycle.teamId,
+        teamName: cycle.team.name,
+        dateRange: formatCycleDateRange(cycle.startsAt, cycle.endsAt),
+        totalIssues: computed.stats.totalIssues,
+      },
+    }).catch(() => {});
+  }
   return mapCycleSummary(cycle, computed.stats);
 }
 
@@ -466,6 +484,18 @@ export async function updateCycle(workspaceId: string, cycleId: string, userId: 
 
   await emitCycleEvent(workspaceId, "cycle:updated", { cycleId, full: updated }, `cycle-updated:${cycleId}:${updated.updatedAt.toISOString()}`);
   const computed = await computeCycleStats(workspaceId, updated.id, updated.startsAt, updated.endsAt);
+  if (cycle.status !== "CURRENT" && updated.status === "CURRENT") {
+    dispatchIntegrationEvent(workspaceId, {
+      type: "cycle.started",
+      payload: {
+        cycleName: updated.name,
+        teamId: updated.teamId,
+        teamName: updated.team.name,
+        dateRange: formatCycleDateRange(updated.startsAt, updated.endsAt),
+        totalIssues: computed.stats.totalIssues,
+      },
+    }).catch(() => {});
+  }
   return mapCycleSummary(updated, computed.stats);
 }
 
@@ -520,6 +550,18 @@ export async function completeCycle(workspaceId: string, cycleId: string, userId
   await emitCycleEvent(workspaceId, "cycle:completed", { cycleId, unfinishedIssueCount: unfinishedCount }, `cycle-completed:${cycleId}`);
 
   const computed = await computeCycleStats(workspaceId, updated.id, updated.startsAt, updated.endsAt);
+  dispatchIntegrationEvent(workspaceId, {
+    type: "cycle.completed",
+    payload: {
+      cycleName: updated.name,
+      teamId: updated.teamId,
+      teamName: updated.team.name,
+      dateRange: formatCycleDateRange(updated.startsAt, updated.endsAt),
+      totalIssues: computed.stats.totalIssues,
+      completedIssues: computed.stats.completedIssues,
+      carriedOver: unfinishedCount,
+    },
+  }).catch(() => {});
   return {
     ...mapCycleSummary(updated, computed.stats),
     rules: {
@@ -556,6 +598,16 @@ export async function reopenCycle(workspaceId: string, cycleId: string, userId: 
   await emitCycleEvent(workspaceId, "cycle:reopened", { cycleId }, `cycle-reopened:${cycleId}`);
 
   const computed = await computeCycleStats(workspaceId, reopened.id, reopened.startsAt, reopened.endsAt);
+  dispatchIntegrationEvent(workspaceId, {
+    type: "cycle.started",
+    payload: {
+      cycleName: reopened.name,
+      teamId: reopened.teamId,
+      teamName: reopened.team.name,
+      dateRange: formatCycleDateRange(reopened.startsAt, reopened.endsAt),
+      totalIssues: computed.stats.totalIssues,
+    },
+  }).catch(() => {});
   return mapCycleSummary(reopened, computed.stats);
 }
 

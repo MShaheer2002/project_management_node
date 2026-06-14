@@ -177,7 +177,7 @@ export const updateIntegrationRefSchema = {
   params: z.object({ id: z.string().min(1) }),
   body: z.object({
     integrationRef: z.object({
-      provider: z.enum(["github", "jira", "slack", "notion", "custom"]),
+      provider: z.enum(["github", "jira", "slack", "notion", "figma", "custom"]),
       label: z.string().trim().max(100).nullable().optional(),
       externalId: z.string().trim().max(255).nullable().optional(),
       url: z.string().url().nullable().optional(),

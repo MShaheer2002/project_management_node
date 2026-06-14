@@ -9,6 +9,8 @@ import type { RequestHandler } from "express";
 import { sendSuccess } from "../../../shared/utils/api-response.js";
 import { findConnectedIntegration, getSettings, upsertSettings } from "../integration.service.js";
 import * as discordService from "./discord.service.js";
+import { AppError } from "../../../shared/utils/api-error.js";
+import { ERROR_CODES } from "../../../shared/errors/error-codes.js";
 
 /** POST /integrations/discord/connect */
 export const connect: RequestHandler = async (req, res, next) => {
@@ -29,8 +31,7 @@ export const getDiscordSettings: RequestHandler = async (req, res, next) => {
   try {
     const integration = await findConnectedIntegration(req.workspace!.id, "DISCORD");
     if (!integration) {
-      res.status(404).json({ error: "Discord integration not connected" });
-      return;
+      throw new AppError(404, ERROR_CODES.INTEGRATION_NOT_CONNECTED, "Discord integration not connected");
     }
     const settings = await getSettings(integration.id);
     const webhooks = await discordService.getWebhooks(integration.id);
@@ -46,11 +47,11 @@ export const updateDiscordSettings: RequestHandler = async (req, res, next) => {
   try {
     const integration = await findConnectedIntegration(req.workspace!.id, "DISCORD");
     if (!integration) {
-      res.status(404).json({ error: "Discord integration not connected" });
-      return;
+      throw new AppError(404, ERROR_CODES.INTEGRATION_NOT_CONNECTED, "Discord integration not connected");
     }
-    const settings = await upsertSettings(integration.id, req.body);
-    sendSuccess(res, 200, settings);
+    await upsertSettings(integration.id, req.body);
+    const settings = await getSettings(integration.id);
+    sendSuccess(res, 200, { settings });
   } catch (error) {
     next(error);
   }
