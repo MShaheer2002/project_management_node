@@ -36,6 +36,8 @@ import {
   resolveInvitationSchema,
   acceptInvitationSchema,
   revokeInvitationSchema,
+  getWorkspaceStatusesSchema,
+  updateWorkspaceStatusesSchema,
 } from "./workspace.schemas.js";
 
 const router = Router();
@@ -93,6 +95,27 @@ router.delete(
   requireWorkspace,
   requireRole("OWNER"),
   controller.remove,
+);
+
+// ─── Workspace Statuses ─────────────────────────────────────────────────────
+
+// Get workspace statuses — any member can view
+router.get(
+  "/:workspaceId/statuses",
+  authenticate,
+  validate(getWorkspaceStatusesSchema),
+  requireWorkspace,
+  controller.getStatuses,
+);
+
+// Replace workspace statuses — ADMIN or OWNER only
+router.put(
+  "/:workspaceId/statuses",
+  authenticate,
+  validate(updateWorkspaceStatusesSchema),
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  controller.updateStatuses,
 );
 
 // ─── Invitation Management ───────────────────────────────────────────────────

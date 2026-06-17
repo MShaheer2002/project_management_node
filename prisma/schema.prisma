@@ -348,6 +348,7 @@ model User {
   createdIssueAttachments IssueAttachment[]
   createdCommentAttachments CommentAttachment[]
   uploadedDocuments     EntityDocument[] @relation("EntityDocumentUploader")
+  createdDocumentFolders DocumentFolder[] @relation("DocumentFolderCreator")
 
   @@index([email])
 }
@@ -370,6 +371,7 @@ model Workspace {
   teamSize     TeamSize? // Selected during onboarding (1-5, 6-20, 21-50, 50+)
   issuePrefix  String @unique // Uppercase prefix for issue IDs (e.g., "VAT" → VAT-1, VAT-2)
   issueCounter Int    @default(0) // Atomic counter for human-readable issue IDs per workspace
+  customStatuses Json  @default("[{\"key\":\"backlog\",\"label\":\"Backlog\",\"color\":\"#6b7280\",\"order\":0,\"isFinal\":false},{\"key\":\"todo\",\"label\":\"Todo\",\"color\":\"#3b82f6\",\"order\":1,\"isFinal\":false},{\"key\":\"in-progress\",\"label\":\"In Progress\",\"color\":\"#f59e0b\",\"order\":2,\"isFinal\":false},{\"key\":\"review\",\"label\":\"Review\",\"color\":\"#8b5cf6\",\"order\":3,\"isFinal\":false},{\"key\":\"done\",\"label\":\"Done\",\"color\":\"#22c55e\",\"order\":4,\"isFinal\":true}]")
   createdById  String // FK → User who created this workspace (becomes OWNER)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -387,6 +389,7 @@ model Workspace {
   issueAttachments IssueAttachment[]
   commentAttachments CommentAttachment[]
   documents      EntityDocument[]
+  documentFolders DocumentFolder[]
   labels         Label[]
   cycles         Cycle[]
   roadmapMilestones ProjectMilestone[]
@@ -546,6 +549,7 @@ model Team {
   cycles      Cycle[] // Sprints scoped to this team
   invitations WorkspaceInvitation[] // Invitations targeting this team
   documents   EntityDocument[]
+  documentFolders DocumentFolder[]
 
   @@unique([workspaceId, name]) // Team names must be unique within a workspace
   @@index([workspaceId])
@@ -609,6 +613,7 @@ model Project {
   blockingDependencies ProjectDependency[] @relation("RoadmapBlockingProject")
   blockedDependencies ProjectDependency[] @relation("RoadmapBlockedProject")
   documents  EntityDocument[]
+  documentFolders DocumentFolder[]
 
   @@unique([workspaceId, name]) // Project names must be unique within a workspace
   @@unique([workspaceId, slug])
@@ -633,12 +638,39 @@ model ProjectMembership {
 }
 
 /// EntityDocument — uploaded document metadata attached to a workspace, team, or project
+model DocumentFolder {
+  id           String         @id @default(uuid())
+  workspaceId  String
+  scope        DocumentScope
+  teamId       String?
+  projectId    String?
+  parentId     String?
+  name         String
+  createdById  String
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  team       Team?           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  project    Project?        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent     DocumentFolder? @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children   DocumentFolder[] @relation("FolderTree")
+  createdBy  User            @relation("DocumentFolderCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  documents  EntityDocument[]
+
+  @@unique([workspaceId, scope, parentId, name])
+  @@index([workspaceId, scope, parentId])
+  @@index([teamId, parentId])
+  @@index([projectId, parentId])
+}
+
 model EntityDocument {
   id           String        @id @default(uuid())
   workspaceId  String
   scope        DocumentScope
   teamId       String?
   projectId    String?
+  folderId     String?
   name         String
   description  String?
   key          String
@@ -650,14 +682,15 @@ model EntityDocument {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
-  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  team       Team?     @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  project    Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  uploadedBy User      @relation("EntityDocumentUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  team       Team?           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  project    Project?        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  folder     DocumentFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  uploadedBy User            @relation("EntityDocumentUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
 
-  @@index([workspaceId, scope, createdAt])
-  @@index([teamId, createdAt])
-  @@index([projectId, createdAt])
+  @@index([workspaceId, scope, folderId, createdAt])
+  @@index([teamId, folderId, createdAt])
+  @@index([projectId, folderId, createdAt])
   @@unique([workspaceId, key])
 }
 
@@ -690,7 +723,7 @@ model Issue {
   title       String
   description String?       @db.Text // Rich text (HTML/Markdown)
   type        IssueType     @default(TASK)
-  status      IssueStatus   @default(BACKLOG)
+  status      String        @default("backlog")
   priority    IssuePriority @default(MEDIUM)
   assigneeId  String? // FK → User assigned to this issue (must be a workspace member)
   creatorId   String // FK → User who created this issue

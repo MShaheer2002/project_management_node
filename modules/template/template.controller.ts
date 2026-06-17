@@ -81,15 +81,6 @@ export const duplicate: RequestHandler = async (req, res, next) => {
   }
 };
 
-export const apply: RequestHandler = async (req, res, next) => {
-  try {
-    const draft = await templateService.applyTemplate(req.workspace!.id, req.params.id as string, req.user!.id);
-    sendSuccess(res, 200, draft);
-  } catch (error) {
-    next(error);
-  }
-};
-
 export const activate: RequestHandler = async (req, res, next) => {
   try {
     const data = await templateService.activateTemplate(req.workspace!.id, req.params.id as string, req.user!.id);
@@ -102,15 +93,6 @@ export const activate: RequestHandler = async (req, res, next) => {
 export const activateConfirm: RequestHandler = async (req, res, next) => {
   try {
     const data = await templateService.confirmActivateTemplate(req.workspace!.id, req.params.id as string, req.user!.id);
-    sendSuccess(res, 200, data);
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const confirmDefault: RequestHandler = async (req, res, next) => {
-  try {
-    const data = await templateService.confirmDefaultTemplate(req.workspace!.id, req.params.id as string, req.user!.id);
     sendSuccess(res, 200, data);
   } catch (error) {
     next(error);

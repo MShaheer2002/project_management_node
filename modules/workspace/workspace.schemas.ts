@@ -174,6 +174,29 @@ export const acceptInvitationSchema = {
   }),
 };
 
+/** GET /workspaces/:workspaceId/statuses — Get workspace statuses */
+export const getWorkspaceStatusesSchema = {
+  params: z.object({
+    workspaceId: z.string().uuid("Invalid workspace ID"),
+  }),
+};
+
+/** PUT /workspaces/:workspaceId/statuses — Replace workspace statuses */
+const workspaceStatusItemSchema = z.object({
+  key: z.string().min(1).max(50),
+  label: z.string().min(1).max(50),
+  color: z.string().min(4).max(9),
+  order: z.number().int().min(0),
+  isFinal: z.boolean(),
+});
+
+export const updateWorkspaceStatusesSchema = {
+  params: z.object({
+    workspaceId: z.string().uuid("Invalid workspace ID"),
+  }),
+  body: z.array(workspaceStatusItemSchema).min(1).max(20),
+};
+
 /** DELETE /workspaces/:workspaceId/invitations/:invitationId — Revoke invite */
 export const revokeInvitationSchema = {
   params: z.object({
@@ -186,6 +209,7 @@ export const revokeInvitationSchema = {
 
 export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema.body>;
 export type UpdateWorkspaceInput = z.infer<typeof updateWorkspaceSchema.body>;
+export type UpdateWorkspaceStatusesInput = z.infer<typeof updateWorkspaceStatusesSchema.body>;
 export type InviteMemberInput = z.infer<typeof inviteMemberSchema.body>;
 export type ChangeMemberRoleInput = z.infer<typeof changeMemberRoleSchema.body>;
 export type ListWorkspaceMembersQuery = z.infer<typeof listWorkspaceMembersSchema.query>;

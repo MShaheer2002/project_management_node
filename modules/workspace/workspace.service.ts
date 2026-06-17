@@ -15,7 +15,7 @@ import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { createInitialWorkspaceSubscription } from "../billing/billing.service.js";
-import type { CreateWorkspaceInput, UpdateWorkspaceInput } from "./workspace.schemas.js";
+import type { CreateWorkspaceInput, UpdateWorkspaceInput, UpdateWorkspaceStatusesInput } from "./workspace.schemas.js";
 
 /**
  * Create a workspace and set up the initial structure:
@@ -172,6 +172,7 @@ export async function listWorkspaces(userId: string) {
           logo: true,
           teamSize: true,
           issuePrefix: true,
+          customStatuses: true,
           createdAt: true,
         },
       },
@@ -218,6 +219,7 @@ export async function listWorkspaces(userId: string) {
     logo: m.workspace.logo,
     teamSize: m.workspace.teamSize,
     issuePrefix: m.workspace.issuePrefix,
+    customStatuses: m.workspace.customStatuses,
     role: m.role,
     defaultTeamId: defaultTeamMap.get(m.workspace.id) ?? null,
     unreadNotifications: unreadMap.get(m.workspace.id) ?? 0,
@@ -241,6 +243,7 @@ export async function getWorkspaceById(workspaceId: string) {
       teamSize: true,
       issuePrefix: true,
       issueCounter: true,
+      customStatuses: true,
       createdById: true,
       createdAt: true,
       updatedAt: true,
@@ -306,4 +309,75 @@ export async function checkSlugAvailability(slug: string) {
   });
 
   return { available: !existing };
+}
+
+/**
+ * Get workspace custom statuses.
+ */
+export async function getWorkspaceStatuses(workspaceId: string) {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { customStatuses: true },
+  });
+
+  if (!workspace) {
+    throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "Workspace not found");
+  }
+
+  return (workspace.customStatuses as any[]) ?? [];
+}
+
+/**
+ * Replace the entire custom statuses array for a workspace.
+ * Validates structure, uniqueness, and business rules.
+ */
+export async function updateWorkspaceStatuses(workspaceId: string, statuses: UpdateWorkspaceStatusesInput) {
+  const KEBAB_CASE_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+  if (statuses.length === 0) {
+    throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "At least one status is required");
+  }
+
+  if (statuses.length > 20) {
+    throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "Maximum 20 statuses allowed");
+  }
+
+  const keys = new Set<string>();
+  for (const s of statuses) {
+    if (!KEBAB_CASE_REGEX.test(s.key)) {
+      throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, `Status key "${s.key}" must be lowercase kebab-case`);
+    }
+    if (keys.has(s.key)) {
+      throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, `Duplicate status key "${s.key}"`);
+    }
+    keys.add(s.key);
+  }
+
+  const hasFinal = statuses.some((s) => s.isFinal);
+  if (!hasFinal) {
+    throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "At least one status must have isFinal: true");
+  }
+
+  const currentStatuses = await getWorkspaceStatuses(workspaceId);
+  const currentKeys = new Set(currentStatuses.map((s: any) => s.key));
+  const newKeys = new Set(statuses.map((s) => s.key));
+  const removedKeys = [...currentKeys].filter((k) => !newKeys.has(k));
+
+  if (removedKeys.length > 0) {
+    const affectedCount = await prisma.issue.count({
+      where: { workspaceId, status: { in: removedKeys } },
+    });
+    if (affectedCount > 0) {
+      throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES,
+        `Cannot remove statuses that are in use. ${affectedCount} issue(s) use the statuses: ${removedKeys.join(', ')}`);
+    }
+  }
+
+  const workspace = await prisma.workspace.update({
+    where: { id: workspaceId },
+    data: { customStatuses: statuses as any },
+    select: { customStatuses: true },
+  });
+
+  return workspace.customStatuses as any[];
 }

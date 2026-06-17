@@ -10,7 +10,6 @@ import {
   duplicateTemplateSchema,
   listActiveTemplatesSchema,
   listTemplatesSchema,
-  templateDefaultConfirmSchema,
   templateIdParamsSchema,
   updateTemplateSchema,
 } from "./template.schemas.js";
@@ -27,10 +26,8 @@ router.patch("/templates/:id", authenticate, validate(updateTemplateSchema), req
 router.delete("/templates/:id", authenticate, validate(templateIdParamsSchema), requireWorkspace, requireRole("ADMIN", "OWNER"), controller.remove);
 
 router.post("/templates/:id/duplicate", authenticate, validate(duplicateTemplateSchema), requireWorkspace, requireRole("ADMIN", "OWNER"), controller.duplicate);
-router.post("/templates/:id/apply", authenticate, validate(templateIdParamsSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.apply);
 router.post("/templates/:id/activate", authenticate, validate(templateIdParamsSchema), requireWorkspace, requireRole("ADMIN", "OWNER"), controller.activate);
 router.post("/templates/:id/activate/confirm", authenticate, validate(templateIdParamsSchema), requireWorkspace, requireRole("ADMIN", "OWNER"), controller.activateConfirm);
-router.post("/templates/:id/default/confirm", authenticate, validate(templateDefaultConfirmSchema), requireWorkspace, requireRole("ADMIN", "OWNER"), controller.confirmDefault);
 router.post("/templates/:id/deactivate", authenticate, validate(templateIdParamsSchema), requireWorkspace, requireRole("ADMIN", "OWNER"), controller.deactivate);
 
 export default router;

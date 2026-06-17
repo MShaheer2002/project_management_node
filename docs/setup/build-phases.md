@@ -36,7 +36,7 @@ Phase 16 → Docs            (workspace, team, project documents)
 Phase 17 → Multi-Workspace (workspace switching, cross-org membership)
 Phase 18 → API Keys        (external/system access)
 Phase 19 → Integrations    (GitHub/Slack/etc. connectivity)
-Phase 20 → Intelligence    (MCP server, AI assistant — future scope)
+Phase 20 → Intelligence    (MCP server, AI assistant)
 ```
 
 ---
@@ -1934,13 +1934,18 @@ DELETE /api-keys/:id                  — Revoke key
 
 ---
 
-## Phase 19 — Integrations & Data Import
+## Phase 19 — Integrations
 
-**Goal:** Connect Linearis to the tools teams already use (GitHub, Slack, Discord, Figma) and enable one-time data migration from competing platforms (Linear, Jira, ClickUp, Asana, Trello).
+**Goal:** Connect Linearis to the tools teams already use (GitHub, Slack, Discord, Figma).
 
 **Dependency:** Phase 18 complete. API keys enable external system access; integrations build on the same authentication and workspace-scoping infrastructure.
 
-**Product requirements document:** [phase19-integrations-guide.md](./phase19-integrations-guide.md)
+**Current Phase 19 docs:**
+- [phase19a-github-frontend-integration.md](./phase19a-github-frontend-integration.md)
+- [phase19b-slack-frontend-integration.md](./phase19b-slack-frontend-integration.md)
+- [phase19c-figma-frontend-integration.md](./phase19c-figma-frontend-integration.md)
+- [phase19d-discord-setup-guide.md](./phase19d-discord-setup-guide.md)
+- Deferred roadmap items now live in [future-scope-build-phases.md](./future-scope-build-phases.md)
 
 ### Sub-Phases
 
@@ -1950,9 +1955,8 @@ DELETE /api-keys/:id                  — Revoke key
 | **19b — Slack** | Channel notifications, slash commands, DM alerts. | Live integration | High |
 | **19c — Figma** | Design file linking, thumbnail previews on issues and projects. | Link integration | Medium |
 | **19d — Discord** | Outbound notifications to configured channels. | Notification | Medium |
-| **19e — Data Import** | One-time migration from Linear, Jira, ClickUp, Asana, Trello. | Migration | High |
 
-Recommended build order: **19a → 19e → 19b → 19c → 19d**
+Recommended build order: **19a → 19b → 19c → 19d**
 
 ### 19a — GitHub Integration
 
@@ -1991,18 +1995,6 @@ Recommended build order: **19a → 19e → 19b → 19c → 19d**
 - Outbound only: issue created, completed, cycle completed, project completed → configured channels
 - Webhook-based connection, no per-user OAuth required
 
-### 19e — Data Import
-
-**User value:** Teams migrate from Linear, Jira, ClickUp, Asana, or Trello without losing project history. One-time import with preview, mapping, progress tracking, and summary.
-
-**Key behaviors:**
-- Source selection → OAuth for read access → preview (counts of projects, issues, labels, members)
-- Status, priority, team, and member mapping with smart defaults
-- Background import with live progress updates via Socket.IO
-- Import summary with success counts, warnings, and skipped items
-- Import history for audit
-- Duplicate detection on re-import
-
 ### Done When
 
 - [ ] GitHub: PR merge auto-completes linked issues end-to-end
@@ -2011,15 +2003,19 @@ Recommended build order: **19a → 19e → 19b → 19c → 19d**
 - [ ] Slack: `/linearis create` and `/linearis status` slash commands work
 - [ ] Figma: Design links show thumbnail previews on issues
 - [ ] Discord: Workspace events post to configured channels
-- [ ] Import: At least one source (Linear) imports projects, issues, labels, comments end-to-end
-- [ ] Import: Preview → mapping → progress → summary flow complete
 - [ ] All integrations: workspace-scoped, admin-only connect/disconnect
 - [ ] All integrations: disconnect cleans up tokens/webhooks safely
 - [ ] All integrations: failed syncs logged and observable
 
 ---
 
-## Phase 20 — AI & MCP Server (Intelligence Layer) `FUTURE SCOPE`
+## Future Scope
+
+Deferred and exploratory phases are tracked separately in [future-scope-build-phases.md](./future-scope-build-phases.md) so this document stays focused on the active backend roadmap.
+
+---
+
+## Phase 20 — AI & MCP Server (Intelligence Layer)
 
 **Goal:** Expose workspace data to AI agents via the Model Context Protocol (MCP), and provide an in-app AI assistant that can read, create, and manage issues through natural language.
 

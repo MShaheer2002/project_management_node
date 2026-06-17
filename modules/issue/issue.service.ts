@@ -17,21 +17,17 @@ import type {
   UpdateIssueInput,
 } from "./issue.schemas.js";
 
-const statusToDb: Record<string, string> = {
-  backlog: "BACKLOG",
-  todo: "TODO",
-  "in-progress": "IN_PROGRESS",
-  review: "REVIEW",
-  done: "DONE",
-};
+async function getWorkspaceStatuses(workspaceId: string) {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { customStatuses: true },
+  });
+  return (workspace?.customStatuses as any[]) ?? [];
+}
 
-const statusFromDb: Record<string, string> = {
-  BACKLOG: "backlog",
-  TODO: "todo",
-  IN_PROGRESS: "in-progress",
-  REVIEW: "review",
-  DONE: "done",
-};
+function isStatusFinal(statuses: any[], statusKey: string): boolean {
+  return statuses.find((s) => s.key === statusKey)?.isFinal ?? false;
+}
 
 const priorityToDb: Record<string, string> = {
   low: "LOW",
@@ -95,15 +91,15 @@ function parseDueTime(value: string | null | undefined) {
 }
 
 function getCompletedAtForStatusTransition(
-  previousStatus: string,
-  nextStatus: string,
+  isFinalOld: boolean,
+  isFinalNew: boolean,
   currentCompletedAt?: Date | null,
 ) {
-  if (previousStatus !== "DONE" && nextStatus === "DONE") {
+  if (!isFinalOld && isFinalNew) {
     return new Date();
   }
 
-  if (previousStatus === "DONE" && nextStatus !== "DONE") {
+  if (isFinalOld && !isFinalNew) {
     return null;
   }
 
@@ -141,7 +137,7 @@ function mapIssue(record: any, includeRelations = true) {
     title: record.title,
     description: record.description,
     type: typeFromDb[record.type] ?? "task",
-    status: statusFromDb[record.status] ?? "backlog",
+    status: record.status ?? "backlog",
     priority: priorityFromDb[record.priority] ?? "medium",
     labels,
     labelObjects,
@@ -184,7 +180,7 @@ function mapIssue(record: any, includeRelations = true) {
       ? {
           id: record.parent.id,
           title: record.parent.title,
-          status: statusFromDb[record.parent.status] ?? "backlog",
+          status: record.parent.status ?? "backlog",
         }
       : null,
     dependencies: (record.relationsFrom ?? []).map((relation: any) => ({
@@ -194,7 +190,7 @@ function mapIssue(record: any, includeRelations = true) {
         ? {
             id: relation.related.id,
             title: relation.related.title,
-            status: statusFromDb[relation.related.status] ?? "backlog",
+            status: relation.related.status ?? "backlog",
           }
         : null,
     })),
@@ -258,7 +254,7 @@ function buildIssueWhere(workspaceId: string, workspaceRole: WorkspaceRole, user
 
   return {
     workspaceId,
-    ...(query.status ? { status: statusToDb[query.status] ?? "BACKLOG" } : {}),
+    ...(query.status ? { status: query.status } : {}),
     ...(query.priority ? { priority: priorityToDb[query.priority] ?? "MEDIUM" } : {}),
     ...(query.type ? { type: typeToDb[query.type] ?? "TASK" } : {}),
     ...(query.assigneeId ? { assigneeId: query.assigneeId } : {}),
@@ -488,6 +484,13 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
 
     validateTypeSpecific(normalizedInput);
 
+    const workspaceStatuses = await getWorkspaceStatuses(workspaceId);
+    const resolvedStatus = normalizedInput.status ?? "backlog";
+    if (!workspaceStatuses.some((s: any) => s.key === resolvedStatus)) {
+      throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, `Invalid status: ${resolvedStatus}`);
+    }
+    const isFinalStatus = isStatusFinal(workspaceStatuses, resolvedStatus);
+
     const project = await assertProjectInWorkspace(tx, workspaceId, input.projectId);
     if (normalizedInput.assigneeId) {
       await assertAssigneeInWorkspace(tx, workspaceId, normalizedInput.assigneeId);
@@ -521,7 +524,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         title: normalizedInput.title,
         description: normalizedInput.description ?? null,
         type: typeToDb[normalizedInput.type],
-        status: statusToDb[normalizedInput.status ?? "backlog"],
+        status: normalizedInput.status ?? "backlog",
         priority: priorityToDb[normalizedInput.priority],
         assigneeId: normalizedInput.assigneeId ?? null,
         creatorId,
@@ -538,6 +541,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         templateId: template?.id ?? null,
         templateVersion: template?.activeVersion ?? null,
         templateAppliedAt: template ? new Date() : null,
+        completedAt: isFinalStatus ? new Date() : null,
       } as any,
       select: { id: true },
     });
@@ -745,7 +749,7 @@ export async function listIssues(workspaceId: string, workspaceRole: WorkspaceRo
     ? page.items.map((record: any) => ({
         id: record.id,
         title: record.title,
-        status: statusFromDb[record.status] ?? "backlog",
+        status: record.status ?? "backlog",
         projectId: record.projectId,
       }))
     : page.items.map((record: any) => mapIssue(record, true));
@@ -832,10 +836,17 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
       }
     }
 
-    const nextStatus = input.status !== undefined ? (statusToDb[input.status] as any) : current.status;
-    const nextCompletedAt = input.status !== undefined
-      ? getCompletedAtForStatusTransition(current.status, nextStatus, current.completedAt)
-      : current.completedAt;
+    const nextStatus = input.status !== undefined ? input.status : current.status;
+    let nextCompletedAt: Date | null | undefined = current.completedAt;
+    if (input.status !== undefined) {
+      const statuses = await getWorkspaceStatuses(workspaceId);
+      if (!statuses.some((s: any) => s.key === nextStatus)) {
+        throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, `Invalid status: ${nextStatus}`);
+      }
+      const isFinalOld = isStatusFinal(statuses, current.status);
+      const isFinalNew = isStatusFinal(statuses, nextStatus);
+      nextCompletedAt = getCompletedAtForStatusTransition(isFinalOld, isFinalNew, current.completedAt);
+    }
 
     await tx.issue.update({
       where: { id: issueId },
@@ -844,7 +855,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         ...(input.description !== undefined ? { description: input.description } : {}),
         ...(input.type !== undefined ? { type: typeToDb[input.type] as any } : {}),
         ...(input.priority !== undefined ? { priority: priorityToDb[input.priority] as any } : {}),
-        ...(input.status !== undefined ? { status: statusToDb[input.status] as any } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.status !== undefined ? { completedAt: nextCompletedAt } : {}),
         ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
         ...(input.dueDate !== undefined ? { dueDate: input.dueDate ? new Date(input.dueDate) : null } : {}),
@@ -913,7 +924,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         metadata: { entityId: issueId, fromType: typeFromDb[current.type], toType: input.type, cycleId: current.cycleId ?? null },
       });
     }
-    if (input.status !== undefined && statusToDb[input.status] !== current.status) {
+    if (input.status !== undefined && input.status !== current.status) {
       await logActivity({
         workspaceId,
         actorId: actorUserId,
@@ -921,7 +932,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         targetType: "ISSUE",
         targetId: issueId,
         message: `Issue ${issueId} status changed`,
-        metadata: { entityId: issueId, fromStatus: statusFromDb[current.status], toStatus: input.status, cycleId: current.cycleId ?? null },
+        metadata: { entityId: issueId, fromStatus: current.status, toStatus: input.status, cycleId: current.cycleId ?? null },
       });
     }
     if (input.priority !== undefined && priorityToDb[input.priority] !== current.priority) {
@@ -1036,8 +1047,8 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
       }
 
       const changedFields: Array<{ field: string; from: unknown; to: unknown }> = [];
-      if (input.status !== undefined && statusToDb[input.status] !== current.status) {
-        changedFields.push({ field: "status", from: statusFromDb[current.status], to: input.status });
+      if (input.status !== undefined && input.status !== current.status) {
+        changedFields.push({ field: "status", from: current.status, to: input.status });
       }
       if (input.priority !== undefined && priorityToDb[input.priority] !== current.priority) {
         changedFields.push({ field: "priority", from: priorityFromDb[current.priority], to: input.priority });
@@ -1091,7 +1102,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
     }
 
     // Integrations: notify on completion via updateIssue (fire-and-forget)
-    if (input.status && statusToDb[input.status] === "DONE" && current.status !== "DONE") {
+    if (input.status && input.status !== current.status && nextCompletedAt instanceof Date && !current.completedAt) {
       const actor = await prisma.user.findUnique({ where: { id: actorUserId }, select: { name: true } });
       const completePayload = {
         id: issueId,
@@ -1123,8 +1134,14 @@ export async function updateIssueStatus(
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
   }
 
-  const nextStatus = (statusToDb[status] ?? "BACKLOG") as any;
-  const nextCompletedAt = getCompletedAtForStatusTransition(issue.status, nextStatus, issue.completedAt);
+  const nextStatus = status;
+  const statuses = await getWorkspaceStatuses(workspaceId);
+  if (!statuses.some((s: any) => s.key === nextStatus)) {
+    throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, `Invalid status: ${nextStatus}`);
+  }
+  const isFinalOld = isStatusFinal(statuses, issue.status);
+  const isFinalNew = isStatusFinal(statuses, nextStatus);
+  const nextCompletedAt = getCompletedAtForStatusTransition(isFinalOld, isFinalNew, issue.completedAt);
   const updateData: Record<string, unknown> = { status: nextStatus };
   if (nextCompletedAt !== undefined) {
     updateData.completedAt = nextCompletedAt;
@@ -1144,7 +1161,7 @@ export async function updateIssueStatus(
       message: `Issue ${issueId} status changed`,
       metadata: {
         entityId: issueId,
-        fromStatus: statusFromDb[issue.status] ?? "backlog",
+        fromStatus: issue.status,
         toStatus: status,
         cycleId: issue.cycleId ?? null,
       },
@@ -1186,7 +1203,7 @@ export async function updateIssueStatus(
         metadata: {
           issueId: updated.id,
           field: "status",
-          from: statusFromDb[issue.status] ?? "backlog",
+          from: issue.status,
           to: status,
           workspaceId,
           entityId: updated.id,
@@ -1209,7 +1226,7 @@ export async function updateIssueStatus(
   }
 
   // Integrations: notify channel when issue is completed (fire-and-forget)
-  if (nextStatus === "DONE" && issue.status !== "DONE") {
+  if (isFinalNew && !isFinalOld) {
     const actor = await prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
     const issueData = await prisma.issue.findFirst({
       where: { id: issueId },

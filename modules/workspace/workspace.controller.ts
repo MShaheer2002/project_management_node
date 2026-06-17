@@ -75,6 +75,28 @@ export const checkSlug: RequestHandler = async (req, res, next) => {
   }
 };
 
+// ─── Workspace Statuses ─────────────────────────────────────────────────────
+
+/** GET /workspaces/:workspaceId/statuses — Get workspace custom statuses */
+export const getStatuses: RequestHandler = async (req, res, next) => {
+  try {
+    const statuses = await workspaceService.getWorkspaceStatuses(req.params.workspaceId as string);
+    sendSuccess(res, 200, statuses);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** PUT /workspaces/:workspaceId/statuses — Replace workspace custom statuses */
+export const updateStatuses: RequestHandler = async (req, res, next) => {
+  try {
+    const statuses = await workspaceService.updateWorkspaceStatuses(req.params.workspaceId as string, req.body);
+    sendSuccess(res, 200, statuses);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ─── Membership Management ───────────────────────────────────────────────────
 
 /** POST /workspaces/:workspaceId/invitations — Send workspace invitation email */

@@ -1,6 +1,6 @@
 import { z } from "zod/v4";
 
-const issueStatusSchema = z.enum(["backlog", "todo", "in-progress", "review", "done"]);
+const issueStatusSchema = z.string().trim().min(1).max(50);
 const issuePrioritySchema = z.enum(["low", "medium", "high", "urgent"]);
 const issueTypeSchema = z.enum(["task", "bug", "issue"]);
 const bugSeveritySchema = z.enum(["low", "medium", "high"]);

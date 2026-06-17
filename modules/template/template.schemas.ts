@@ -3,7 +3,6 @@ import { z } from "zod/v4";
 const templateIssueTypeSchema = z.enum(["task", "bug", "issue"]);
 const templateAssigneeTypeSchema = z.enum(["UNASSIGNED", "CREATOR", "SPECIFIC_USER"]);
 const templateLifecycleSchema = z.enum(["ACTIVE", "INACTIVE", "ARCHIVED"]);
-const templateScopeTypeSchema = z.enum(["WORKSPACE", "TEAM", "PROJECT"]);
 
 const stringArraySchema = z.array(z.string().trim().min(1).max(100)).max(200);
 
@@ -16,32 +15,25 @@ export const listTemplatesSchema = {
     q: z.string().trim().max(200).optional(),
     category: z.string().trim().min(1).max(100).optional(),
     issueType: templateIssueTypeSchema.optional(),
-    scopeType: templateScopeTypeSchema.optional(),
-    scopeId: z.string().min(1).optional(),
     creatorId: z.string().min(1).optional(),
     sort: z.enum(["updatedAt:desc", "updatedAt:asc", "createdAt:desc", "createdAt:asc", "name:asc"]).optional(),
     lifecycle: templateLifecycleSchema.optional(),
     isActive: z.coerce.boolean().optional(),
     cursor: z.string().uuid().optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
-  }),
+  }).catchall(z.unknown()),
 };
 
 export const listActiveTemplatesSchema = {
   query: z.object({
     issueType: templateIssueTypeSchema.optional(),
-    teamId: z.string().uuid().optional(),
-    projectId: z.string().uuid().optional(),
-  }),
+  }).catchall(z.unknown()),
 };
 
 const templateDraftInputSchema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().min(1).max(5000),
   issueType: templateIssueTypeSchema,
-  scopeType: templateScopeTypeSchema,
-  scopeId: z.string().min(1).nullable().optional(),
-  isDefault: z.boolean().optional().default(false),
   category: z.string().trim().min(1).max(100),
   customCategory: z.string().trim().min(1).max(100).nullable().optional(),
   titleTemplate: z.string().trim().min(1).max(500),
@@ -69,43 +61,19 @@ const templateDraftInputSchema = z.object({
 });
 
 export const createTemplateSchema = {
-  body: templateDraftInputSchema.superRefine((data, ctx) => {
-    if (data.scopeType === "WORKSPACE" && data.scopeId !== null && data.scopeId !== undefined) {
-      ctx.addIssue({ code: "custom", path: ["scopeId"], message: "scopeId must be null for WORKSPACE scope" });
-    }
-    if (data.scopeType !== "WORKSPACE" && !data.scopeId) {
-      ctx.addIssue({ code: "custom", path: ["scopeId"], message: "scopeId is required for TEAM and PROJECT scopes" });
-    }
-    if (data.scopeType !== "WORKSPACE" && data.isDefault) {
-      ctx.addIssue({ code: "custom", path: ["isDefault"], message: "Only WORKSPACE templates can be defaults" });
-    }
-  }),
+  body: templateDraftInputSchema,
 };
 
 export const updateTemplateSchema = {
   params: z.object({ id: z.string().uuid() }),
   body: templateDraftInputSchema.partial().refine((data) => Object.keys(data).length > 0, {
     message: "At least one field is required",
-  }).superRefine((data, ctx) => {
-    if (data.scopeType === "WORKSPACE" && data.scopeId !== null && data.scopeId !== undefined) {
-      ctx.addIssue({ code: "custom", path: ["scopeId"], message: "scopeId must be null for WORKSPACE scope" });
-    }
-    if ((data.scopeType === "TEAM" || data.scopeType === "PROJECT") && data.scopeId === undefined) {
-      ctx.addIssue({ code: "custom", path: ["scopeId"], message: "scopeId is required when changing scopeType" });
-    }
-    if (data.scopeType && data.scopeType !== "WORKSPACE" && data.isDefault) {
-      ctx.addIssue({ code: "custom", path: ["isDefault"], message: "Only WORKSPACE templates can be defaults" });
-    }
   }),
 };
 
 export const duplicateTemplateSchema = {
   params: z.object({ id: z.string().uuid() }),
   body: z.object({ isActive: z.boolean().optional() }).optional(),
-};
-
-export const templateDefaultConfirmSchema = {
-  params: z.object({ id: z.string().uuid() }),
 };
 
 export type CreateTemplateInput = z.infer<typeof createTemplateSchema.body>;

@@ -1,5 +1,3 @@
-import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
-
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { logActivity } from "../../shared/utils/activity.js";
@@ -15,6 +13,8 @@ import type {
   UpdateTemplateInput,
 } from "./template.schemas.js";
 
+/* ── defaults ────────────────────────────────────────────────────── */
+
 const TEMPLATE_DEFAULTS = {
   categoryOptions: ["Bug", "Feature", "Task", "QA", "Research", "Security", "Release", "Onboarding"],
   priorityOptions: ["low", "medium", "high", "urgent"],
@@ -22,30 +22,10 @@ const TEMPLATE_DEFAULTS = {
   labelOptions: ["bug", "feature", "task", "qa", "research", "security", "release", "onboarding", "review", "product"],
 };
 
-const scopePrecedence: Record<string, number> = {
-  PROJECT: 3,
-  TEAM: 2,
-  WORKSPACE: 1,
-};
+/* ── helpers ─────────────────────────────────────────────────────── */
 
 function normalizeUnique(values: string[]) {
   return [...new Set(values.map((v) => v.trim()).filter(Boolean))];
-}
-
-function issueTypeToDb(type: "task" | "bug" | "issue") {
-  return type;
-}
-
-function scopeTypeToDb(type: "WORKSPACE" | "TEAM" | "PROJECT") {
-  return type;
-}
-
-function scopeMatchesTemplate(template: any, scopeType?: string, scopeId?: string | null) {
-  if (!scopeType) return true;
-  if (scopeType === "WORKSPACE") {
-    return template.scopeType === "WORKSPACE";
-  }
-  return template.scopeType === scopeType && template.scopeId === scopeId;
 }
 
 function isPrismaUniqueViolation(error: any) {
@@ -59,9 +39,6 @@ function mapTemplate(item: any, application: any | null = null, options: { inclu
     name: item.name,
     description: item.description,
     issueType: item.issueType,
-    scopeType: item.scopeType,
-    scopeId: item.scopeId,
-    isDefault: item.isDefault,
     category: item.category,
     customCategory: item.customCategory,
     titleTemplate: item.titleTemplate,
@@ -106,9 +83,7 @@ function mapTemplate(item: any, application: any | null = null, options: { inclu
 }
 
 function withCurrentApplicationInclude(userId: string | null | undefined) {
-  if (!userId) {
-    return {};
-  }
+  if (!userId) return {};
   return {
     applications: {
       where: { userId },
@@ -138,14 +113,7 @@ function ensureDefaults(input: Partial<CreateTemplateInput>) {
     throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "defaultStatus must be inside statusOptions");
   }
 
-  return {
-    categoryOptions,
-    priorityOptions,
-    statusOptions,
-    labelOptions,
-    defaultPriority,
-    defaultStatus,
-  };
+  return { categoryOptions, priorityOptions, statusOptions, labelOptions, defaultPriority, defaultStatus };
 }
 
 async function assertTemplateInWorkspace(workspaceId: string, templateId: string) {
@@ -175,52 +143,6 @@ async function assertLabelIds(workspaceId: string, labelIds: string[]) {
   }
 }
 
-async function assertScope(workspaceId: string, scopeType: "WORKSPACE" | "TEAM" | "PROJECT", scopeId: string | null | undefined) {
-  if (scopeType === "WORKSPACE") {
-    if (scopeId !== null && scopeId !== undefined) {
-      throw new AppError(422, ERROR_CODES.TEMPLATE_VALIDATION_FAILED, "scopeId must be null for WORKSPACE scope");
-    }
-    return;
-  }
-
-  if (!scopeId) {
-    throw new AppError(422, ERROR_CODES.TEMPLATE_VALIDATION_FAILED, "scopeId is required for TEAM and PROJECT scopes");
-  }
-
-  if (scopeType === "TEAM") {
-    const team = await prisma.team.findFirst({ where: { id: scopeId, workspaceId }, select: { id: true } });
-    if (!team) {
-      throw new AppError(404, ERROR_CODES.TEAM_NOT_FOUND, "Team not found");
-    }
-    return;
-  }
-
-  const project = await prisma.project.findFirst({ where: { id: scopeId, workspaceId }, select: { id: true } });
-  if (!project) {
-    throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
-  }
-}
-
-function scopeScore(scopeType: string) {
-  return scopePrecedence[scopeType] ?? 0;
-}
-
-async function assertDefaultConflict(workspaceId: string, issueType: string, templateId?: string) {
-  const current = await (prisma as any).template.findFirst({
-    where: {
-      workspaceId,
-      issueType,
-      scopeType: "WORKSPACE",
-      isDefault: true,
-      deletedAt: null,
-      ...(templateId ? { id: { not: templateId } } : {}),
-    },
-    select: { id: true, name: true },
-  });
-
-  return current;
-}
-
 async function emitTemplateEvent(workspaceId: string, type: string, payload: Record<string, unknown>) {
   const io = getSocketServer();
   if (!io) return;
@@ -247,14 +169,12 @@ async function notifyTemplateManagers(workspaceId: string, actorId: string, titl
       id: templateId,
       url: `/templates/${templateId}`,
     },
-    metadata: {
-      workspaceId,
-      templateId,
-      ...metadata,
-    },
+    metadata: { workspaceId, templateId, ...metadata },
     dedupeKey: `${title}:${templateId}:${recipient.userId}`,
   })));
 }
+
+/* ── public API ──────────────────────────────────────────────────── */
 
 export async function getTemplateDefaults() {
   return TEMPLATE_DEFAULTS;
@@ -267,9 +187,7 @@ export async function listTemplates(workspaceId: string, userId: string | null, 
     deletedAt: null,
     ...(query.q ? { OR: [{ name: { contains: query.q, mode: "insensitive" } }, { description: { contains: query.q, mode: "insensitive" } }] } : {}),
     ...(query.category ? { category: query.category } : {}),
-    ...(query.issueType ? { issueType: issueTypeToDb(query.issueType) } : {}),
-    ...(query.scopeType ? { scopeType: scopeTypeToDb(query.scopeType) } : {}),
-    ...(query.scopeId ? { scopeId: query.scopeId } : {}),
+    ...(query.issueType ? { issueType: query.issueType } : {}),
     ...(query.creatorId ? { createdById: query.creatorId } : {}),
     ...(query.lifecycle ? { lifecycle: query.lifecycle } : {}),
     ...(query.isActive !== undefined ? { isActive: query.isActive } : {}),
@@ -308,47 +226,17 @@ export async function listTemplates(workspaceId: string, userId: string | null, 
   };
 }
 
+/**
+ * Returns at most one active template per issue type for the workspace.
+ * Simple: no scope precedence, just workspace-level active templates.
+ */
 export async function listActiveTemplates(workspaceId: string, userId: string | null, query: ListActiveTemplatesQuery) {
-  let resolvedTeamId = query.teamId ?? null;
-  if (query.teamId) {
-    const team = await prisma.team.findFirst({
-      where: { id: query.teamId, workspaceId },
-      select: { id: true },
-    });
-    if (!team) {
-      throw new AppError(404, ERROR_CODES.TEAM_NOT_FOUND, "Team not found");
-    }
-  }
-
-  if (query.projectId) {
-    const project = await prisma.project.findFirst({
-      where: { id: query.projectId, workspaceId },
-      select: { id: true, teamId: true },
-    });
-    if (!project) {
-      throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
-    }
-    if (!resolvedTeamId) {
-      resolvedTeamId = project.teamId;
-    }
-  }
-
-  const visibleScopeFilters: any[] = [{ scopeType: "WORKSPACE" }];
-  if (resolvedTeamId) {
-    visibleScopeFilters.push({ scopeType: "TEAM", scopeId: resolvedTeamId });
-  }
-  if (query.projectId) {
-    visibleScopeFilters.push({ scopeType: "PROJECT", scopeId: query.projectId });
-  }
-
   const items = await (prisma as any).template.findMany({
     where: {
       workspaceId,
       deletedAt: null,
-      lifecycle: { not: "ARCHIVED" },
       isActive: true,
-      ...(query.issueType ? { issueType: issueTypeToDb(query.issueType) } : {}),
-      OR: visibleScopeFilters,
+      ...(query.issueType ? { issueType: query.issueType } : {}),
     },
     orderBy: [{ issueType: "asc" }, { updatedAt: "desc" }],
     include: {
@@ -358,33 +246,16 @@ export async function listActiveTemplates(workspaceId: string, userId: string | 
     },
   });
 
-  const effectiveByIssueType = new Map<string, any>();
-  const sortedItems = [...items].sort((a, b) => {
-    if (a.issueType !== b.issueType) {
-      return String(a.issueType).localeCompare(String(b.issueType));
-    }
-    const scopeDelta = scopeScore(b.scopeType) - scopeScore(a.scopeType);
-    if (scopeDelta !== 0) {
-      return scopeDelta;
-    }
-    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-  });
-
-  for (const item of sortedItems) {
-    const current = effectiveByIssueType.get(item.issueType);
-    if (!current) {
-      effectiveByIssueType.set(item.issueType, item);
-      continue;
-    }
-    const currentScore = scopeScore(current.scopeType);
-    const nextScore = scopeScore(item.scopeType);
-    if (nextScore > currentScore || (nextScore === currentScore && new Date(item.updatedAt).getTime() > new Date(current.updatedAt).getTime())) {
-      effectiveByIssueType.set(item.issueType, item);
+  // Keep only one per issue type (most recently updated wins if somehow multiple active)
+  const byType = new Map<string, any>();
+  for (const item of items) {
+    if (!byType.has(item.issueType)) {
+      byType.set(item.issueType, item);
     }
   }
 
   return {
-    items: [...effectiveByIssueType.values()].map((item) => mapTemplate(item, getCurrentApplicationFromRecord(item), { includeAppliedDraft: false })),
+    items: [...byType.values()].map((item) => mapTemplate(item, getCurrentApplicationFromRecord(item), { includeAppliedDraft: false })),
   };
 }
 
@@ -407,27 +278,11 @@ export async function getTemplateById(workspaceId: string, templateId: string, u
 
 export async function createTemplate(workspaceId: string, actorId: string, input: CreateTemplateInput) {
   const defaults = ensureDefaults(input);
-  await assertScope(workspaceId, input.scopeType, input.scopeId ?? null);
   await assertAssignee(workspaceId, input.defaultAssigneeId);
   await assertLabelIds(workspaceId, input.defaultLabelIds ?? []);
 
   if (input.issueType === "issue" && !input.acceptanceCriteriaTemplate?.trim()) {
     throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "ISSUE type template requires acceptanceCriteriaTemplate");
-  }
-
-  if (input.isDefault && input.scopeType !== "WORKSPACE") {
-    throw new AppError(422, ERROR_CODES.TEMPLATE_VALIDATION_FAILED, "Only WORKSPACE templates can be defaults");
-  }
-
-  const conflictingDefault = input.isDefault ? await assertDefaultConflict(workspaceId, input.issueType) : null;
-  if (conflictingDefault) {
-    throw new AppError(409, ERROR_CODES.TEMPLATE_DEFAULT_CONFLICT, `A workspace default template already exists for ${input.issueType} issues. Do you want to replace it?`, {
-      issueType: input.issueType,
-      currentDefault: conflictingDefault,
-      candidateTemplate: { id: "__new__", name: input.name },
-      scopeType: "WORKSPACE",
-      requiresConfirmation: true,
-    });
   }
 
   let created: any;
@@ -437,10 +292,10 @@ export async function createTemplate(workspaceId: string, actorId: string, input
         workspaceId,
         name: input.name,
         description: input.description,
-        issueType: issueTypeToDb(input.issueType),
-        scopeType: scopeTypeToDb(input.scopeType),
-        scopeId: input.scopeId ?? null,
-        isDefault: Boolean(input.isDefault),
+        issueType: input.issueType,
+        scopeType: "WORKSPACE",
+        scopeId: null,
+        isDefault: false,
         category: input.category,
         customCategory: input.customCategory ?? null,
         titleTemplate: input.titleTemplate,
@@ -505,31 +360,11 @@ export async function updateTemplate(workspaceId: string, templateId: string, ac
   const current = await assertTemplateInWorkspace(workspaceId, templateId);
   const merged = { ...current, ...input } as any;
   const defaults = ensureDefaults(merged);
-  await assertScope(workspaceId, (merged.scopeType ?? current.scopeType) as any, merged.scopeId ?? current.scopeId ?? null);
   await assertAssignee(workspaceId, merged.defaultAssigneeId ?? null);
   await assertLabelIds(workspaceId, merged.defaultLabelIds ?? []);
 
   if ((merged.issueType as string) === "issue" && !(merged.acceptanceCriteriaTemplate ?? "").trim()) {
     throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "ISSUE type template requires acceptanceCriteriaTemplate");
-  }
-
-  const nextScopeType = (merged.scopeType ?? current.scopeType) as "WORKSPACE" | "TEAM" | "PROJECT";
-  const nextIsDefault = Boolean(merged.isDefault ?? current.isDefault);
-  if (nextIsDefault && nextScopeType !== "WORKSPACE") {
-    throw new AppError(422, ERROR_CODES.TEMPLATE_VALIDATION_FAILED, "Only WORKSPACE templates can be defaults");
-  }
-
-  const conflictingDefault = nextIsDefault
-    ? await assertDefaultConflict(workspaceId, merged.issueType ?? current.issueType, templateId)
-    : null;
-  if (conflictingDefault) {
-    throw new AppError(409, ERROR_CODES.TEMPLATE_DEFAULT_CONFLICT, `A workspace default template already exists for ${merged.issueType ?? current.issueType} issues. Do you want to replace it?`, {
-      issueType: merged.issueType ?? current.issueType,
-      currentDefault: conflictingDefault,
-      candidateTemplate: { id: current.id, name: merged.name ?? current.name },
-      scopeType: "WORKSPACE",
-      requiresConfirmation: true,
-    });
   }
 
   let updated: any;
@@ -540,9 +375,6 @@ export async function updateTemplate(workspaceId: string, templateId: string, ac
         ...("name" in input ? { name: input.name } : {}),
         ...("description" in input ? { description: input.description } : {}),
         ...("issueType" in input ? { issueType: input.issueType } : {}),
-        ...("scopeType" in input ? { scopeType: input.scopeType } : {}),
-        ...("scopeId" in input ? { scopeId: input.scopeId ?? null } : {}),
-        ...("isDefault" in input ? { isDefault: Boolean(input.isDefault) } : {}),
         ...("category" in input ? { category: input.category } : {}),
         ...("customCategory" in input ? { customCategory: input.customCategory ?? null } : {}),
         ...("titleTemplate" in input ? { titleTemplate: input.titleTemplate } : {}),
@@ -593,14 +425,7 @@ export async function updateTemplate(workspaceId: string, templateId: string, ac
   });
 
   if (updated.isActive) {
-    await notifyTemplateManagers(
-      workspaceId,
-      actorId,
-      "Template updated",
-      `${updated.name} was updated and is active`,
-      updated.id,
-      { issueType: updated.issueType, action: "updated" },
-    );
+    await notifyTemplateManagers(workspaceId, actorId, "Template updated", `${updated.name} was updated and is active`, updated.id, { issueType: updated.issueType, action: "updated" });
   }
 
   await emitTemplateEvent(workspaceId, "template.updated", {
@@ -619,12 +444,7 @@ export async function deleteTemplate(workspaceId: string, templateId: string, ac
 
   const deleted = await (prisma as any).template.update({
     where: { id: templateId },
-    data: {
-      deletedAt: new Date(),
-      isActive: false,
-      lifecycle: "ARCHIVED",
-      updatedById: actorId,
-    },
+    data: { deletedAt: new Date(), isActive: false, lifecycle: "ARCHIVED", updatedById: actorId },
   });
 
   await logActivity({
@@ -637,14 +457,7 @@ export async function deleteTemplate(workspaceId: string, templateId: string, ac
     metadata: { templateId, templateName: existing.name, issueType: existing.issueType },
   });
 
-  await notifyTemplateManagers(
-    workspaceId,
-    actorId,
-    "Template deleted",
-    `${existing.name} was deleted`,
-    templateId,
-    { issueType: existing.issueType, action: "deleted" },
-  );
+  await notifyTemplateManagers(workspaceId, actorId, "Template deleted", `${existing.name} was deleted`, templateId, { issueType: existing.issueType, action: "deleted" });
 
   await emitTemplateEvent(workspaceId, "template.deleted", {
     workspaceId,
@@ -655,7 +468,7 @@ export async function deleteTemplate(workspaceId: string, templateId: string, ac
   });
 }
 
-export async function duplicateTemplate(workspaceId: string, templateId: string, actorId: string, isActive = false) {
+export async function duplicateTemplate(workspaceId: string, templateId: string, actorId: string, _isActive = false) {
   const src = await assertTemplateInWorkspace(workspaceId, templateId);
 
   const created = await (prisma as any).template.create({
@@ -664,8 +477,8 @@ export async function duplicateTemplate(workspaceId: string, templateId: string,
       name: `${src.name} (Copy)`,
       description: src.description,
       issueType: src.issueType,
-      scopeType: src.scopeType,
-      scopeId: src.scopeId,
+      scopeType: "WORKSPACE",
+      scopeId: null,
       isDefault: false,
       category: src.category,
       customCategory: src.customCategory,
@@ -692,7 +505,7 @@ export async function duplicateTemplate(workspaceId: string, templateId: string,
       relatedIssueKeysTemplate: src.relatedIssueKeysTemplate,
       notesTemplate: src.notesTemplate,
       lifecycle: "INACTIVE",
-      isActive,
+      isActive: false,
       usageCount: 0,
       timesApplied: 0,
       lastAppliedAt: null,
@@ -726,176 +539,16 @@ export async function duplicateTemplate(workspaceId: string, templateId: string,
   return mapTemplate(created);
 }
 
-export async function applyTemplate(workspaceId: string, templateId: string, actorId: string) {
-  const template = await assertTemplateInWorkspace(workspaceId, templateId);
-
-  const appliedAt = new Date();
-  const draft = {
-    templateId: template.id,
-    title: template.titleTemplate,
-    description: template.contentTemplate,
-    issueType: template.issueType,
-    scopeType: template.scopeType,
-    scopeId: template.scopeId,
-    isDefault: template.isDefault,
-    priority: template.defaultPriority,
-    status: template.defaultStatus,
-    customStatus: template.customStatus,
-    assigneeType: template.defaultAssigneeType,
-    assigneeId: template.defaultAssigneeId,
-    estimate: template.defaultEstimate,
-    dueDateOffset: template.defaultDueDateOffset,
-    labels: template.defaultLabelIds,
-    subtasks: template.checklistItems,
-    severity: template.defaultSeverity,
-    stepsToReproduce: template.stepsToReproduceTemplate,
-    expectedBehavior: template.expectedBehaviorTemplate,
-    actualBehavior: template.actualBehaviorTemplate,
-    acceptanceCriteria: template.acceptanceCriteriaTemplate,
-    relatedIssueKeys: template.relatedIssueKeysTemplate,
-    notes: template.notesTemplate,
-  };
-
-  await (prisma as any).template.update({
-    where: { id: templateId },
-    data: {
-      timesApplied: { increment: 1 },
-      usageCount: { increment: 1 },
-      lastAppliedAt: appliedAt,
-      updatedById: actorId,
-    },
-  });
-
-  await (prisma as any).templateApplication.upsert({
-    where: {
-      workspaceId_templateId_userId: {
-        workspaceId,
-        templateId: template.id,
-        userId: actorId,
-      },
-    },
-    create: {
-      workspaceId,
-      templateId: template.id,
-      userId: actorId,
-      draft: draft as any,
-      appliedAt,
-    },
-    update: {
-      draft: draft as any,
-      appliedAt,
-    },
-  });
-
-  await logActivity({
-    workspaceId,
-    actorId,
-    type: "TEMPLATE_APPLIED",
-    targetType: "TEMPLATE",
-    targetId: template.id,
-    message: `Template ${template.name} applied`,
-    metadata: { templateId: template.id, templateName: template.name, issueType: template.issueType },
-  });
-
-  return {
-    draft,
-    appliedByCurrentUser: true,
-    appliedAt,
-    templateId: template.id,
-    scopeType: template.scopeType,
-    scopeId: template.scopeId,
-    appliedDraft: draft,
-  };
-}
-
-export async function confirmDefaultTemplate(workspaceId: string, templateId: string, actorId: string) {
-  const candidate = await assertTemplateInWorkspace(workspaceId, templateId);
-  if (candidate.scopeType !== "WORKSPACE") {
-    throw new AppError(422, ERROR_CODES.TEMPLATE_VALIDATION_FAILED, "Only WORKSPACE templates can be defaults");
-  }
-
-  const result = await prisma.$transaction(async (tx) => {
-    const current = await (tx as any).template.findFirst({
-      where: {
-        workspaceId,
-        issueType: candidate.issueType,
-        scopeType: "WORKSPACE",
-        isDefault: true,
-        deletedAt: null,
-        id: { not: templateId },
-      },
-      select: { id: true, name: true, issueType: true },
-    });
-
-    if (current) {
-      await (tx as any).template.update({
-        where: { id: current.id },
-        data: { isDefault: false, updatedById: actorId },
-      });
-    }
-
-    const promoted = await (tx as any).template.update({
-      where: { id: templateId },
-      data: { isDefault: true, updatedById: actorId },
-    });
-
-    return { current, promoted };
-  });
-
-  if (result.current) {
-    await logActivity({
-      workspaceId,
-      actorId,
-      type: "TEMPLATE_UPDATED",
-      targetType: "TEMPLATE",
-      targetId: result.current.id,
-      message: `Workspace default removed from ${result.current.name}`,
-      metadata: { templateId: result.current.id, templateName: result.current.name, issueType: result.current.issueType, isDefault: false },
-    });
-  }
-
-  await logActivity({
-    workspaceId,
-    actorId,
-    type: "TEMPLATE_UPDATED",
-    targetType: "TEMPLATE",
-    targetId: result.promoted.id,
-    message: `Workspace default set to ${result.promoted.name}`,
-    metadata: { templateId: result.promoted.id, templateName: result.promoted.name, issueType: result.promoted.issueType, isDefault: true },
-  });
-
-  await emitTemplateEvent(workspaceId, "template.updated", {
-    workspaceId,
-    templateId: result.promoted.id,
-    issueType: result.promoted.issueType,
-    isActive: result.promoted.isActive,
-    updatedAt: result.promoted.updatedAt,
-  });
-
-  if (result.current) {
-    await emitTemplateEvent(workspaceId, "template.updated", {
-      workspaceId,
-      templateId: result.current.id,
-      issueType: result.current.issueType,
-      isActive: false,
-      updatedAt: new Date().toISOString(),
-    });
-  }
-
-  return mapTemplate(result.promoted);
-}
-
+/**
+ * Activate a template for its issue type.
+ * Only one active template per (workspaceId, issueType).
+ * If another is already active, returns 409 with conflict details.
+ */
 export async function activateTemplate(workspaceId: string, templateId: string, actorId: string) {
   const candidate = await assertTemplateInWorkspace(workspaceId, templateId);
 
   const current = await (prisma as any).template.findFirst({
-    where: {
-      workspaceId,
-      deletedAt: null,
-      isActive: true,
-      issueType: candidate.issueType,
-      id: { not: candidate.id },
-    },
+    where: { workspaceId, deletedAt: null, isActive: true, issueType: candidate.issueType, id: { not: candidate.id } },
     select: { id: true, name: true, issueType: true },
   });
 
@@ -903,7 +556,7 @@ export async function activateTemplate(workspaceId: string, templateId: string, 
     throw new AppError(
       409,
       "TEMPLATE_ALREADY_ACTIVE",
-      `A ${current.issueType} template is already active. Use /templates/${candidate.id}/activate/confirm to swap.`,
+      `A ${current.issueType} template "${current.name}" is already active. Confirm to swap.`,
       {
         issueType: current.issueType,
         activeTemplate: { id: current.id, name: current.name },
@@ -916,54 +569,16 @@ export async function activateTemplate(workspaceId: string, templateId: string, 
   return activateTemplateDirect(workspaceId, templateId, actorId);
 }
 
-async function activateTemplateDirect(workspaceId: string, templateId: string, actorId: string) {
-  const updated = await (prisma as any).template.update({
-    where: { id: templateId },
-    data: { isActive: true, lifecycle: "ACTIVE", updatedById: actorId },
-  });
-
-  await logActivity({
-    workspaceId,
-    actorId,
-    type: "TEMPLATE_ACTIVATED",
-    targetType: "TEMPLATE",
-    targetId: updated.id,
-    message: `Template ${updated.name} activated`,
-    metadata: { templateId: updated.id, templateName: updated.name, issueType: updated.issueType },
-  });
-
-  await notifyTemplateManagers(
-    workspaceId,
-    actorId,
-    "Template activated",
-    `${updated.name} is now active`,
-    updated.id,
-    { issueType: updated.issueType, action: "activated" },
-  );
-
-  await emitTemplateEvent(workspaceId, "template.activated", {
-    workspaceId,
-    templateId: updated.id,
-    issueType: updated.issueType,
-    isActive: true,
-    updatedAt: updated.updatedAt,
-  });
-
-  return mapTemplate(updated);
-}
-
+/**
+ * Confirm activation swap: deactivates the current active template for the
+ * same issueType and activates this one. Atomic transaction.
+ */
 export async function confirmActivateTemplate(workspaceId: string, templateId: string, actorId: string) {
   const candidate = await assertTemplateInWorkspace(workspaceId, templateId);
 
   const result = await prisma.$transaction(async (tx) => {
     await (tx as any).template.updateMany({
-      where: {
-        workspaceId,
-        issueType: candidate.issueType,
-        isActive: true,
-        deletedAt: null,
-        id: { not: templateId },
-      },
+      where: { workspaceId, issueType: candidate.issueType, isActive: true, deletedAt: null, id: { not: templateId } },
       data: { isActive: false, lifecycle: "INACTIVE", updatedById: actorId },
     });
 
@@ -979,9 +594,11 @@ export async function confirmActivateTemplate(workspaceId: string, templateId: s
     type: "TEMPLATE_ACTIVATED",
     targetType: "TEMPLATE",
     targetId: result.id,
-    message: `Template ${result.name} activated by confirmation`,
+    message: `Template ${result.name} activated (swapped)`,
     metadata: { templateId: result.id, templateName: result.name, issueType: result.issueType, confirmedSwap: true },
   });
+
+  await notifyTemplateManagers(workspaceId, actorId, "Template activated", `${result.name} is now the active ${result.issueType} template`, result.id, { issueType: result.issueType, action: "activated" });
 
   await emitTemplateEvent(workspaceId, "template.activated", {
     workspaceId,
@@ -1016,6 +633,37 @@ export async function deactivateTemplate(workspaceId: string, templateId: string
     templateId: updated.id,
     issueType: updated.issueType,
     isActive: false,
+    updatedAt: updated.updatedAt,
+  });
+
+  return mapTemplate(updated);
+}
+
+/* ── internal ────────────────────────────────────────────────────── */
+
+async function activateTemplateDirect(workspaceId: string, templateId: string, actorId: string) {
+  const updated = await (prisma as any).template.update({
+    where: { id: templateId },
+    data: { isActive: true, lifecycle: "ACTIVE", updatedById: actorId },
+  });
+
+  await logActivity({
+    workspaceId,
+    actorId,
+    type: "TEMPLATE_ACTIVATED",
+    targetType: "TEMPLATE",
+    targetId: updated.id,
+    message: `Template ${updated.name} activated`,
+    metadata: { templateId: updated.id, templateName: updated.name, issueType: updated.issueType },
+  });
+
+  await notifyTemplateManagers(workspaceId, actorId, "Template activated", `${updated.name} is now the active ${updated.issueType} template`, updated.id, { issueType: updated.issueType, action: "activated" });
+
+  await emitTemplateEvent(workspaceId, "template.activated", {
+    workspaceId,
+    templateId: updated.id,
+    issueType: updated.issueType,
+    isActive: true,
     updatedAt: updated.updatedAt,
   });
 
