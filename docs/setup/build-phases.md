@@ -1955,8 +1955,9 @@ DELETE /api-keys/:id                  — Revoke key
 | **19b — Slack** | Channel notifications, slash commands, DM alerts. | Live integration | High |
 | **19c — Figma** | Design file linking, thumbnail previews on issues and projects. | Link integration | Medium |
 | **19d — Discord** | Outbound notifications to configured channels. | Notification | Medium |
+| **19e — Google Drive** | Per-user Drive connection for file uploads. Files stored in user's Drive, links passed to API. | Storage integration | High |
 
-Recommended build order: **19a → 19b → 19c → 19d**
+Recommended build order: **19a → 19b → 19c → 19d → 19e**
 
 ### 19a — GitHub Integration
 
@@ -1995,6 +1996,168 @@ Recommended build order: **19a → 19b → 19c → 19d**
 - Outbound only: issue created, completed, cycle completed, project completed → configured channels
 - Webhook-based connection, no per-user OAuth required
 
+### 19e — Google Drive Integration (Per-User Storage)
+
+**User value:** Linearis never stores files on its own servers. Each user connects their personal or workspace Google Drive. When they upload an attachment (issue, project doc, workspace doc), the file goes to their Drive and only the shareable link + metadata is stored in the Linearis DB. Zero storage cost, users keep file ownership, and files are accessible via standard Drive sharing rules.
+
+**Core principle:** Linearis is a **link store**, not a file store. Google Drive is the storage backend. The API receives a Drive file URL after the frontend handles the upload via the Google Drive API (picker + upload).
+
+**Per-user OAuth flow:**
+1. User clicks "Connect Google Drive" in their profile or settings
+2. Backend initiates Google OAuth2 flow with `drive.file` scope (only files created/opened by the app)
+3. On success, backend stores encrypted `refresh_token` + `access_token` per user
+4. Tokens are user-scoped, not workspace-scoped — a user's Drive connection works across all their workspaces
+5. Disconnect revokes the token and clears stored credentials
+
+**Schema additions:**
+
+```prisma
+model UserDriveConnection {
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  provider       String   @default("google_drive")  // future: OneDrive, Dropbox
+  accessToken    String   // encrypted at rest
+  refreshToken   String   // encrypted at rest
+  tokenExpiresAt DateTime
+  email          String   // Drive account email for display
+  connected      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+```
+
+**Backend endpoints:**
+
+```
+GET    /me/drive                        — Get connection status (connected, email, provider)
+POST   /me/drive/connect                — Initiate OAuth flow (returns redirect URL)
+GET    /me/drive/callback               — OAuth callback (exchanges code for tokens)
+DELETE /me/drive/disconnect             — Revoke tokens + delete connection
+POST   /me/drive/upload-url             — Generate a resumable upload URL for frontend
+```
+
+**Frontend upload flow (how it works end-to-end):**
+
+```
+1. User clicks "Attach file" on issue/doc/project
+2. Frontend checks if user has Drive connected (GET /me/drive)
+   → If not connected: show "Connect Google Drive" prompt
+   → If connected: proceed
+3. Frontend opens file picker OR direct upload dialog
+4. File is uploaded directly from browser to Google Drive API
+   (using the user's access token, proxied through backend for security)
+5. Drive returns file ID + shareable link
+6. Frontend sends metadata to Linearis API:
+   {
+     "driveFileId": "1abc...",
+     "driveUrl": "https://drive.google.com/file/d/1abc.../view",
+     "fileName": "spec-v2.pdf",
+     "mimeType": "application/pdf",
+     "sizeBytes": 245000
+   }
+7. Backend stores the link + metadata in the existing attachment/document tables
+8. UI renders the file as a clickable link with file type icon + metadata
+```
+
+**Where Drive uploads are used (extends existing features):**
+
+| Surface | Current behavior | With Drive integration |
+|---|---|---|
+| Issue attachments | No upload support or local file reference | Upload to Drive, store link on issue |
+| Project docs (Phase 16) | `fileUrl` is manually provided or placeholder | Upload to Drive via picker, `fileUrl` = Drive link |
+| Team docs (Phase 16) | Same | Same |
+| Workspace docs (Phase 16) | Same | Same |
+| Comment attachments | Text-only comments | Attach Drive file link inline |
+| Issue creation | No attachment step | Optional "Attach files" step uploads to Drive |
+
+**Attachment model (extends existing EntityDocument or new table):**
+
+```prisma
+model Attachment {
+  id            String   @id @default(uuid())
+  workspaceId   String
+  targetType    AttachmentTarget  // ISSUE, COMMENT, PROJECT, TEAM, WORKSPACE
+  targetId      String
+  driveFileId   String            // Google Drive file ID
+  driveUrl      String            // Shareable link
+  fileName      String
+  mimeType      String
+  sizeBytes     Int
+  uploadedById  String
+  createdAt     DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  uploadedBy User @relation(fields: [uploadedById], references: [id])
+
+  @@index([workspaceId, targetType, targetId])
+  @@index([uploadedById])
+}
+
+enum AttachmentTarget {
+  ISSUE
+  COMMENT
+  PROJECT
+  TEAM
+  WORKSPACE
+}
+```
+
+**Attachment API (workspace-scoped):**
+
+```
+POST   /attachments                     — Create attachment record (after Drive upload)
+GET    /attachments?targetType=ISSUE&targetId=<id>  — List attachments for entity
+DELETE /attachments/:id                 — Delete attachment record (does NOT delete from Drive)
+```
+
+**Business rules:**
+- Drive connection is per-user, not per-workspace — user connects once, uploads from any workspace
+- Backend never touches file bytes — frontend uploads directly to Drive API
+- Backend stores only metadata + Drive link (zero storage cost)
+- Deleting an attachment from Linearis does NOT delete the file from Drive (user owns it)
+- Token refresh is handled transparently — if `access_token` expires, use `refresh_token` automatically
+- If user disconnects Drive, existing attachment links remain functional (they're just URLs)
+- New uploads require active Drive connection
+- File sharing permissions on Drive are the user's responsibility — Linearis shows the link as-is
+- `drive.file` scope ensures Linearis can only access files it created, not the user's entire Drive
+- Maximum attachment count per issue: configurable (default 20)
+
+**Security:**
+- OAuth tokens encrypted at rest (AES-256 or equivalent)
+- Tokens never exposed to frontend — backend proxies token exchange
+- `refresh_token` stored server-side only
+- CSRF protection on OAuth callback
+- Rate limiting on upload URL generation
+
+**Module structure:**
+
+```
+modules/drive/
+├── drive.routes.ts              # OAuth + connection management routes
+├── drive.controller.ts
+├── drive.service.ts             # Token management, refresh, revoke
+├── drive.schemas.ts
+└── drive.oauth.ts               # Google OAuth2 client wrapper
+
+modules/attachment/
+├── attachment.routes.ts         # CRUD for attachment records
+├── attachment.controller.ts
+├── attachment.service.ts
+└── attachment.schemas.ts
+```
+
+**Config additions:**
+
+```typescript
+// config/env.ts — add to envSchema
+GOOGLE_CLIENT_ID: z.string(),
+GOOGLE_CLIENT_SECRET: z.string(),
+GOOGLE_REDIRECT_URI: z.string().url(),
+ENCRYPTION_KEY: z.string().min(32),  // for token encryption at rest
+```
+
 ### Done When
 
 - [ ] GitHub: PR merge auto-completes linked issues end-to-end
@@ -2003,6 +2166,12 @@ Recommended build order: **19a → 19b → 19c → 19d**
 - [ ] Slack: `/linearis create` and `/linearis status` slash commands work
 - [ ] Figma: Design links show thumbnail previews on issues
 - [ ] Discord: Workspace events post to configured channels
+- [ ] Drive: User can connect/disconnect Google Drive from profile
+- [ ] Drive: OAuth flow completes and tokens are stored encrypted
+- [ ] Drive: File upload from issue/doc surfaces stores link in DB
+- [ ] Drive: Attachment metadata renders correctly (file name, type, size, uploader)
+- [ ] Drive: Existing links survive Drive disconnection
+- [ ] Drive: Token refresh works transparently on expiry
 - [ ] All integrations: workspace-scoped, admin-only connect/disconnect
 - [ ] All integrations: disconnect cleans up tokens/webhooks safely
 - [ ] All integrations: failed syncs logged and observable

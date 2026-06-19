@@ -193,6 +193,8 @@ enum ActivityType {
   GITHUB_PR_MERGED
   GITHUB_PR_CLOSED
   GITHUB_PR_REVIEW
+  DRIVE_CONNECTED
+  DRIVE_DISCONNECTED
 }
 
 /// What kind of entity an activity log entry refers to
@@ -272,6 +274,16 @@ enum InvitationStatus {
   REVOKED   // Admin manually cancelled the invite
 }
 
+/// Where workspace members are allowed to upload file attachments
+/// BOTH = system storage (S3) + Google Drive (default)
+/// SYSTEM_ONLY = S3 only, Drive button hidden
+/// DRIVE_ONLY = Google Drive only, S3 button hidden (members must connect Drive)
+enum UploadPolicy {
+  BOTH
+  SYSTEM_ONLY
+  DRIVE_ONLY
+}
+
 /// Third-party services that can be connected to a workspace
 enum IntegrationProvider {
   GITHUB
@@ -349,6 +361,7 @@ model User {
   createdCommentAttachments CommentAttachment[]
   uploadedDocuments     EntityDocument[] @relation("EntityDocumentUploader")
   createdDocumentFolders DocumentFolder[] @relation("DocumentFolderCreator")
+  driveConnection       UserDriveConnection? // Per-user Google Drive OAuth connection
 
   @@index([email])
 }
@@ -372,6 +385,7 @@ model Workspace {
   issuePrefix  String @unique // Uppercase prefix for issue IDs (e.g., "VAT" → VAT-1, VAT-2)
   issueCounter Int    @default(0) // Atomic counter for human-readable issue IDs per workspace
   customStatuses Json  @default("[{\"key\":\"backlog\",\"label\":\"Backlog\",\"color\":\"#6b7280\",\"order\":0,\"isFinal\":false},{\"key\":\"todo\",\"label\":\"Todo\",\"color\":\"#3b82f6\",\"order\":1,\"isFinal\":false},{\"key\":\"in-progress\",\"label\":\"In Progress\",\"color\":\"#f59e0b\",\"order\":2,\"isFinal\":false},{\"key\":\"review\",\"label\":\"Review\",\"color\":\"#8b5cf6\",\"order\":3,\"isFinal\":false},{\"key\":\"done\",\"label\":\"Done\",\"color\":\"#22c55e\",\"order\":4,\"isFinal\":true}]")
+  uploadPolicy UploadPolicy @default(BOTH) // Controls where members can upload: BOTH, SYSTEM_ONLY, DRIVE_ONLY
   createdById  String // FK → User who created this workspace (becomes OWNER)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -1413,4 +1427,37 @@ model BillingWebhookEvent {
   workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, createdAt])
+}
+
+// ============================================================================
+// GOOGLE DRIVE — PER-USER STORAGE INTEGRATION (Phase 19e)
+// ============================================================================
+
+/// UserDriveConnection — per-user Google Drive OAuth connection
+///
+/// Unlike workspace-scoped integrations (GitHub, Slack), Drive is USER-scoped.
+/// A user connects their Drive once and can upload from any workspace they belong to.
+/// Linearis never stores files — only metadata + Drive links. Zero storage cost.
+///
+/// Security:
+///   - accessToken and refreshToken are encrypted at rest (AES-256-GCM) in the service layer
+///   - Tokens are NEVER returned in API responses
+///   - `drive.file` scope ensures Linearis can only access files it created
+///   - Disconnect revokes the Google token before deleting the record
+model UserDriveConnection {
+  id             String   @id @default(uuid())
+  userId         String   @unique // One Drive connection per user
+  provider       String   @default("google_drive") // Future: onedrive, dropbox
+  accessToken    String   // Encrypted at rest (AES-256-GCM)
+  refreshToken   String   // Encrypted at rest (AES-256-GCM)
+  tokenExpiresAt DateTime // When the access token expires (used to trigger refresh)
+  email          String   // Google account email for display (e.g., "shaheer@gmail.com")
+  connected      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // -- Relations --
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }

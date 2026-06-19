@@ -70,6 +70,12 @@ const envSchema = z.object({
   SLACK_CLIENT_ID: z.preprocess(emptyStringToUndefined, z.string().optional()),
   SLACK_CLIENT_SECRET: z.preprocess(emptyStringToUndefined, z.string().optional()),
   SLACK_SIGNING_SECRET: z.preprocess(emptyStringToUndefined, z.string().optional()),
+
+  // Google Drive — per-user storage integration (Phase 19e)
+  GOOGLE_CLIENT_ID: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  GOOGLE_CLIENT_SECRET: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  GOOGLE_REDIRECT_URI: z.preprocess(emptyStringToUndefined, z.string().url().optional()),
+  ENCRYPTION_KEY: z.preprocess(emptyStringToUndefined, z.string().min(32).optional()),
 });
 
 // Validate environment variables — crashes if invalid

@@ -89,6 +89,7 @@ export const updateWorkspaceSchema = {
       .trim()
       .optional(),
     logo: z.string().url("Logo must be a valid URL").nullable().optional(),
+    uploadPolicy: z.enum(["BOTH", "SYSTEM_ONLY", "DRIVE_ONLY"]).optional(),
   }),
   params: z.object({
     workspaceId: z.string().uuid("Invalid workspace ID"),

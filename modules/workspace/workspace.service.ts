@@ -173,6 +173,7 @@ export async function listWorkspaces(userId: string) {
           teamSize: true,
           issuePrefix: true,
           customStatuses: true,
+          uploadPolicy: true,
           createdAt: true,
         },
       },
@@ -220,6 +221,7 @@ export async function listWorkspaces(userId: string) {
     teamSize: m.workspace.teamSize,
     issuePrefix: m.workspace.issuePrefix,
     customStatuses: m.workspace.customStatuses,
+    uploadPolicy: m.workspace.uploadPolicy,
     role: m.role,
     defaultTeamId: defaultTeamMap.get(m.workspace.id) ?? null,
     unreadNotifications: unreadMap.get(m.workspace.id) ?? 0,
@@ -244,6 +246,7 @@ export async function getWorkspaceById(workspaceId: string) {
       issuePrefix: true,
       issueCounter: true,
       customStatuses: true,
+      uploadPolicy: true,
       createdById: true,
       createdAt: true,
       updatedAt: true,
@@ -276,6 +279,7 @@ export async function updateWorkspace(workspaceId: string, input: UpdateWorkspac
     data: {
       ...(input.name !== undefined && { name: input.name }),
       ...(input.logo !== undefined && { logo: input.logo }),
+      ...(input.uploadPolicy !== undefined && { uploadPolicy: input.uploadPolicy }),
     },
     select: {
       id: true,
@@ -283,6 +287,7 @@ export async function updateWorkspace(workspaceId: string, input: UpdateWorkspac
       slug: true,
       logo: true,
       teamSize: true,
+      uploadPolicy: true,
       updatedAt: true,
     },
   });
