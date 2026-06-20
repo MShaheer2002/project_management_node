@@ -76,6 +76,9 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.preprocess(emptyStringToUndefined, z.string().optional()),
   GOOGLE_REDIRECT_URI: z.preprocess(emptyStringToUndefined, z.string().url().optional()),
   ENCRYPTION_KEY: z.preprocess(emptyStringToUndefined, z.string().min(32).optional()),
+
+  // OpenRouter — AI gateway (Phase 20)
+  OPENROUTER_API_KEY: z.preprocess(emptyStringToUndefined, z.string().optional()),
 });
 
 // Validate environment variables — crashes if invalid
