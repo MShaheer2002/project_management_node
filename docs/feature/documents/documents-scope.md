@@ -1,4 +1,4 @@
-# Linearis Documents — Scope
+# Trussen Documents — Scope
 
 ## Purpose
 

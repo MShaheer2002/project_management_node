@@ -1,4 +1,4 @@
-# Linearis — Backend Rules (IMMUTABLE)
+# Trussen — Backend Rules (IMMUTABLE)
 
 > These rules are NON-NEGOTIABLE. They must be followed in every file, every PR, every phase.
 > No exceptions. No shortcuts. No "just this once".

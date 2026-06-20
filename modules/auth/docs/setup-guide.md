@@ -1,6 +1,6 @@
 # Auth Module — Setup Guide
 
-> This guide walks through setting up Clerk as the authentication provider for Linearis.
+> This guide walks through setting up Clerk as the authentication provider for Trussen.
 > Follow every step before writing any auth code.
 
 ---
@@ -9,7 +9,7 @@
 
 1. Go to [https://dashboard.clerk.com](https://dashboard.clerk.com)
 2. Click **"Add application"**
-3. Enter application name: `Linearis` (or `Linearis Dev` for development)
+3. Enter application name: `Trussen` (or `Trussen Dev` for development)
 4. Select sign-in methods:
    - ✅ Email address
    - ✅ Google
@@ -57,8 +57,8 @@
 5. For production: You need your own GitHub OAuth app:
    - Go to [GitHub Developer Settings](https://github.com/settings/developers)
    - Click **New OAuth App**
-   - Application name: `Linearis`
-   - Homepage URL: `https://linearis.app` (your production URL)
+   - Application name: `Trussen`
+   - Homepage URL: `https://trussen.app` (your production URL)
    - Authorization callback URL: Clerk provides this in the dashboard
      (format: `https://clerk.<your-domain>.com/v1/oauth_callback`)
    - Copy **Client ID** and **Client Secret** into Clerk dashboard
@@ -103,7 +103,7 @@ This is how we keep our `User` table in sync with Clerk.
 3. Configure:
    - **Endpoint URL:**
      - Development: `https://<your-ngrok-url>/webhooks/clerk`
-     - Production: `https://api.linearis.app/webhooks/clerk`
+     - Production: `https://api.trussen.app/webhooks/clerk`
    - **Subscribe to events:**
      - ✅ `user.created`
      - ✅ `user.updated`

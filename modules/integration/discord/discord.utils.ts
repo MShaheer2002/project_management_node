@@ -65,7 +65,7 @@ export function buildIssueEmbed(params: {
         value: (f.value || "\u2014").slice(0, 1024),
         inline: true,
       })),
-    footer: { text: "Linearis" },
+    footer: { text: "Trussen" },
     timestamp: new Date().toISOString(),
     url: issueUrl,
   };

@@ -1,4 +1,4 @@
-# Linearis Billing — Requirements Understanding
+# Trussen Billing — Requirements Understanding
 
 ## Purpose
 
@@ -532,7 +532,7 @@ Recommended answer for item 5:
 
 ## Summary
 
-This is the intended billing behavior for Linearis:
+This is the intended billing behavior for Trussen:
 
 - workspace-based billing
 - `FREE`, `STANDARD`, `PREMIUM`

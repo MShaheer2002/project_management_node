@@ -68,7 +68,7 @@ export async function sendInvitationEmail(params: {
 
   await sendEmail({
     to: params.to,
-    subject: `You've been invited to ${params.workspaceName} on Linearis`,
+    subject: `You've been invited to ${params.workspaceName} on Trussen`,
     html: `
       <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto;">
         <h2>You're invited!</h2>
@@ -84,7 +84,7 @@ export async function sendInvitationEmail(params: {
           </a>
         </p>
         <p style="color: #666; font-size: 14px;">
-          This invitation expires in 7 days. If you don't have a Linearis account,
+          This invitation expires in 7 days. If you don't have a Trussen account,
           you'll be asked to create one first.
         </p>
         <p style="color: #999; font-size: 12px;">

@@ -173,7 +173,7 @@ export async function handleCallback(code: string, state: string) {
     throw new AppError(
       400,
       ERROR_CODES.DRIVE_OAUTH_FAILED,
-      "No refresh token received. Please revoke Linearis access at https://myaccount.google.com/permissions and try again.",
+      "No refresh token received. Please revoke Trussen access at https://myaccount.google.com/permissions and try again.",
     );
   }
 
@@ -518,11 +518,11 @@ async function createFolder(
 
 /**
  * Resolve a folder path in Google Drive, creating folders as needed.
- * Example: ["Linearis", "Acme Corp", "Engineering", "Website Redesign", "VAT-42"]
+ * Example: ["Trussen", "Acme Corp", "Engineering", "Website Redesign", "VAT-42"]
  *
  * Creates:
  *   My Drive/
- *     Linearis/
+ *     Trussen/
  *       Acme Corp/
  *         Engineering/
  *           Website Redesign/
@@ -562,7 +562,7 @@ async function resolveOrCreateFolderPath(
  * The entire upload happens server-side — the access token never leaves the backend.
  *
  * Files are organized in a structured folder hierarchy:
- *   Linearis/{workspaceName}/{teamName}/{projectName}/{issueIdentifier}/file.png
+ *   Trussen/{workspaceName}/{teamName}/{projectName}/{issueIdentifier}/file.png
  *
  * Folders are created on-demand and reused if they already exist.
  *
@@ -590,7 +590,7 @@ export async function uploadFileToDrive(
     : undefined;
 
   // Build multipart/related body for Google Drive API
-  const boundary = `linearis_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  const boundary = `trussen_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const fileMetadata: Record<string, unknown> = {
     name: file.originalname,
     mimeType: file.mimetype,

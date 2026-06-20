@@ -84,7 +84,7 @@ export function buildIssueMessage(params: {
     elements: [
       {
         type: "button",
-        text: { type: "plain_text", text: "View in Linearis" },
+        text: { type: "plain_text", text: "View in Trussen" },
         url: issueUrl,
         action_id: "view_issue",
       },
@@ -142,7 +142,7 @@ export function ephemeralResponse(text: string): { response_type: "ephemeral"; t
 
 /**
  * Parse a slash command text into command + arguments.
- * "/linearis create Fix bug --priority high" -> { command: "create", args: "Fix bug --priority high" }
+ * "/trussen create Fix bug --priority high" -> { command: "create", args: "Fix bug --priority high" }
  */
 export function parseSlashCommand(text: string): { command: string; args: string } {
   const trimmed = text.trim();

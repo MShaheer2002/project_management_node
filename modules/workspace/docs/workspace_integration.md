@@ -27,7 +27,7 @@ This check must happen on every app load (page refresh, returning session), not 
 | Field | Maps To | Validation | Notes |
 |-------|---------|------------|-------|
 | Organization name | `name` | Required, 1-100 chars, trimmed | Free text |
-| Workspace URL | `slug` | Required, 3-50 chars, lowercase letters/numbers/hyphens only, cannot start or end with hyphen | Appended with `.linearis.app` in the UI (visual only — don't send the suffix) |
+| Workspace URL | `slug` | Required, 3-50 chars, lowercase letters/numbers/hyphens only, cannot start or end with hyphen | Appended with `.trussen.app` in the UI (visual only — don't send the suffix) |
 | Team size | `teamSize` | Optional enum: `SMALL`, `MEDIUM`, `LARGE`, `ENTERPRISE` | Maps to: 1-5, 6-20, 21-50, 50+ |
 
 ### Slug Rules the Frontend Should Enforce
@@ -57,7 +57,7 @@ Creating a workspace is not just one record — it sets up the entire initial st
 3. **Default Team** created with the same name as the workspace — the creator becomes the team lead
 4. **TeamMembership** created — the creator is added as a member of the default team
 
-This default team is important because all work in Linearis happens inside teams. Issues, projects, and cycles all belong to a team. Without at least one team, the workspace would be unusable.
+This default team is important because all work in Trussen happens inside teams. Issues, projects, and cycles all belong to a team. Without at least one team, the workspace would be unusable.
 
 The response includes `defaultTeamId` — the frontend should store this alongside the workspace ID. It's needed when:
 - Inviting members (every invite requires a team assignment)
@@ -298,7 +298,7 @@ Admin opens the members page, clicks "Invite", fills in email, role, team, and o
 
 **Step 2: Invitee receives email**
 
-Email contains a link: `https://app.linearis.app/invite?token=<raw-token>`
+Email contains a link: `https://app.trussen.app/invite?token=<raw-token>`
 
 The email shows: "**John Doe** invited you to join **Acme Corp** as a **Member**."
 
@@ -437,7 +437,7 @@ All responses follow this shape:
 
 | Decision | Why |
 |---|---|
-| Slug cannot be changed after creation | Changing slugs would break bookmarks, shared links, and any external references to `<slug>.linearis.app`. Linear doesn't allow it either. |
+| Slug cannot be changed after creation | Changing slugs would break bookmarks, shared links, and any external references to `<slug>.trussen.app`. Linear doesn't allow it either. |
 | Team size is optional | Not every user wants to answer this during onboarding. It's useful for analytics and plan recommendations but shouldn't block workspace creation. |
 | `GET /workspaces` returns role per workspace | Avoids an extra API call. Frontend knows the role immediately and can render UI accordingly. |
 | Invitations are separate from memberships | An invite is not membership. Separation allows revocation, audit trails, and future features (SSO auto-join, domain claims) without refactoring. |

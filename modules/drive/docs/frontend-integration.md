@@ -9,7 +9,7 @@
 
 ```
 ┌─────────────────────┐     ┌─────────────────────────┐     ┌──────────────────┐
-│   React Frontend    │     │   Linearis Backend       │     │  Google Drive API │
+│   React Frontend    │     │   Trussen Backend       │     │  Google Drive API │
 │                     │     │                          │     │                  │
 │  1. Check status ───┼────►│  GET /me/drive           │     │                  │
 │                     │◄────┼── { connected, email }   │     │                  │

@@ -1,5 +1,5 @@
 /**
- * OpenAPI 3.1 Specification for Linearis API
+ * OpenAPI 3.1 Specification for Trussen API
  *
  * This is the MASTER spec file that assembles all route documentation.
  * Only IMPLEMENTED endpoints appear here — as each phase is built,
@@ -37,12 +37,12 @@ import { uploadPaths, uploadSchemas } from "./paths/upload.js";
 export const openApiSpec: Record<string, any> = {
   openapi: "3.1.0",
   info: {
-    title: "Linearis API",
+    title: "Trussen API",
     version: "0.1.0",
     description:
-      "Backend API for Linearis — a SaaS project management platform. All endpoints (except health and webhooks) require authentication via Clerk session tokens. This spec only shows IMPLEMENTED endpoints.",
+      "Backend API for Trussen — a SaaS project management platform. All endpoints (except health and webhooks) require authentication via Clerk session tokens. This spec only shows IMPLEMENTED endpoints.",
     contact: {
-      name: "Linearis Team",
+      name: "Trussen Team",
     },
   },
 

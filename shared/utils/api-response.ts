@@ -1,7 +1,7 @@
 /**
  * API Response Helpers
  *
- * Every API response from Linearis follows a consistent format:
+ * Every API response from Trussen follows a consistent format:
  *
  * Success: { success: true, data: { ... } }
  * Error:   { success: false, error: { code: "...", message: "..." } }

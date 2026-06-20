@@ -1,4 +1,4 @@
-# Linearis — Future Scope Build Phases
+# Trussen — Future Scope Build Phases
 
 ## Purpose
 
@@ -40,7 +40,7 @@ Each future phase should ideally include:
 
 ## FS-1 — Data Import & Migration
 
-**Goal:** Allow teams to move into Linearis from other platforms without recreating their workspace manually.
+**Goal:** Allow teams to move into Trussen from other platforms without recreating their workspace manually.
 
 **Why later:**
 - Useful for adoption, but not required to complete the current integrations roadmap
@@ -70,7 +70,7 @@ Each future phase should ideally include:
 **Out of scope for first version:**
 - Continuous sync back to the source platform
 - Full attachment migration if storage and retry flow are not ready
-- Source-specific custom workflows beyond normalized Linearis mapping
+- Source-specific custom workflows beyond normalized Trussen mapping
 
 **Promotion trigger:**
 - Import becomes necessary for go-to-market, customer migration, or workspace onboarding

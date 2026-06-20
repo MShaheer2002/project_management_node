@@ -1,8 +1,8 @@
-# Linearis — Backend Build Phases
+# Trussen — Backend Build Phases
 
 ## Overview
 
-This document defines the phased delivery plan for the Linearis backend. Each phase is a **vertical slice** — it includes DB models, API routes, service logic, middleware, and tests. No phase is started until the previous one is fully working.
+This document defines the phased delivery plan for the Trussen backend. Each phase is a **vertical slice** — it includes DB models, API routes, service logic, middleware, and tests. No phase is started until the previous one is fully working.
 
 **Architecture:** Modular monolith (Express + Prisma + PostgreSQL + Clerk)
 
@@ -1853,7 +1853,7 @@ Owner/Admin sends invite (email + role)
 
 ### 17.6 Active Workspace Persistence & Recovery
 
-- Last active workspace persisted in localStorage (`linearis-auth` key — already exists)
+- Last active workspace persisted in localStorage (`trussen-auth` key — already exists)
 - On app load / login:
   1. Read stored workspace ID
   2. Verify it still exists and user is still a member (`GET /workspaces`)
@@ -1936,7 +1936,7 @@ DELETE /api-keys/:id                  — Revoke key
 
 ## Phase 19 — Integrations
 
-**Goal:** Connect Linearis to the tools teams already use (GitHub, Slack, Discord, Figma).
+**Goal:** Connect Trussen to the tools teams already use (GitHub, Slack, Discord, Figma).
 
 **Dependency:** Phase 18 complete. API keys enable external system access; integrations build on the same authentication and workspace-scoping infrastructure.
 
@@ -1972,11 +1972,11 @@ Recommended build order: **19a → 19b → 19c → 19d → 19e**
 
 ### 19b — Slack Integration
 
-**User value:** Important updates appear in Slack channels automatically. Engineers create issues and check status from Slack without opening Linearis. Personal DMs for assignments, mentions, and due date reminders.
+**User value:** Important updates appear in Slack channels automatically. Engineers create issues and check status from Slack without opening Trussen. Personal DMs for assignments, mentions, and due date reminders.
 
 **Key behaviors:**
 - Outbound: issue created/completed/assigned, cycle completed, urgent issues → configured channels
-- Inbound: `/linearis create`, `/linearis status LIN-42`, `/linearis my-issues`, `/linearis cycle`
+- Inbound: `/trussen create`, `/trussen status LIN-42`, `/trussen my-issues`, `/trussen cycle`
 - DMs: assignment, mention, due date approaching, issue blocked
 
 ### 19c — Figma Integration
@@ -1986,7 +1986,7 @@ Recommended build order: **19a → 19b → 19c → 19d → 19e**
 **Key behaviors:**
 - Paste Figma URL in issue → rich link with preview, file name, last modified
 - Project-level design tab → all linked Figma files for the project
-- Read-only — Figma remains the design tool, Linearis shows the link
+- Read-only — Figma remains the design tool, Trussen shows the link
 
 ### 19d — Discord Integration
 
@@ -1998,9 +1998,9 @@ Recommended build order: **19a → 19b → 19c → 19d → 19e**
 
 ### 19e — Google Drive Integration (Per-User Storage)
 
-**User value:** Linearis never stores files on its own servers. Each user connects their personal or workspace Google Drive. When they upload an attachment (issue, project doc, workspace doc), the file goes to their Drive and only the shareable link + metadata is stored in the Linearis DB. Zero storage cost, users keep file ownership, and files are accessible via standard Drive sharing rules.
+**User value:** Trussen never stores files on its own servers. Each user connects their personal or workspace Google Drive. When they upload an attachment (issue, project doc, workspace doc), the file goes to their Drive and only the shareable link + metadata is stored in the Trussen DB. Zero storage cost, users keep file ownership, and files are accessible via standard Drive sharing rules.
 
-**Core principle:** Linearis is a **link store**, not a file store. Google Drive is the storage backend. The API receives a Drive file URL after the frontend handles the upload via the Google Drive API (picker + upload).
+**Core principle:** Trussen is a **link store**, not a file store. Google Drive is the storage backend. The API receives a Drive file URL after the frontend handles the upload via the Google Drive API (picker + upload).
 
 **Per-user OAuth flow:**
 1. User clicks "Connect Google Drive" in their profile or settings
@@ -2049,7 +2049,7 @@ POST   /me/drive/upload-url             — Generate a resumable upload URL for 
 4. File is uploaded directly from browser to Google Drive API
    (using the user's access token, proxied through backend for security)
 5. Drive returns file ID + shareable link
-6. Frontend sends metadata to Linearis API:
+6. Frontend sends metadata to Trussen API:
    {
      "driveFileId": "1abc...",
      "driveUrl": "https://drive.google.com/file/d/1abc.../view",
@@ -2116,12 +2116,12 @@ DELETE /attachments/:id                 — Delete attachment record (does NOT d
 - Drive connection is per-user, not per-workspace — user connects once, uploads from any workspace
 - Backend never touches file bytes — frontend uploads directly to Drive API
 - Backend stores only metadata + Drive link (zero storage cost)
-- Deleting an attachment from Linearis does NOT delete the file from Drive (user owns it)
+- Deleting an attachment from Trussen does NOT delete the file from Drive (user owns it)
 - Token refresh is handled transparently — if `access_token` expires, use `refresh_token` automatically
 - If user disconnects Drive, existing attachment links remain functional (they're just URLs)
 - New uploads require active Drive connection
-- File sharing permissions on Drive are the user's responsibility — Linearis shows the link as-is
-- `drive.file` scope ensures Linearis can only access files it created, not the user's entire Drive
+- File sharing permissions on Drive are the user's responsibility — Trussen shows the link as-is
+- `drive.file` scope ensures Trussen can only access files it created, not the user's entire Drive
 - Maximum attachment count per issue: configurable (default 20)
 
 **Security:**
@@ -2163,7 +2163,7 @@ ENCRYPTION_KEY: z.string().min(32),  // for token encryption at rest
 - [ ] GitHub: PR merge auto-completes linked issues end-to-end
 - [ ] GitHub: Commit and branch activity visible on issue detail
 - [ ] Slack: Channel notifications post for key workspace events
-- [ ] Slack: `/linearis create` and `/linearis status` slash commands work
+- [ ] Slack: `/trussen create` and `/trussen status` slash commands work
 - [ ] Figma: Design links show thumbnail previews on issues
 - [ ] Discord: Workspace events post to configured channels
 - [ ] Drive: User can connect/disconnect Google Drive from profile
@@ -2244,10 +2244,10 @@ Resources are data the AI can read to understand the workspace context before ta
 
 | Resource                | URI Pattern                  | Content                                   |
 |-------------------------|------------------------------|-------------------------------------------|
-| Workspace overview      | `linearis://workspace`       | Name, member count, active projects, stats|
-| Issue detail            | `linearis://issues/{id}`     | Full issue with subtasks, comments, labels|
-| Project summary         | `linearis://projects/{id}`   | Status, progress, recent activity         |
-| Current sprint          | `linearis://cycles/current`  | Active cycle, issue breakdown by status   |
+| Workspace overview      | `trussen://workspace`       | Name, member count, active projects, stats|
+| Issue detail            | `trussen://issues/{id}`     | Full issue with subtasks, comments, labels|
+| Project summary         | `trussen://projects/{id}`   | Status, progress, recent activity         |
+| Current sprint          | `trussen://cycles/current`  | Active cycle, issue breakdown by status   |
 
 ### 20.5 Authentication for MCP
 
@@ -2260,7 +2260,7 @@ All MCP tool calls are **workspace-scoped** and **permission-checked** — an AI
 
 ### 20.6 In-App AI Assistant
 
-A guided chatbot in the Linearis UI that uses the MCP tools internally:
+A guided chatbot in the Trussen UI that uses the MCP tools internally:
 
 **Capabilities:**
 - Natural language issue management: *"Create a high-priority bug for the login page crash"*
@@ -2301,7 +2301,7 @@ These use background jobs (queues/workers from Phase 8+) — not blocking the us
 ### Done When
 
 - [ ] MCP server starts and exposes tools to compatible clients
-- [ ] Claude Desktop can connect to Linearis MCP server and manage issues
+- [ ] Claude Desktop can connect to Trussen MCP server and manage issues
 - [ ] API key authentication works for MCP sessions
 - [ ] All tools respect workspace scoping and permissions
 - [ ] In-app AI assistant can create, query, and update issues via natural language

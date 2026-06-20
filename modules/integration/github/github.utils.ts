@@ -52,7 +52,7 @@ export function verifyGitHubSignature(
 }
 
 /**
- * Parse GitHub event payload to extract relevant data for Linearis.
+ * Parse GitHub event payload to extract relevant data for Trussen.
  */
 export interface GitHubCommit {
   sha: string;

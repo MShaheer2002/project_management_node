@@ -6,7 +6,7 @@ Phase 0 through Phase 10 are assumed complete.
 
 ## Goal
 
-Deliver team-scoped cycles as the time-boxed execution layer for Linearis.
+Deliver team-scoped cycles as the time-boxed execution layer for Trussen.
 
 Cycles organize issues into predictable work windows. They are equivalent to sprint-style planning, but must stay aligned with the product model:
 

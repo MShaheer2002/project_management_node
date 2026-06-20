@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Linearis integration module connects external tools (GitHub, Slack, Discord, Figma, and future providers) to workspace workflows. Each provider is fully isolated — its own routes, controller, service, schemas, and notification logic. No shared settings endpoints, no shared validation, no JSON blobs.
+The Trussen integration module connects external tools (GitHub, Slack, Discord, Figma, and future providers) to workspace workflows. Each provider is fully isolated — its own routes, controller, service, schemas, and notification logic. No shared settings endpoints, no shared validation, no JSON blobs.
 
 ## Architecture
 
@@ -239,7 +239,7 @@ modules/integration/
 | `dmOnAssignment` | `true` | DM user when assigned an issue |
 | `dmOnMention` | `true` | DM user when mentioned in a comment |
 | `dmOnDueDateApproaching` | `true` | DM user when due date is near |
-| `slashCommandsEnabled` | `true` | Enable `/linearis` slash commands |
+| `slashCommandsEnabled` | `true` | Enable `/trussen` slash commands |
 
 ### Discord
 
@@ -258,7 +258,7 @@ modules/integration/
 ### How Notification Events Flow
 
 ```
-Issue created in Linearis
+Issue created in Trussen
   │
   ├─ issue.service.ts calls:
   │   dispatchIntegrationEvent(workspaceId, {
@@ -404,9 +404,9 @@ ALTER TYPE "IntegrationProvider" ADD VALUE IF NOT EXISTS 'TEAMS';
 - [ ] Create urgent issue → channel notification posted
 - [ ] Complete issue → channel notification posted
 - [ ] Assign issue → DM sent to assignee (if enabled)
-- [ ] `/linearis help` → shows commands
-- [ ] `/linearis create Test --priority high` → issue created
-- [ ] `/linearis status PREFIX-1` → issue details returned
+- [ ] `/trussen help` → shows commands
+- [ ] `/trussen create Test --priority high` → issue created
+- [ ] `/trussen status PREFIX-1` → issue details returned
 - [ ] Add project channel → project issues go to that channel, not default
 - [ ] Remove project channel → falls back to default
 - [ ] Disconnect → bot token cleared → settings + channels cleared

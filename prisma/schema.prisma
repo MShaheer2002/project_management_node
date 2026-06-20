@@ -1,5 +1,5 @@
 // ============================================================================
-// Linearis — Prisma Schema
+// Trussen — Prisma Schema
 // A SaaS project management platform (Linear clone)
 //
 // Auth: Clerk (external) — our User table syncs via webhooks
@@ -373,7 +373,7 @@ model User {
 /// Workspace — the top-level tenant boundary
 ///
 /// ALL data is scoped to a workspace. One user can belong to multiple workspaces.
-/// The `slug` is globally unique and used in URLs: <slug>.linearis.app
+/// The `slug` is globally unique and used in URLs: <slug>.trussen.app
 /// The `issuePrefix` is a unique uppercase identifier for issue IDs (e.g., "VAT" → VAT-1, VAT-2).
 /// The `issueCounter` is atomically incremented per workspace to generate issue numbers.
 model Workspace {
@@ -1437,12 +1437,12 @@ model BillingWebhookEvent {
 ///
 /// Unlike workspace-scoped integrations (GitHub, Slack), Drive is USER-scoped.
 /// A user connects their Drive once and can upload from any workspace they belong to.
-/// Linearis never stores files — only metadata + Drive links. Zero storage cost.
+/// Trussen never stores files — only metadata + Drive links. Zero storage cost.
 ///
 /// Security:
 ///   - accessToken and refreshToken are encrypted at rest (AES-256-GCM) in the service layer
 ///   - Tokens are NEVER returned in API responses
-///   - `drive.file` scope ensures Linearis can only access files it created
+///   - `drive.file` scope ensures Trussen can only access files it created
 ///   - Disconnect revokes the Google token before deleting the record
 model UserDriveConnection {
   id             String   @id @default(uuid())

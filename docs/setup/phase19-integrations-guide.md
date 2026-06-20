@@ -2,7 +2,7 @@
 
 ## Document Purpose
 
-This document defines the product requirements, user experience, and business value for Linearis integrations. It is organized by sub-phase and written for product managers, designers, and engineers who need to understand what to build, why, and what users should experience — not how to implement it technically.
+This document defines the product requirements, user experience, and business value for Trussen integrations. It is organized by sub-phase and written for product managers, designers, and engineers who need to understand what to build, why, and what users should experience — not how to implement it technically.
 
 ---
 
@@ -14,7 +14,7 @@ Engineering teams live in two worlds: the project management tool where work is 
 
 **The daily pain without GitHub integration:**
 
-A developer finishes a feature. They push code, open a pull request, get it reviewed, and merge. Then they have to open Linearis, find the issue, move it to "Done", and maybe paste the PR link in a comment. They forget half the time. The PM checks the board and sees "In Progress" on something that shipped two days ago. Trust in the board erodes. Standups become status interrogations instead of forward-looking conversations.
+A developer finishes a feature. They push code, open a pull request, get it reviewed, and merge. Then they have to open Trussen, find the issue, move it to "Done", and maybe paste the PR link in a comment. They forget half the time. The PM checks the board and sees "In Progress" on something that shipped two days ago. Trust in the board erodes. Standups become status interrogations instead of forward-looking conversations.
 
 **Who benefits:**
 
@@ -45,7 +45,7 @@ When an ADMIN or OWNER opens **Settings > Integrations**, they see a card for ea
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Clicking **Connect** opens GitHub's authorization page. The user selects which organization and repositories Linearis can access. After authorization, the user returns to Linearis and sees:
+Clicking **Connect** opens GitHub's authorization page. The user selects which organization and repositories Trussen can access. After authorization, the user returns to Trussen and sees:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -96,7 +96,7 @@ Select repositories to link
 
 ## Developer Workflow
 
-This is the core value of GitHub integration — making the developer's existing Git workflow automatically update Linearis.
+This is the core value of GitHub integration — making the developer's existing Git workflow automatically update Trussen.
 
 ### Step-by-Step Example
 
@@ -116,7 +116,7 @@ Project: Mobile App
 git checkout -b feature/LIN-24-fix-login
 ```
 
-Linearis detects the branch name contains `LIN-24` and shows on the issue:
+Trussen detects the branch name contains `LIN-24` and shows on the issue:
 
 ```
 Development
@@ -131,7 +131,7 @@ The issue remains in "Todo" — creating a branch is not starting work (the deve
 git commit -m "LIN-24 fix login crash on iOS Safari"
 ```
 
-After pushing, Linearis shows on the issue:
+After pushing, Trussen shows on the issue:
 
 ```
 Development
@@ -155,7 +155,7 @@ Title: LIN-24 Fix login crash on iOS Safari
 Branch: feature/LIN-24-fix-login → main
 ```
 
-Linearis detects `LIN-24` in the PR title and:
+Trussen detects `LIN-24` in the PR title and:
 1. Links the PR to issue LIN-24
 2. Moves issue status from "Todo" to "Review" (if auto-move is enabled)
 3. Sends notification to the assignee: "PR #142 opened for LIN-24"
@@ -179,14 +179,14 @@ PR #142 — "LIN-24 Fix login crash on iOS Safari"
 acme/mobile-app
 5 minutes ago
 
-Linearis moved this issue to Review
+Trussen moved this issue to Review
 Triggered by PR #142 being opened
 5 minutes ago
 ```
 
 **Step 4: PR is reviewed**
 
-A teammate approves the PR on GitHub. Linearis shows:
+A teammate approves the PR on GitHub. Trussen shows:
 
 ```
 Development
@@ -206,7 +206,7 @@ acme/mobile-app
 
 **Step 5: PR is merged**
 
-The PR is merged on GitHub. Linearis:
+The PR is merged on GitHub. Trussen:
 1. Updates PR status to "Merged"
 2. Moves issue LIN-24 from "Review" to "Done" (if auto-complete is enabled)
 3. Sets `completedAt` timestamp
@@ -232,7 +232,7 @@ just now
 
 ### How Issue References Are Detected
 
-Linearis recognizes `LIN-XXX` in:
+Trussen recognizes `LIN-XXX` in:
 - Branch names: `feature/LIN-24-fix-login`, `bugfix/LIN-24`, `LIN-24-hotfix`
 - Commit messages: `"LIN-24 fix login crash"`, `"Fixes LIN-24"`, `"closes LIN-24"`
 - PR titles: `"LIN-24 Fix login crash"`
@@ -276,12 +276,12 @@ When GitHub activity is linked to an issue, a **Development** section appears on
 
 ## Activity Feed Experience
 
-GitHub events appear alongside regular Linearis activity. Each entry clearly shows the GitHub icon to distinguish it from manual actions.
+GitHub events appear alongside regular Trussen activity. Each entry clearly shows the GitHub icon to distinguish it from manual actions.
 
 ```
 Timeline for LIN-24
 
-  ✅ Linearis completed this issue                              just now
+  ✅ Trussen completed this issue                              just now
      Triggered by PR #142 merge
 
   🔀 PR #142 merged into main                                 2 min ago
@@ -294,7 +294,7 @@ Timeline for LIN-24
      "LIN-24 Fix login crash on iOS Safari"
      acme/mobile-app · feature/LIN-24-fix-login → main
 
-  ➡️ Linearis moved to Review                                 1 hour ago
+  ➡️ Trussen moved to Review                                 1 hour ago
      Triggered by PR #142 being opened
 
   📝 Shaheer pushed 3 commits                                 2 hours ago
@@ -371,7 +371,7 @@ Accessible at **Settings > Integrations > GitHub > Settings**:
 
 ## Team Benefits
 
-- **Zero context switching** — developers never leave their terminal or GitHub to update Linearis
+- **Zero context switching** — developers never leave their terminal or GitHub to update Trussen
 - **Accurate project status** — the board reflects reality because it's driven by code activity, not manual clicks
 - **Accountability without micromanagement** — managers see progress through automated signals, not standups
 - **Faster code review** — reviewers see the full issue context (description, acceptance criteria, designs) linked from the PR
@@ -384,13 +384,13 @@ Accessible at **Settings > Integrations > GitHub > Settings**:
 |---|---|
 | Repository management (create, delete, settings) | GitHub is the source of truth for repository configuration |
 | CI/CD pipeline management | Out of scope — use GitHub Actions, CircleCI, etc. directly |
-| Code review within Linearis | GitHub's review experience is superior and established |
-| Source code viewing or editing | Linearis is not an IDE or code browser |
-| GitHub Issues sync (bidirectional) | Phase 19a is one-directional: GitHub activity → Linearis. Bidirectional sync adds complexity without clear value for teams already using Linearis as their primary tracker |
-| GitHub Projects board sync | Teams should choose one board: Linearis or GitHub Projects, not both |
-| Automatic branch creation from Linearis | Nice-to-have for future. In Phase 19a, developers create branches themselves with the `LIN-XXX` naming convention |
+| Code review within Trussen | GitHub's review experience is superior and established |
+| Source code viewing or editing | Trussen is not an IDE or code browser |
+| GitHub Issues sync (bidirectional) | Phase 19a is one-directional: GitHub activity → Trussen. Bidirectional sync adds complexity without clear value for teams already using Trussen as their primary tracker |
+| GitHub Projects board sync | Teams should choose one board: Trussen or GitHub Projects, not both |
+| Automatic branch creation from Trussen | Nice-to-have for future. In Phase 19a, developers create branches themselves with the `LIN-XXX` naming convention |
 
-**GitHub remains the source of truth for code. Linearis remains the source of truth for work planning.**
+**GitHub remains the source of truth for code. Trussen remains the source of truth for work planning.**
 
 ---
 
@@ -398,20 +398,20 @@ Accessible at **Settings > Integrations > GitHub > Settings**:
 
 ## Why Teams Need Slack Integration
 
-Slack is where teams communicate. Linearis is where teams plan. Without integration, important work updates get buried in Slack threads that no one can find later, and issue status updates require leaving a conversation to open another tool.
+Slack is where teams communicate. Trussen is where teams plan. Without integration, important work updates get buried in Slack threads that no one can find later, and issue status updates require leaving a conversation to open another tool.
 
 **The daily pain without Slack integration:**
 
-A PM asks in #engineering: "What's the status of the login fix?" Three people respond with different levels of detail. Someone says "I think it's done?" Someone else says "PR is open." Nobody is sure. The PM opens Linearis to check. The board says "In Progress" because nobody remembered to update it.
+A PM asks in #engineering: "What's the status of the login fix?" Three people respond with different levels of detail. Someone says "I think it's done?" Someone else says "PR is open." Nobody is sure. The PM opens Trussen to check. The board says "In Progress" because nobody remembered to update it.
 
-Meanwhile, the on-call engineer gets paged about a production issue. They create the issue in Linearis, but nobody in #incidents knows about it. They have to post in Slack separately, creating duplicate information that will drift apart.
+Meanwhile, the on-call engineer gets paged about a production issue. They create the issue in Trussen, but nobody in #incidents knows about it. They have to post in Slack separately, creating duplicate information that will drift apart.
 
 **Who benefits:**
 
 | Role | Benefit |
 |---|---|
 | **Everyone** | Important updates appear where the team already is — Slack |
-| **PMs** | Get project updates in Slack without checking Linearis constantly |
+| **PMs** | Get project updates in Slack without checking Trussen constantly |
 | **Engineers** | Create and manage issues without leaving Slack |
 | **Engineering Managers** | See cycle completions, blockers, and urgent issues in team channels |
 | **Remote Teams** | Async-friendly: updates post to channels automatically regardless of timezone |
@@ -447,9 +447,9 @@ Clicking **Connect** on the Slack card initiates Slack's OAuth flow. After autho
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## Linearis to Slack — Outbound Messages
+## Trussen to Slack — Outbound Messages
 
-When events happen in Linearis, formatted messages are posted to configured Slack channels.
+When events happen in Trussen, formatted messages are posted to configured Slack channels.
 
 ### Issue Created (High/Urgent Priority)
 
@@ -464,7 +464,7 @@ When events happen in Linearis, formatted messages are posted to configured Slac
 │  Assignee:   Ali Khan                                        │
 │  Created by: Shaheer Qureshi                                 │
 │                                                              │
-│  [View in Linearis]                                          │
+│  [View in Trussen]                                          │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -523,19 +523,19 @@ When events happen in Linearis, formatted messages are posted to configured Slac
 │  "Hey @Ali can you review the Safari detection logic?        │
 │   I'm not sure if we need a polyfill here."                  │
 │                                                              │
-│  [Reply in Linearis]                                         │
+│  [Reply in Trussen]                                         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## Slack to Linearis — Slash Commands
+## Slack to Trussen — Slash Commands
 
 ### Create Issue
 
 ```
-/linearis create Fix payment gateway timeout --priority high --project "Payment Service"
+/trussen create Fix payment gateway timeout --priority high --project "Payment Service"
 ```
 
-Linearis responds (ephemeral, only visible to the command user):
+Trussen responds (ephemeral, only visible to the command user):
 
 ```
 ✅ Issue created
@@ -544,13 +544,13 @@ LIN-91 Fix payment gateway timeout
 Priority: High · Project: Payment Service · Status: Backlog
 Assigned to: you
 
-[View in Linearis]
+[View in Trussen]
 ```
 
 ### Check Issue Status
 
 ```
-/linearis status LIN-24
+/trussen status LIN-24
 ```
 
 Response:
@@ -567,13 +567,13 @@ Updated:   2 hours ago
 Development:
   🔀 PR #142 — Merged ✅
 
-[View in Linearis]
+[View in Trussen]
 ```
 
 ### View My Issues
 
 ```
-/linearis my-issues
+/trussen my-issues
 ```
 
 Response:
@@ -586,13 +586,13 @@ Your Open Issues (4)
 🔵 LIN-78 Update user onboarding flow          Medium · Review
 🔵 LIN-72 Refactor notification service        Medium · Todo
 
-[View All in Linearis]
+[View All in Trussen]
 ```
 
 ### View Cycle Progress
 
 ```
-/linearis cycle
+/trussen cycle
 ```
 
 Response:
@@ -607,12 +607,12 @@ Progress: ████████░░░░ 67% (12/18 issues)
 🔄 In Progress: 3
 📋 Todo: 3
 
-[View Cycle in Linearis]
+[View Cycle in Trussen]
 ```
 
 ## Direct Message Experience
 
-Personal notifications are sent as Slack DMs to the user (matched by email address between Linearis and Slack).
+Personal notifications are sent as Slack DMs to the user (matched by email address between Trussen and Slack).
 
 **Examples of DM notifications:**
 
@@ -666,10 +666,10 @@ Personal notifications are sent as Slack DMs to the user (matched by email addre
 │                                                              │
 │  Slash Commands                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │ ☑ /linearis create                                  │   │
-│  │ ☑ /linearis status                                  │   │
-│  │ ☑ /linearis my-issues                               │   │
-│  │ ☑ /linearis cycle                                   │   │
+│  │ ☑ /trussen create                                  │   │
+│  │ ☑ /trussen status                                  │   │
+│  │ ☑ /trussen my-issues                               │   │
+│  │ ☑ /trussen cycle                                   │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                              │
 │  [Disconnect Slack]                                          │
@@ -680,8 +680,8 @@ Personal notifications are sent as Slack DMs to the user (matched by email addre
 
 - **Visibility without effort** — important updates show up where the team already communicates
 - **Faster incident response** — urgent issues immediately appear in #incidents
-- **Quick actions from Slack** — create issues, check status, view sprint progress without opening Linearis
-- **DM notifications** — personal notifications reach you even when you're not in Linearis
+- **Quick actions from Slack** — create issues, check status, view sprint progress without opening Trussen
+- **DM notifications** — personal notifications reach you even when you're not in Trussen
 - **Async-friendly** — channel posts create a timeline of project progress that any timezone can catch up on
 - **Meeting reduction** — automated cycle summaries and project completions replace many status meetings
 
@@ -689,13 +689,13 @@ Personal notifications are sent as Slack DMs to the user (matched by email addre
 
 | Not Included | Reason |
 |---|---|
-| Full issue management in Slack | Slack is a companion, not a replacement for Linearis. Complex workflows (drag to reorder, bulk edit, roadmap planning) belong in the app |
-| Bidirectional comment sync | Comments posted in Slack do not create comments in Linearis. Reply in Linearis when you need the context preserved |
-| Slack channel creation/management | Linearis does not manage your Slack workspace structure |
-| File sharing through Slack | Use Linearis attachments for project files |
-| User provisioning from Slack | Team membership is managed in Linearis, not derived from Slack channels |
+| Full issue management in Slack | Slack is a companion, not a replacement for Trussen. Complex workflows (drag to reorder, bulk edit, roadmap planning) belong in the app |
+| Bidirectional comment sync | Comments posted in Slack do not create comments in Trussen. Reply in Trussen when you need the context preserved |
+| Slack channel creation/management | Trussen does not manage your Slack workspace structure |
+| File sharing through Slack | Use Trussen attachments for project files |
+| User provisioning from Slack | Team membership is managed in Trussen, not derived from Slack channels |
 
-**Slack acts as a companion experience — a notification destination and quick-action surface. Linearis remains the source of truth for all project data.**
+**Slack acts as a companion experience — a notification destination and quick-action surface. Trussen remains the source of truth for all project data.**
 
 ---
 
@@ -718,7 +718,7 @@ Design and development are sequential: designs are created first, then implement
 
 ### Linking Designs to Projects
 
-A designer working on the Mobile App project opens the project in Linearis and navigates to the **Designs** tab:
+A designer working on the Mobile App project opens the project in Trussen and navigates to the **Designs** tab:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -748,7 +748,7 @@ A designer working on the Mobile App project opens the project in Linearis and n
 
 ### Linking Designs to Issues
 
-When creating or editing an issue, a designer can paste a Figma URL and Linearis automatically creates a rich link:
+When creating or editing an issue, a designer can paste a Figma URL and Trussen automatically creates a rich link:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -772,7 +772,7 @@ When creating or editing an issue, a designer can paste a Figma URL and Linearis
 
 ## Design Preview Experience
 
-When a Figma link is attached to an issue, Linearis displays:
+When a Figma link is attached to an issue, Trussen displays:
 
 - **Thumbnail preview** — a visual snapshot of the linked frame/page
 - **File name** — "Checkout Flow v2"
@@ -781,7 +781,7 @@ When a Figma link is attached to an issue, Linearis displays:
 - **Frame count** — how many frames/pages in the file (if applicable)
 - **Open in Figma** — direct link to the exact frame in Figma
 
-Clicking the preview opens a larger preview modal within Linearis. Clicking "Open in Figma" opens the file directly in Figma.
+Clicking the preview opens a larger preview modal within Trussen. Clicking "Open in Figma" opens the file directly in Figma.
 
 ## Collaboration Benefits
 
@@ -812,14 +812,14 @@ Clicking the preview opens a larger preview modal within Linearis. Clicking "Ope
 
 | Not Included | Reason |
 |---|---|
-| Design editing within Linearis | Figma is the design tool. Linearis is a link and preview surface. |
-| Design file management | No creating, deleting, or organizing Figma files from Linearis |
+| Design editing within Trussen | Figma is the design tool. Trussen is a link and preview surface. |
+| Design file management | No creating, deleting, or organizing Figma files from Trussen |
 | Design version comparison | Use Figma's built-in version history |
 | Design-to-code export | Out of scope for a project management tool |
 | Real-time design sync | Thumbnails are fetched on demand, not continuously synced |
 | Design review/approval workflow | Use Figma's comment and annotation features |
 
-**Figma remains the source of truth for design. Linearis provides the bridge between design intent and development execution.**
+**Figma remains the source of truth for design. Trussen provides the bridge between design intent and development execution.**
 
 ---
 
@@ -836,7 +836,7 @@ Many engineering teams, open-source communities, and startups use Discord as the
 
 ## Workspace Connection Experience
 
-Connecting Discord uses a webhook-based approach. The admin creates one or more Discord webhooks and pastes them into Linearis for default, urgent, project, or team routing:
+Connecting Discord uses a webhook-based approach. The admin creates one or more Discord webhooks and pastes them into Trussen for default, urgent, project, or team routing:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -856,7 +856,7 @@ Connecting Discord uses a webhook-based approach. The admin creates one or more 
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## Linearis to Discord — Outbound Messages
+## Trussen to Discord — Outbound Messages
 
 ### New Issue (Urgent/High)
 
@@ -872,9 +872,9 @@ Connecting Discord uses a webhook-based approach. The admin creates one or more 
 │  Project    Payment Service                                  │
 │  Created    Shaheer Qureshi                                  │
 │                                                              │
-│  🔗 View in Linearis                                        │
+│  🔗 View in Trussen                                        │
 │                                                              │
-│  Linearis · just now                                         │
+│  Trussen · just now                                         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -894,7 +894,7 @@ Connecting Discord uses a webhook-based approach. The admin creates one or more 
 │                                                              │
 │  🔗 View Summary                                            │
 │                                                              │
-│  Linearis · just now                                         │
+│  Trussen · just now                                         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -911,7 +911,7 @@ Connecting Discord uses a webhook-based approach. The admin creates one or more 
 │                                                              │
 │  🔗 View Project                                            │
 │                                                              │
-│  Linearis · just now                                         │
+│  Trussen · just now                                         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -927,9 +927,9 @@ Connecting Discord uses a webhook-based approach. The admin creates one or more 
 | Not Included | Reason |
 |---|---|
 | Slash commands in Discord | Phase 19d is outbound-only. Slash commands may be added later |
-| Direct messages | Discord DMs are not used for personal notifications — use the Linearis inbox |
-| Bidirectional sync | Discord messages do not create or modify Linearis data |
-| Thread management | Discord threads are not linked to Linearis issues |
+| Direct messages | Discord DMs are not used for personal notifications — use the Trussen inbox |
+| Bidirectional sync | Discord messages do not create or modify Trussen data |
+| Thread management | Discord threads are not linked to Trussen issues |
 | Voice channel integration | Out of scope for project management |
 
 **Discord acts primarily as a notification destination — a one-way broadcast channel for workspace events.**
@@ -940,7 +940,7 @@ Connecting Discord uses a webhook-based approach. The admin creates one or more 
 
 ## Why Teams Need Importing
 
-Teams switch project management tools for many reasons: the current tool is too complex (Jira), too limited (Trello), too expensive (Asana at scale), or the team simply wants a better experience (migrating to Linearis).
+Teams switch project management tools for many reasons: the current tool is too complex (Jira), too limited (Trello), too expensive (Asana at scale), or the team simply wants a better experience (migrating to Trussen).
 
 The biggest barrier to switching is the migration cost. Teams have months or years of project history, hundreds or thousands of issues, carefully organized labels, sprint data, and team structures. Starting from zero is not an option.
 
@@ -954,7 +954,7 @@ The biggest barrier to switching is the migration cost. Teams have months or yea
 - Teams import their existing data in minutes, not weeks
 - Hit the ground running with full history intact
 - Zero disruption to ongoing work — import over lunch, switch the next morning
-- Decision to try Linearis becomes low-risk: "if we don't like it, we haven't lost anything"
+- Decision to try Trussen becomes low-risk: "if we don't like it, we haven't lost anything"
 
 ## Supported Sources
 
@@ -976,7 +976,7 @@ The admin opens **Settings > Import Data** and sees:
 ┌──────────────────────────────────────────────────────────────┐
 │  Import Data                                                 │
 │                                                              │
-│  Bring your existing projects and issues into Linearis.      │
+│  Bring your existing projects and issues into Trussen.      │
 │  Select where you're migrating from:                         │
 │                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐                  │
@@ -999,11 +999,11 @@ The admin opens **Settings > Import Data** and sees:
 
 ### Step 2: Authenticate
 
-After selecting a source (e.g., Linear), the admin authorizes Linearis to read their Linear workspace. This uses read-only access — Linearis never modifies the source.
+After selecting a source (e.g., Linear), the admin authorizes Trussen to read their Linear workspace. This uses read-only access — Trussen never modifies the source.
 
 ### Step 3: Preview
 
-Linearis fetches the source workspace data and shows a preview:
+Trussen fetches the source workspace data and shows a preview:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -1042,7 +1042,7 @@ Linearis fetches the source workspace data and shows a preview:
 
 ### Step 4: Mapping
 
-The admin maps source data to Linearis equivalents:
+The admin maps source data to Trussen equivalents:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -1050,7 +1050,7 @@ The admin maps source data to Linearis equivalents:
 │                                                              │
 │  Status Mapping                                              │
 │  ┌─────────────────────┬─────────────────────┐              │
-│  │ Linear              │ Linearis            │              │
+│  │ Linear              │ Trussen            │              │
 │  ├─────────────────────┼─────────────────────┤              │
 │  │ Backlog             │ Backlog        [v]  │              │
 │  │ Todo                │ Todo           [v]  │              │
@@ -1062,7 +1062,7 @@ The admin maps source data to Linearis equivalents:
 │                                                              │
 │  Priority Mapping                                            │
 │  ┌─────────────────────┬─────────────────────┐              │
-│  │ Linear              │ Linearis            │              │
+│  │ Linear              │ Trussen            │              │
 │  ├─────────────────────┼─────────────────────┤              │
 │  │ Urgent              │ Urgent         [v]  │              │
 │  │ High                │ High           [v]  │              │
@@ -1073,7 +1073,7 @@ The admin maps source data to Linearis equivalents:
 │                                                              │
 │  Team Mapping                                                │
 │  ┌─────────────────────┬─────────────────────┐              │
-│  │ Linear Team         │ Linearis Team       │              │
+│  │ Linear Team         │ Trussen Team       │              │
 │  ├─────────────────────┼─────────────────────┤              │
 │  │ Backend             │ Backend        [v]  │              │
 │  │ Frontend            │ Frontend       [v]  │              │
@@ -1192,24 +1192,24 @@ Past imports are visible at **Settings > Import Data > Import History**:
 
 ## Team Benefits
 
-- **Zero-friction migration** — switch to Linearis without losing months of project history
+- **Zero-friction migration** — switch to Trussen without losing months of project history
 - **Preserve institutional knowledge** — comments, discussions, and decisions travel with the issues
 - **Accurate velocity from day one** — imported sprint data gives meaningful baselines
-- **Low-risk trial** — import your data, try Linearis for a week, decide without fear of data loss
+- **Low-risk trial** — import your data, try Trussen for a week, decide without fear of data loss
 - **Gradual migration** — import one team's projects first, expand once the team is comfortable
 
 ## What Is NOT Included
 
 | Not Included | Reason |
 |---|---|
-| Ongoing synchronization | Import is a one-time migration, not continuous sync. After import, Linearis is the source of truth. |
-| Export back to source | Linearis does not export data back to Linear/Jira/etc. |
+| Ongoing synchronization | Import is a one-time migration, not continuous sync. After import, Trussen is the source of truth. |
+| Export back to source | Trussen does not export data back to Linear/Jira/etc. |
 | Attachment migration (Phase 19e v1) | File attachments are referenced but not re-uploaded in the initial version. URLs are preserved. |
-| User account creation | Import matches members by email. Users not in Linearis must be invited separately. |
+| User account creation | Import matches members by email. Users not in Trussen must be invited separately. |
 | Custom field migration | Source-specific custom fields are preserved in issue metadata but not displayed as first-class fields |
 | Webhook/integration migration | Source tool integrations (e.g., Linear's GitHub integration) are not migrated |
 
-**Importing is a one-time migration event, not ongoing synchronization. After import, Linearis becomes the single source of truth.**
+**Importing is a one-time migration event, not ongoing synchronization. After import, Trussen becomes the single source of truth.**
 
 ---
 

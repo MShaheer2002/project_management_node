@@ -11,7 +11,7 @@ The Slack integration backend is implemented. This guide tells the frontend exac
 | **OAuth connect** | `POST /integrations/slack/connect` → returns Slack auth URL → user authorizes → callback stores bot token |
 | **Channel notifications** | When issues are created/completed/assigned or cycles start/complete, messages post to configured Slack channel |
 | **Personal DMs** | When a user is assigned, mentioned, or has a due date approaching — DM sent to their Slack (matched by email) |
-| **Slash commands** | `/linearis create`, `/linearis status TES-1`, `/linearis my-issues`, `/linearis cycle` |
+| **Slash commands** | `/trussen create`, `/trussen status TES-1`, `/trussen my-issues`, `/trussen cycle` |
 | **Disconnect** | Clears all tokens and settings |
 
 ## Backend Endpoints
@@ -35,7 +35,7 @@ Identical pattern to GitHub:
 2. Frontend calls POST /integrations/slack/connect
 3. Backend returns { authUrl: "https://slack.com/oauth/v2/authorize?..." }
 4. Frontend redirects: window.location.href = authUrl
-5. User authorizes Linearis in Slack
+5. User authorizes Trussen in Slack
 6. Slack redirects to backend: /integrations/slack/callback?code=xxx&state=xxx
 7. Backend exchanges code for bot token, stores it
 8. Backend redirects to: http://localhost:3000/integrations?provider=slack&status=connected
@@ -70,7 +70,7 @@ After connecting, the admin can configure these settings via `PATCH /integration
 
 | Setting | Default | Description |
 |---|---|---|
-| `slashCommandsEnabled` | `true` | Enable `/linearis` slash commands |
+| `slashCommandsEnabled` | `true` | Enable `/trussen` slash commands |
 
 ### Request Example
 
@@ -130,7 +130,7 @@ When the admin clicks "Settings" on the connected Slack card:
 │                                                              │
 │  Slash Commands                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │ Enable /linearis commands in Slack              [✓] │   │
+│  │ Enable /trussen commands in Slack              [✓] │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                              │
 │  Connection                                                  │
@@ -145,7 +145,7 @@ When the admin clicks "Settings" on the connected Slack card:
 
 These commands work automatically once Slack is connected. No frontend work needed — they're handled entirely between Slack and the backend.
 
-### `/linearis create Fix payment timeout --priority high`
+### `/trussen create Fix payment timeout --priority high`
 
 Response in Slack:
 ```
@@ -154,7 +154,7 @@ TES-6 Fix payment timeout
 Priority: HIGH · Project: API Service
 ```
 
-### `/linearis status TES-1`
+### `/trussen status TES-1`
 
 Response:
 ```
@@ -163,7 +163,7 @@ Status: TODO · Priority: MEDIUM
 Assignee: Muhammad Shaheer · Project: Test Project
 ```
 
-### `/linearis my-issues`
+### `/trussen my-issues`
 
 Response:
 ```
@@ -174,7 +174,7 @@ Your Open Issues (3)
 🔵 TES-1 Test for git — TODO
 ```
 
-### `/linearis cycle`
+### `/trussen cycle`
 
 Response:
 ```
@@ -185,22 +185,22 @@ Jun 15 – Jun 28
 ✅ Done: 12 · 🔄 Remaining: 6
 ```
 
-### `/linearis help`
+### `/trussen help`
 
 Response:
 ```
-Linearis Commands
+Trussen Commands
 
-/linearis create <title> --priority <low|medium|high|urgent> — Create an issue
-/linearis status <TES-1> — Check issue status
-/linearis my-issues — View your open issues
-/linearis cycle — View current cycle progress
-/linearis help — Show this help message
+/trussen create <title> --priority <low|medium|high|urgent> — Create an issue
+/trussen status <TES-1> — Check issue status
+/trussen my-issues — View your open issues
+/trussen cycle — View current cycle progress
+/trussen help — Show this help message
 ```
 
 ## Outbound Message Examples — What Appears in Slack Channels
 
-These messages post automatically when events happen in Linearis. No frontend work needed — the backend sends them.
+These messages post automatically when events happen in Trussen. No frontend work needed — the backend sends them.
 
 ### Urgent Issue Created
 
@@ -213,7 +213,7 @@ Assignee    Ali Khan
 Project     Payment Service
 Created by  Shaheer Qureshi
 
-[View in Linearis]
+[View in Trussen]
 ```
 
 ### Issue Completed
@@ -225,7 +225,7 @@ TES-5 Fix login bug
 Completed by  Shaheer Qureshi
 Project       Mobile App
 
-[View in Linearis]
+[View in Trussen]
 ```
 
 ### Cycle Completed
@@ -240,7 +240,7 @@ Issues      18
 Completed   16
 Velocity    89%
 
-[View in Linearis]
+[View in Trussen]
 ```
 
 ## Slack App Setup (Required Before Testing)
@@ -250,15 +250,15 @@ The backend code is ready, but a Slack App must be created in the Slack API dash
 ### Steps
 
 1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch**
-2. App name: `Linearis`, pick your Slack workspace
+2. App name: `Trussen`, pick your Slack workspace
 3. **OAuth & Permissions** → Add Bot Token Scopes:
    - `chat:write`, `chat:write.public`, `commands`, `users:read`, `users:read.email`, `im:write`
 4. **OAuth & Permissions** → Add Redirect URL:
    - `https://<your-ngrok-or-backend-url>/integrations/slack/callback`
 5. **Slash Commands** → Create New Command:
-   - Command: `/linearis`
+   - Command: `/trussen`
    - Request URL: `https://<your-ngrok-or-backend-url>/webhooks/slack/commands`
-   - Short Description: `Manage Linearis issues`
+   - Short Description: `Manage Trussen issues`
    - Usage Hint: `create | status | my-issues | cycle | help`
 6. **Basic Information** → Copy the **Signing Secret**
 7. **OAuth & Permissions** → Copy **Client ID** and **Client Secret**
@@ -277,18 +277,18 @@ The backend code is ready, but a Slack App must be created in the Slack API dash
 
 ## How Slash Commands Resolve Users
 
-When a developer types `/linearis my-issues` in Slack, the backend resolves their identity:
+When a developer types `/trussen my-issues` in Slack, the backend resolves their identity:
 
 1. Slack sends the Slack `user_id` with the command
 2. Backend calls Slack API `users.info` to get the user's email
-3. Backend looks up that email in the Linearis User table
+3. Backend looks up that email in the Trussen User table
 4. If found AND the user is a workspace member → commands run as that user
 5. If not found → falls back to the admin who connected Slack
 
 This means:
-- `/linearis my-issues` shows the actual developer's issues, not the admin's
-- `/linearis create` attributes the issue to the actual developer
-- If a Slack user isn't in Linearis, commands still work but are attributed to the admin
+- `/trussen my-issues` shows the actual developer's issues, not the admin's
+- `/trussen create` attributes the issue to the actual developer
+- If a Slack user isn't in Trussen, commands still work but are attributed to the admin
 
 ## Frontend Changes Needed
 
@@ -339,9 +339,9 @@ Existing disconnect flow already works for Slack — same endpoint pattern.
 
 ## How DMs Are Matched
 
-The backend matches Linearis users to Slack users **by email address**. When a user is assigned an issue in Linearis, the backend:
+The backend matches Trussen users to Slack users **by email address**. When a user is assigned an issue in Trussen, the backend:
 
-1. Gets the assignee's email from the Linearis User table
+1. Gets the assignee's email from the Trussen User table
 2. Calls `Slack users.lookupByEmail` API
 3. If found → opens a DM channel and sends the notification
 4. If not found → silently skips (user is not in the Slack workspace)
@@ -355,7 +355,7 @@ No frontend work needed for this — it's entirely backend-driven.
 3. **Build `SlackSettingsPanel`** — 9 toggles in 3 groups
 4. **Test OAuth flow** — connect, verify toast, verify settings button appears
 5. **Test disconnect** — verify clean disconnect
-6. **Test slash commands in Slack** — `/linearis help`, `/linearis create`, etc.
+6. **Test slash commands in Slack** — `/trussen help`, `/trussen create`, etc.
 7. **Test channel notifications** — create an urgent issue, verify Slack channel post
 
 ## Done When
@@ -364,10 +364,10 @@ No frontend work needed for this — it's entirely backend-driven.
 - [ ] Slack card shows "Connected" with workspace name
 - [ ] Settings panel shows all 9 toggles
 - [ ] Disconnect cleans up and shows "Not Connected"
-- [ ] `/linearis create` creates an issue from Slack
-- [ ] `/linearis status TES-1` returns issue details
-- [ ] `/linearis my-issues` returns open issues
-- [ ] `/linearis cycle` returns cycle progress
+- [ ] `/trussen create` creates an issue from Slack
+- [ ] `/trussen status TES-1` returns issue details
+- [ ] `/trussen my-issues` returns open issues
+- [ ] `/trussen cycle` returns cycle progress
 - [ ] Urgent issue creation posts to configured Slack channel
 - [ ] Issue completion posts to configured Slack channel
 - [ ] DM sent when user is assigned an issue

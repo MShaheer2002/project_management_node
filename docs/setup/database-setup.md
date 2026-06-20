@@ -1,8 +1,8 @@
-# Linearis — Database Setup & Schema Design
+# Trussen — Database Setup & Schema Design
 
 ## 1. Overview
 
-This document defines the PostgreSQL database setup, Prisma schema design, relations, indexing strategy, and conventions for the Linearis backend. All models are derived from the [Product Scope Document](../product/project-scope.md).
+This document defines the PostgreSQL database setup, Prisma schema design, relations, indexing strategy, and conventions for the Trussen backend. All models are derived from the [Product Scope Document](../product/project-scope.md).
 
 **Stack:**
 - **Database:** PostgreSQL 16+
@@ -942,7 +942,7 @@ Since models have dependencies, the initial migration should create everything i
 
 ```env
 # Database
-DATABASE_URL="postgresql://user:password@localhost:5432/linearis_dev"
+DATABASE_URL="postgresql://user:password@localhost:5432/trussen_dev"
 
 # Clerk (auth provider)
 CLERK_PUBLISHABLE_KEY="pk_test_..."

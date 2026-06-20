@@ -1,10 +1,10 @@
 /**
  * Slack Integration — Slash Command Handling
  *
- * Processes /linearis slash commands from Slack:
+ * Processes /trussen slash commands from Slack:
  *   create, status, my-issues, cycle, help
  *
- * Resolves the Slack user to a Linearis user by email lookup.
+ * Resolves the Slack user to a Trussen user by email lookup.
  */
 
 import { prisma } from "../../../shared/utils/prisma.js";
@@ -15,7 +15,7 @@ import { parseSlashCommand, parseCommandFlags, ephemeralResponse } from "./slack
 // ─── Main Handler ───────────────────────────────────────────────────────────
 
 /**
- * Handle /linearis slash command.
+ * Handle /trussen slash command.
  * Returns a Slack response object (ephemeral message).
  */
 export async function handleSlashCommand(body: {
@@ -42,7 +42,7 @@ export async function handleSlashCommand(body: {
   }) ?? integrations[0]; // Fallback to first if single workspace
 
   if (!integration) {
-    return ephemeralResponse(":x: No Linearis workspace is connected to this Slack workspace.");
+    return ephemeralResponse(":x: No Trussen workspace is connected to this Slack workspace.");
   }
 
   const settings = await getSettings(integration.id);
@@ -53,7 +53,7 @@ export async function handleSlashCommand(body: {
   const workspaceId = integration.workspaceId;
   const token = integration.accessToken!;
 
-  // Resolve the Slack user to a Linearis user by email
+  // Resolve the Slack user to a Trussen user by email
   let actorId = integration.connectedById!; // Fallback to admin
   try {
     const slackUserResponse = await fetch(
@@ -66,18 +66,18 @@ export async function handleSlashCommand(body: {
     };
 
     if (slackUserData.ok && slackUserData.user?.profile?.email) {
-      const linearisUser = await prisma.user.findUnique({
+      const trussenUser = await prisma.user.findUnique({
         where: { email: slackUserData.user.profile.email.toLowerCase() },
         select: { id: true },
       });
-      if (linearisUser) {
+      if (trussenUser) {
         // Verify user is a member of this workspace
         const membership = await prisma.workspaceMembership.findUnique({
-          where: { userId_workspaceId: { userId: linearisUser.id, workspaceId } },
+          where: { userId_workspaceId: { userId: trussenUser.id, workspaceId } },
           select: { userId: true },
         });
         if (membership) {
-          actorId = linearisUser.id;
+          actorId = trussenUser.id;
         }
       }
     }
@@ -100,7 +100,7 @@ export async function handleSlashCommand(body: {
       return handleHelpCommand();
     default:
       return ephemeralResponse(
-        `:question: Unknown command \`${subCommand}\`. Type \`/linearis help\` for available commands.`,
+        `:question: Unknown command \`${subCommand}\`. Type \`/trussen help\` for available commands.`,
       );
   }
 }
@@ -109,7 +109,7 @@ export async function handleSlashCommand(body: {
 
 export async function handleCreateCommand(workspaceId: string, actorId: string, args: string) {
   if (!args) {
-    return ephemeralResponse(":x: Usage: `/linearis create Fix the bug --priority high`");
+    return ephemeralResponse(":x: Usage: `/trussen create Fix the bug --priority high`");
   }
 
   const { text: rawTitle, flags } = parseCommandFlags(args);
@@ -176,7 +176,7 @@ export async function handleCreateCommand(workspaceId: string, actorId: string, 
 export async function handleStatusCommand(workspaceId: string, args: string) {
   const issueRef = args.trim().toUpperCase();
   if (!issueRef) {
-    return ephemeralResponse(":x: Usage: `/linearis status TES-1`");
+    return ephemeralResponse(":x: Usage: `/trussen status TES-1`");
   }
 
   const issue = await prisma.issue.findFirst({
@@ -288,11 +288,11 @@ export async function handleCycleCommand(workspaceId: string) {
 
 export function handleHelpCommand() {
   return ephemeralResponse(
-    "*Linearis Commands*\n\n" +
-    "`/linearis create <title> --priority <low|medium|high|urgent>` \u2014 Create an issue\n" +
-    "`/linearis status <TES-1>` \u2014 Check issue status\n" +
-    "`/linearis my-issues` \u2014 View your open issues\n" +
-    "`/linearis cycle` \u2014 View current cycle progress\n" +
-    "`/linearis help` \u2014 Show this help message",
+    "*Trussen Commands*\n\n" +
+    "`/trussen create <title> --priority <low|medium|high|urgent>` \u2014 Create an issue\n" +
+    "`/trussen status <TES-1>` \u2014 Check issue status\n" +
+    "`/trussen my-issues` \u2014 View your open issues\n" +
+    "`/trussen cycle` \u2014 View current cycle progress\n" +
+    "`/trussen help` \u2014 Show this help message",
   );
 }

@@ -1,6 +1,6 @@
 # Auth Integration Guide
 
-> Complete guide for integrating Clerk authentication between the frontend (custom UI) and the Linearis backend.
+> Complete guide for integrating Clerk authentication between the frontend (custom UI) and the Trussen backend.
 > This covers the full flow from sign-up to authenticated API calls.
 
 ---

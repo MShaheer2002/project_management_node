@@ -116,7 +116,7 @@ export const disconnect: RequestHandler = async (req, res, next) => {
  * access token (auto-refreshed). Token NEVER leaves the server.
  *
  * Folder structure created in the user's Drive:
- *   Linearis/{workspaceName}/{teamName}/{projectName}/{issueIdentifier}/file.png
+ *   Trussen/{workspaceName}/{teamName}/{projectName}/{issueIdentifier}/file.png
  *
  * Each segment is optional — only provided segments create folders.
  * Folders are reused if they already exist (find-or-create).
@@ -136,7 +136,7 @@ export const upload: RequestHandler = async (req, res, next) => {
     }
 
     // Build folder path from form fields
-    const folderPath: string[] = ["Linearis"];
+    const folderPath: string[] = ["Trussen"];
     if (req.body.workspaceName) folderPath.push(String(req.body.workspaceName).trim());
     if (req.body.teamName) folderPath.push(String(req.body.teamName).trim());
     if (req.body.projectName) folderPath.push(String(req.body.projectName).trim());
@@ -162,7 +162,7 @@ export const upload: RequestHandler = async (req, res, next) => {
 /**
  * PATCH /me/drive/rename — Rename a file in the user's Google Drive
  *
- * Only works for files created by Linearis (drive.file scope).
+ * Only works for files created by Trussen (drive.file scope).
  * Request body: { fileId: string, newName: string }
  */
 export const rename: RequestHandler = async (req, res, next) => {

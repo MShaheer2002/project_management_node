@@ -2,7 +2,7 @@
 
 ## Overview
 
-Discord integration is **outbound-only** — Linearis sends notifications to Discord channels via webhook URLs. There's no OAuth flow. The user pastes a Discord webhook URL, and Linearis posts rich embeds to it.
+Discord integration is **outbound-only** — Trussen sends notifications to Discord channels via webhook URLs. There's no OAuth flow. The user pastes a Discord webhook URL, and Trussen posts rich embeds to it.
 
 ## Key Difference from GitHub/Slack
 
@@ -385,7 +385,7 @@ discord: {
 ### Urgent Issue Created
 ```
 ┌──────────────────────────────────────────────────┐
-│  Linearis                                        │
+│  Trussen                                        │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   │
 │  🔴 Urgent Issue Created                    RED  │
 │  TES-7 API crash on checkout                     │
@@ -395,14 +395,14 @@ discord: {
 │  Project     Payment Service                     │
 │  Created by  Shaheer                             │
 │                                                  │
-│  Linearis · Today at 3:00 PM                     │
+│  Trussen · Today at 3:00 PM                     │
 └──────────────────────────────────────────────────┘
 ```
 
 ### Issue Completed
 ```
 ┌──────────────────────────────────────────────────┐
-│  Linearis                                        │
+│  Trussen                                        │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   │
 │  ✅ Issue Completed                       GREEN  │
 │  TES-5 Fix login bug                             │
@@ -410,14 +410,14 @@ discord: {
 │  Completed by  Shaheer                           │
 │  Project       Mobile App                        │
 │                                                  │
-│  Linearis · Today at 5:00 PM                     │
+│  Trussen · Today at 5:00 PM                     │
 └──────────────────────────────────────────────────┘
 ```
 
 ### Issue Assigned
 ```
 ┌──────────────────────────────────────────────────┐
-│  Linearis                                        │
+│  Trussen                                        │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   │
 │  👤 Issue Assigned                        BLUE   │
 │  TES-10 Add rate limiting                        │
@@ -426,14 +426,14 @@ discord: {
 │  Assigned by   Shaheer                           │
 │  Priority      Medium                            │
 │                                                  │
-│  Linearis · Today at 4:00 PM                     │
+│  Trussen · Today at 4:00 PM                     │
 └──────────────────────────────────────────────────┘
 ```
 
 ### Cycle Completed
 ```
 ┌──────────────────────────────────────────────────┐
-│  Linearis                                        │
+│  Trussen                                        │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   │
 │  🏁 Cycle Completed                      GREEN  │
 │  Sprint 14 — Backend Team                        │
@@ -443,11 +443,11 @@ discord: {
 │  Completed   16                                  │
 │  Velocity    89%                                 │
 │                                                  │
-│  Linearis · Today at 6:00 PM                     │
+│  Trussen · Today at 6:00 PM                     │
 └──────────────────────────────────────────────────┘
 ```
 
-All embeds are clickable — the title links to the issue/cycle in Linearis.
+All embeds are clickable — the title links to the issue/cycle in Trussen.
 
 ## Edge Cases
 
@@ -459,7 +459,7 @@ All embeds are clickable — the title links to the issue/cycle in Linearis.
 | User pastes deleted webhook URL | Backend returns 400: "webhook URL is invalid or has been deleted" |
 | User pastes regular Discord channel link | Client-side validation rejects (doesn't match `/api/webhooks/` pattern) |
 | Reconnect with new URL | Existing project/team/urgent routing preserved, only default changes |
-| Webhook deleted after connecting | Notifications silently skip — no error shown in Linearis |
+| Webhook deleted after connecting | Notifications silently skip — no error shown in Trussen |
 | Same webhook URL for two projects | Allowed — deduplication at send time prevents double-posting |
 | Multiple webhooks per project | Supported — same multi-channel pattern as Slack |
 | Very long issue title | Truncated to 200 chars in Discord embed |
@@ -512,5 +512,5 @@ All embeds are clickable — the title links to the issue/cycle in Linearis.
 - [ ] Urgent issue creation posts rich embed to Discord
 - [ ] Issue completion posts rich embed to Discord
 - [ ] Embeds are color-coded by priority
-- [ ] Embed titles link back to Linearis
+- [ ] Embed titles link back to Trussen
 - [ ] `GET /integrations` shows labels only, no webhook URLs (security)

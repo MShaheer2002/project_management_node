@@ -38,7 +38,7 @@ async function discordPost(webhookUrl: string, embeds: DiscordEmbed[]): Promise<
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        username: "Linearis",
+        username: "Trussen",
         embeds,
       }),
     });
@@ -266,7 +266,7 @@ async function notifyCycleEvent(
     description: payload.cycleName,
     color: isCompleted ? DISCORD_EMBED_COLORS.success : DISCORD_EMBED_COLORS.info,
     fields: fields.map((f) => ({ name: f.name, value: f.value, inline: true })),
-    footer: { text: "Linearis" },
+    footer: { text: "Trussen" },
     timestamp: new Date().toISOString(),
   };
 
@@ -292,7 +292,7 @@ async function notifyProjectCompleted(
       ...(payload.teamName ? [{ name: "Team", value: payload.teamName, inline: true }] : []),
       ...(payload.completedByName ? [{ name: "Completed by", value: payload.completedByName, inline: true }] : []),
     ],
-    footer: { text: "Linearis" },
+    footer: { text: "Trussen" },
     timestamp: new Date().toISOString(),
     url: `${env.FRONTEND_URL}/projects/${payload.id}`,
   };

@@ -1,12 +1,12 @@
-# Linearis — Product Scope Document
+# Trussen — Product Scope Document
 
 ## 1. Product Overview
 
-**Linearis** is a SaaS project management platform modeled after Linear. It provides issue tracking, project management, team collaboration, sprint cycles, and organizational hierarchy for software teams.
+**Trussen** is a SaaS project management platform modeled after Linear. It provides issue tracking, project management, team collaboration, sprint cycles, and organizational hierarchy for software teams.
 
 **Target users:** Engineering teams, product teams, and cross-functional organizations that need structured issue tracking with speed and keyboard-first UX.
 
-**Product URL pattern:** `<workspace-slug>.linearis.app`
+**Product URL pattern:** `<workspace-slug>.trussen.app`
 
 **Core philosophy:** Fast, opinionated, keyboard-driven. Issues are the atomic unit. Everything else (projects, cycles, teams, departments) organizes issues.
 
@@ -81,7 +81,7 @@ A **workspace** is the top-level tenant boundary. All data is scoped to a worksp
 
 ### 3.2 Workspace Creation
 - The user who creates a workspace automatically becomes the **owner**
-- Workspace URL must be globally unique (`<slug>.linearis.app`)
+- Workspace URL must be globally unique (`<slug>.trussen.app`)
 - A workspace starts with zero departments, teams, and projects
 - The owner can invite members immediately after creation
 

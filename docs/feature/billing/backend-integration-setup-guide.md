@@ -1,6 +1,6 @@
 # Phase 13 Backend Integration Setup Guide (Billing)
 
-> This guide defines how to implement billing for Linearis in a production-grade way.
+> This guide defines how to implement billing for Trussen in a production-grade way.
 > It follows the project rules: `Route -> Middleware -> Controller -> Service -> DB`.
 > Stripe is the billing provider. Billing is workspace-scoped, seat-based for paid plans, and webhook-backed.
 

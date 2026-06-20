@@ -1,17 +1,17 @@
 # Workspace Module — Setup Guide
 
 > This guide covers everything needed before implementing the workspace module.
-> Workspaces are the multi-tenancy boundary — every piece of data in Linearis belongs to exactly one workspace.
+> Workspaces are the multi-tenancy boundary — every piece of data in Trussen belongs to exactly one workspace.
 
 ---
 
 ## 1. What is a Workspace
 
-A workspace is the **top-level tenant** in Linearis. It's equivalent to an "Organization" in Linear or a "Team" in Slack.
+A workspace is the **top-level tenant** in Trussen. It's equivalent to an "Organization" in Linear or a "Team" in Slack.
 
 - Every user can belong to **multiple workspaces** (personal, work, client projects)
 - All data (issues, projects, teams, departments) is **scoped to a workspace**
-- The workspace URL is globally unique: `<slug>.linearis.app`
+- The workspace URL is globally unique: `<slug>.trussen.app`
 - The user who creates a workspace automatically becomes the **OWNER**
 
 ---
@@ -24,7 +24,7 @@ A workspace is the **top-level tenant** in Linearis. It's equivalent to an "Orga
 model Workspace {
   id           String    @id @default(uuid())
   name         String                          // "Acme Corp"
-  slug         String    @unique               // "acme" → acme.linearis.app
+  slug         String    @unique               // "acme" → acme.trussen.app
   logo         String?                         // URL to workspace logo
   teamSize     TeamSize?                       // Selected during onboarding
   issueCounter Int       @default(0)           // Atomic counter for issue IDs (LIN-N)
@@ -211,7 +211,7 @@ const response = await apiCall("/workspaces", {
   method: "POST",
   body: JSON.stringify({
     name: "Acme Corp",         // from Organization name input
-    slug: "acme",              // from Workspace URL input (without .linearis.app)
+    slug: "acme",              // from Workspace URL input (without .trussen.app)
     teamSize: "SMALL",         // from team size selector (SMALL | MEDIUM | LARGE | ENTERPRISE)
   }),
 });

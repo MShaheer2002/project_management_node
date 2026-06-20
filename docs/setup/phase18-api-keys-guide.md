@@ -2,7 +2,7 @@
 
 ## Overview
 
-API keys enable external systems (CI/CD pipelines, chatbots, the Phase 20 MCP/AI server, cron jobs, third-party integrations) to call the Linearis API without a Clerk user session. A key is scoped to one workspace and attributed to the user who created it.
+API keys enable external systems (CI/CD pipelines, chatbots, the Phase 20 MCP/AI server, cron jobs, third-party integrations) to call the Trussen API without a Clerk user session. A key is scoped to one workspace and attributed to the user who created it.
 
 **What this phase delivers:**
 - CRUD endpoints for API key management (create, list, revoke)
@@ -914,7 +914,7 @@ The creation flow has two steps in the SAME modal:
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │ Example usage:                                        │   │
 │  │ curl -H "Authorization: Bearer lin_live_a8f3bc..."    │   │
-│  │      https://api.linearis.app/issues                  │   │
+│  │      https://api.trussen.app/issues                  │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                             │
 │                                 [I've copied the key]       │

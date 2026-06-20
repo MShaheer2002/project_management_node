@@ -2,12 +2,12 @@
 
 ## Overview
 
-Discord integration sends outbound notifications from Linearis to Discord channels. Unlike GitHub (OAuth + webhooks) and Slack (OAuth + bot token), Discord uses **webhook URLs** — no OAuth, no bot, no app registration, no env vars.
+Discord integration sends outbound notifications from Trussen to Discord channels. Unlike GitHub (OAuth + webhooks) and Slack (OAuth + bot token), Discord uses **webhook URLs** — no OAuth, no bot, no app registration, no env vars.
 
 ## Architecture
 
 ```
-Linearis Backend → HTTP POST (?wait=true) → Discord Webhook URL → Rich Embed in Channel
+Trussen Backend → HTTP POST (?wait=true) → Discord Webhook URL → Rich Embed in Channel
 ```
 
 No tokens, no scopes, no callback URLs, no developer portal configuration.
@@ -22,9 +22,9 @@ No tokens, no scopes, no callback URLs, no developer portal configuration.
    https://discord.com/api/webhooks/1234567890/aBcDeFgHiJkLmNoPqRsTuVwXyZ...
    ```
 
-3. Linearis stores this URL and POSTs JSON to it with `?wait=true`. Discord renders the message as a rich embed in the channel.
+3. Trussen stores this URL and POSTs JSON to it with `?wait=true`. Discord renders the message as a rich embed in the channel.
 
-4. The URL itself IS the credential — anyone with the URL can post to that channel. Linearis treats webhook URLs as secrets (same security as Slack/GitHub tokens).
+4. The URL itself IS the credential — anyone with the URL can post to that channel. Trussen treats webhook URLs as secrets (same security as Slack/GitHub tokens).
 
 ## Supported Discord Domains
 
@@ -132,7 +132,7 @@ Messages use Discord's rich embed format with `?wait=true` for proper error dete
 
 ```json
 {
-  "username": "Linearis",
+  "username": "Trussen",
   "embeds": [{
     "title": "🔴 Urgent Issue Created",
     "description": "[TES-7](http://localhost:3000/issues/TES-7) API crash on checkout",
@@ -142,7 +142,7 @@ Messages use Discord's rich embed format with `?wait=true` for proper error dete
       { "name": "Assignee", "value": "Ali Khan", "inline": true },
       { "name": "Project", "value": "Payment Service", "inline": true }
     ],
-    "footer": { "text": "Linearis" },
+    "footer": { "text": "Trussen" },
     "timestamp": "2026-06-12T10:00:00Z",
     "url": "http://localhost:3000/issues/TES-7"
   }]
@@ -223,7 +223,7 @@ All issue notifications fire to both Slack AND Discord simultaneously (fire-and-
 - Connect with invalid URL → 400 error
 - Connect with deleted webhook URL → 400 error "webhook URL is invalid or has been deleted"
 - Reconnect with new URL → existing routing preserved
-- Delete webhook on Discord side → notifications silently skip, no error in Linearis
+- Delete webhook on Discord side → notifications silently skip, no error in Trussen
 - Create issue with 500-char title → embed shows truncated title
 - `GET /integrations` as MEMBER → Discord shows label only, no webhook URL
 - Disconnect → all config cleared, card shows "Not Connected"

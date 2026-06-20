@@ -257,7 +257,7 @@ export async function buildAnalyticsPdf(options: {
     margin: 50,
     info: {
       Title: title,
-      Author: "Linearis Backend",
+      Author: "Trussen Backend",
       Subject: `${scope} analytics export`,
     },
   });

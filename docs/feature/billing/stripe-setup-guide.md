@@ -1,4 +1,4 @@
-# Stripe Setup Guide for Linearis
+# Stripe Setup Guide for Trussen
 
 > This guide explains how to set up Stripe step by step for Phase 13 billing.
 > It is written for this project: workspace billing, seat-based subscriptions, multiple cards, and webhook-driven sync.
@@ -12,7 +12,7 @@ Related docs:
 
 ## 1. What You Are Setting Up
 
-For Linearis, Stripe will be used for:
+For Trussen, Stripe will be used for:
 
 - workspace-level billing
 - saved cards
@@ -22,7 +22,7 @@ For Linearis, Stripe will be used for:
 - webhook updates
 - local testing in sandbox mode
 
-Linearis plan mapping:
+Trussen plan mapping:
 
 - Free -> no Stripe subscription required
 - Standard -> `$6 / seat / month`
@@ -131,13 +131,13 @@ Go to Stripe `Product catalog`.
 
 You need two products:
 
-1. `Linearis Standard`
-2. `Linearis Premium`
+1. `Trussen Standard`
+2. `Trussen Premium`
 
 Suggested names:
 
-- `Linearis Standard`
-- `Linearis Premium`
+- `Trussen Standard`
+- `Trussen Premium`
 
 Suggested descriptions:
 
@@ -211,7 +211,7 @@ Important:
 
 ## 8. Do Not Manually Create Subscriptions in the Dashboard for App Flow
 
-You can create manual test subscriptions in Stripe if you want to explore the dashboard, but for Linearis the real app flow should create subscriptions through the backend.
+You can create manual test subscriptions in Stripe if you want to explore the dashboard, but for Trussen the real app flow should create subscriptions through the backend.
 
 Reason:
 
@@ -233,7 +233,7 @@ Use the dashboard mainly for:
 
 ## 9. Configure Payment Methods
 
-Linearis needs card saving for future recurring billing.
+Trussen needs card saving for future recurring billing.
 
 In Stripe, make sure card payments are enabled in payment method settings.
 
@@ -306,7 +306,7 @@ This matters because Stripe’s guidance for saving cards for future off-session
 
 ## 12. Configure Webhooks
 
-Linearis should expose:
+Trussen should expose:
 
 - `POST /webhooks/stripe`
 
@@ -461,7 +461,7 @@ You can also use the CLI while running your own subscription actions in the app 
 
 ## 16. Understand How Subscription Charging Works
 
-For Linearis, paid billing should work like this:
+For Trussen, paid billing should work like this:
 
 ### First charge
 
@@ -526,7 +526,7 @@ Important Stripe rule:
 
 - changing quantity can trigger proration
 
-Recommended approach for Linearis:
+Recommended approach for Trussen:
 
 - let Stripe handle seat prorations
 - do not manually calculate partial month charges in app code
@@ -618,8 +618,8 @@ Keep this simple:
 
 ### Products
 
-- `Linearis Standard`
-- `Linearis Premium`
+- `Trussen Standard`
+- `Trussen Premium`
 
 ### Prices
 

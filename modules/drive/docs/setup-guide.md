@@ -1,6 +1,6 @@
 # Google Drive Integration — Setup Guide
 
-> This guide covers everything needed to configure Google Drive integration for Linearis.
+> This guide covers everything needed to configure Google Drive integration for Trussen.
 > Follow these steps **before** starting the backend server with Drive features enabled.
 
 ---
@@ -10,7 +10,7 @@
 ### 1.1 Create or Select a Project
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (e.g., "Linearis") or select an existing one
+2. Create a new project (e.g., "Trussen") or select an existing one
 3. Note the **Project ID** — you'll need it for reference
 
 ### 1.2 Enable the Google Drive API
@@ -24,7 +24,7 @@
 1. Go to **APIs & Services → OAuth consent screen**
 2. Choose **External** (unless you have Google Workspace and want internal-only)
 3. Fill in the required fields:
-   - **App name:** Linearis
+   - **App name:** Trussen
    - **User support email:** your email
    - **Developer contact email:** your email
 4. Click **Save and Continue**
@@ -43,7 +43,7 @@
 1. Go to **APIs & Services → Credentials**
 2. Click **+ CREATE CREDENTIALS → OAuth client ID**
 3. Application type: **Web application**
-4. Name: "Linearis Backend"
+4. Name: "Trussen Backend"
 5. **Authorized redirect URIs** — Add both:
    - `http://localhost:8000/me/drive/callback` (local development)
    - `https://<your-ngrok-or-production-url>/me/drive/callback` (testing/production)
@@ -128,7 +128,7 @@ All endpoints are under `/me/drive`:
 
 | Scope | Why |
 |---|---|
-| `drive.file` | Can only access files that Linearis creates. Cannot read user's existing Drive files. This is the most restrictive Drive scope available. |
+| `drive.file` | Can only access files that Trussen creates. Cannot read user's existing Drive files. This is the most restrictive Drive scope available. |
 | `userinfo.email` | Display the connected Google account email in the UI. |
 
 ---
@@ -149,7 +149,7 @@ All endpoints are under `/me/drive`:
 
 | Issue | Solution |
 |---|---|
-| "No refresh token received" | User previously authorized. Go to [Google Account Permissions](https://myaccount.google.com/permissions), revoke Linearis access, try again. |
+| "No refresh token received" | User previously authorized. Go to [Google Account Permissions](https://myaccount.google.com/permissions), revoke Trussen access, try again. |
 | "Google Drive integration is not configured" | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, or `ENCRYPTION_KEY` is missing from `.env` |
 | "redirect_uri_mismatch" | The callback URL in Google Console doesn't exactly match `GOOGLE_REDIRECT_URI` in `.env` |
 | Token refresh fails | The refresh token may have been revoked. User needs to reconnect. |

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Figma integration is **read-only, link-based**. Designers paste Figma URLs in issues or projects, and Linearis fetches rich previews (thumbnail, file name, last modified) from the Figma API. No notifications, no webhooks, no dispatcher.
+Figma integration is **read-only, link-based**. Designers paste Figma URLs in issues or projects, and Trussen fetches rich previews (thumbnail, file name, last modified) from the Figma API. No notifications, no webhooks, no dispatcher.
 
 ## How It Differs from Other Providers
 
