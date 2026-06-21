@@ -15,11 +15,12 @@
 
 import { Router } from "express";
 import { authenticate } from "../../shared/middleware/authenticate.js";
+import { requireRole } from "../../shared/middleware/require-role.js";
 import { requireWorkspace } from "../../shared/middleware/require-workspace.js";
 import { validate } from "../../shared/middleware/validate.js";
 import { strictRateLimiter } from "../../shared/middleware/rate-limiter.js";
 import * as controller from "./ai.controller.js";
-import { generateIssueSchema } from "./ai.schemas.js";
+import { aiUsageQuerySchema, chatSchema, conversationParamsSchema, generateIssueSchema } from "./ai.schemas.js";
 
 const router = Router();
 
@@ -47,6 +48,7 @@ router.post(
   authenticate,
   requireWorkspace,
   strictRateLimiter,
+  validate(chatSchema),
   controller.chat,
 );
 
@@ -58,14 +60,36 @@ router.get(
 );
 
 router.get(
+  "/usage/workspace",
+  authenticate,
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  validate(aiUsageQuerySchema),
+  controller.getWorkspaceUsage,
+);
+
+router.get(
+  "/usage/users",
+  authenticate,
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  validate(aiUsageQuerySchema),
+  controller.getUserUsage,
+);
+
+router.get(
   "/conversations/:id/messages",
   authenticate,
+  requireWorkspace,
+  validate(conversationParamsSchema),
   controller.getConversationMessages,
 );
 
 router.delete(
   "/conversations/:id",
   authenticate,
+  requireWorkspace,
+  validate(conversationParamsSchema),
   controller.deleteConversation,
 );
 

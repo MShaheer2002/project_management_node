@@ -8,9 +8,10 @@
 import type { RequestHandler } from "express";
 import * as aiService from "./ai.service.js";
 import * as aiChat from "./ai.chat.js";
+import * as aiUsage from "./ai.usage.js";
 import { sendSuccess } from "../../shared/utils/api-response.js";
 import { listAvailableModels } from "./ai.provider.js";
-import type { GenerateIssueInput } from "./ai.schemas.js";
+import type { AiUsageQuery, ChatInput, ConversationParamsInput, GenerateIssueInput } from "./ai.schemas.js";
 
 /**
  * POST /ai/generate-issue — Generate a structured issue from natural language
@@ -26,6 +27,7 @@ export const generateIssue: RequestHandler = async (req, res, next) => {
     const workspaceId = req.workspace!.id;
 
     const result = await aiService.generateIssue(prompt, workspaceId, {
+      userId: req.user!.id,
       resolvedAssigneeId,
       resolvedProjectId,
     });
@@ -60,15 +62,10 @@ export const getModels: RequestHandler = async (_req, res, next) => {
  */
 export const chat: RequestHandler = async (req, res, next) => {
   try {
-    const { conversationId, message } = req.body as { conversationId?: string; message: string };
+    const { conversationId, message } = req.body as ChatInput;
     const userId = req.user!.id;
     const workspaceId = req.workspace!.id;
     const userRole = req.workspace!.role;
-
-    if (!message?.trim()) {
-      res.status(422).json({ success: false, error: { code: "VALIDATION_ERROR", message: "Message is required" } });
-      return;
-    }
 
     // Set SSE headers
     res.setHeader("Content-Type", "text/event-stream");
@@ -80,7 +77,7 @@ export const chat: RequestHandler = async (req, res, next) => {
     // Stream events from the chat processor
     for await (const event of aiChat.processChat({
       conversationId,
-      message: message.trim(),
+      message,
       userId,
       workspaceId,
       userRole,
@@ -115,11 +112,38 @@ export const listConversations: RequestHandler = async (req, res, next) => {
 };
 
 /**
+ * GET /ai/usage/workspace — Admin/owner workspace AI usage overview
+ */
+export const getWorkspaceUsage: RequestHandler = async (req, res, next) => {
+  try {
+    const query = req.validated!.query as AiUsageQuery;
+    const usage = await aiUsage.getWorkspaceUsage(req.workspace!.id, query);
+    sendSuccess(res, 200, usage);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /ai/usage/users — Admin/owner per-user AI usage breakdown
+ */
+export const getUserUsage: RequestHandler = async (req, res, next) => {
+  try {
+    const query = req.validated!.query as AiUsageQuery;
+    const usage = await aiUsage.getUserUsage(req.workspace!.id, query);
+    sendSuccess(res, 200, usage);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * GET /ai/conversations/:id/messages — Get conversation messages
  */
 export const getConversationMessages: RequestHandler = async (req, res, next) => {
   try {
-    const messages = await aiChat.getConversationMessages(req.params.id as string, req.user!.id);
+    const { id } = req.params as ConversationParamsInput;
+    const messages = await aiChat.getConversationMessages(id, req.user!.id, req.workspace!.id);
     sendSuccess(res, 200, messages);
   } catch (error) {
     next(error);
@@ -131,7 +155,8 @@ export const getConversationMessages: RequestHandler = async (req, res, next) =>
  */
 export const deleteConversation: RequestHandler = async (req, res, next) => {
   try {
-    await aiChat.deleteConversation(req.params.id as string, req.user!.id);
+    const { id } = req.params as ConversationParamsInput;
+    await aiChat.deleteConversation(id, req.user!.id, req.workspace!.id);
     res.status(204).send();
   } catch (error) {
     next(error);

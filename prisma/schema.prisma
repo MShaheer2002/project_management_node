@@ -195,6 +195,7 @@ enum ActivityType {
   GITHUB_PR_REVIEW
   DRIVE_CONNECTED
   DRIVE_DISCONNECTED
+  AI_ACTION_EXECUTED
 }
 
 /// What kind of entity an activity log entry refers to
@@ -363,6 +364,8 @@ model User {
   createdDocumentFolders DocumentFolder[] @relation("DocumentFolderCreator")
   driveConnection       UserDriveConnection? // Per-user Google Drive OAuth connection
   aiConversations       AiConversation[] // Trussen AI chat conversations
+  aiUserUsageDaily      AiUserUsageDaily[] // Daily AI usage rollups per workspace
+  aiToolExecutions      AiToolExecution[] // Recent AI mutation executions for duplicate protection
 
   @@index([email])
 }
@@ -420,6 +423,9 @@ model Workspace {
   paymentMethods PaymentMethod[]
   billingWebhookEvents BillingWebhookEvent[]
   aiConversations  AiConversation[]
+  aiWorkspaceUsageDaily AiWorkspaceUsageDaily[]
+  aiUserUsageDaily      AiUserUsageDaily[]
+  aiToolExecutions      AiToolExecution[]
 
   @@index([slug])
 }
@@ -1478,6 +1484,14 @@ model AiConversation {
   userId      String
   workspaceId String
   title       String   @default("New conversation")
+  summary     String?  @db.Text
+  summaryMessageCount Int @default(0)
+  summaryUpdatedAt DateTime?
+  requestCount Int     @default(0)
+  totalInputTokens Int @default(0)
+  totalOutputTokens Int @default(0)
+  totalTokens Int      @default(0)
+  lastModelUsed String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -1485,9 +1499,34 @@ model AiConversation {
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   messages  AiMessage[]
+  toolExecutions AiToolExecution[]
 
   @@index([userId, workspaceId])
   @@index([updatedAt])
+}
+
+/// AiToolExecution — recent AI mutation executions for duplicate protection
+///
+/// Stores the normalized fingerprint and compact result of a mutation tool call.
+/// This prevents repeated tool retries in the same conversation from duplicating work.
+model AiToolExecution {
+  id             String   @id @default(uuid())
+  workspaceId    String
+  userId         String
+  conversationId String?
+  toolName       String
+  fingerprint    String
+  result         Json
+  createdAt      DateTime @default(now())
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation AiConversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, userId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([fingerprint, createdAt])
 }
 
 /// AiMessage — individual messages in a Trussen AI conversation
@@ -1521,4 +1560,48 @@ enum AiMessageRole {
   ASSISTANT
   TOOL_CALL
   TOOL_RESULT
+}
+
+/// AiWorkspaceUsageDaily — daily AI usage totals per workspace
+model AiWorkspaceUsageDaily {
+  id                  String   @id @default(uuid())
+  workspaceId         String
+  date                DateTime @db.Date
+  inputTokens         Int      @default(0)
+  outputTokens        Int      @default(0)
+  totalTokens         Int      @default(0)
+  requestCount        Int      @default(0)
+  issueGenerationCount Int     @default(0)
+  chatTurnCount       Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, date])
+  @@index([workspaceId, date])
+}
+
+/// AiUserUsageDaily — daily AI usage totals per workspace user
+model AiUserUsageDaily {
+  id                  String   @id @default(uuid())
+  workspaceId         String
+  userId              String
+  date                DateTime @db.Date
+  inputTokens         Int      @default(0)
+  outputTokens        Int      @default(0)
+  totalTokens         Int      @default(0)
+  requestCount        Int      @default(0)
+  issueGenerationCount Int     @default(0)
+  chatTurnCount       Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId, date])
+  @@index([workspaceId, date])
+  @@index([workspaceId, userId])
+  @@index([userId, date])
 }

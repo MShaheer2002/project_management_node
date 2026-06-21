@@ -7,6 +7,8 @@
 
 import { z } from "zod/v4";
 
+const aiUsagePeriodSchema = z.enum(["7d", "30d", "90d", "custom"]);
+
 // ─── Request Schemas ────────────────────────────────────────────────────────
 
 /** POST /ai/generate-issue — Generate a structured issue from natural language */
@@ -16,6 +18,43 @@ export const generateIssueSchema = {
     // Pre-resolved mentions from the frontend dropdown (user already picked these)
     resolvedAssigneeId: z.string().min(1).optional(),
     resolvedProjectId: z.string().min(1).optional(),
+  }),
+};
+
+/** POST /ai/chat — Stream a Trussen AI response for a conversation */
+export const chatSchema = {
+  body: z.object({
+    conversationId: z.string().uuid().optional(),
+    message: z.string().trim().min(1, "Message is required").max(5000, "Message too long"),
+  }),
+};
+
+/** GET/DELETE /ai/conversations/:id — Conversation-scoped operations */
+export const conversationParamsSchema = {
+  params: z.object({
+    id: z.string().uuid("Conversation ID must be a valid UUID"),
+  }),
+};
+
+/** GET /ai/usage/* — Usage analytics for admins and owners */
+export const aiUsageQuerySchema = {
+  query: z.object({
+    period: aiUsagePeriodSchema.default("30d"),
+    from: z.string().date().optional(),
+    to: z.string().date().optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+  }).superRefine((value, ctx) => {
+    if (value.period === "custom") {
+      if (!value.from) {
+        ctx.addIssue({ code: "custom", path: ["from"], message: "from is required when period=custom" });
+      }
+      if (!value.to) {
+        ctx.addIssue({ code: "custom", path: ["to"], message: "to is required when period=custom" });
+      }
+      if (value.from && value.to && value.from > value.to) {
+        ctx.addIssue({ code: "custom", path: ["to"], message: "to must be greater than or equal to from" });
+      }
+    }
   }),
 };
 
@@ -53,4 +92,7 @@ export const aiIssueResponseSchema = z.object({
 // ─── Inferred Types ─────────────────────────────────────────────────────────
 
 export type GenerateIssueInput = z.infer<typeof generateIssueSchema.body>;
+export type ChatInput = z.infer<typeof chatSchema.body>;
+export type ConversationParamsInput = z.infer<typeof conversationParamsSchema.params>;
+export type AiUsageQuery = z.infer<typeof aiUsageQuerySchema.query>;
 export type AiIssueResponse = z.infer<typeof aiIssueResponseSchema>;

@@ -15,6 +15,14 @@ import { z } from "zod/v4";
 const emptyStringToUndefined = (value: unknown) =>
   typeof value === "string" && value.trim() === "" ? undefined : value;
 
+const stringBoolean = z.preprocess((value) => {
+  if (typeof value !== "string") return value;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return value;
+}, z.boolean());
+
 // Schema defines every env var the app needs, with types and defaults
 const envSchema = z.object({
   // Database — Prisma connection string
@@ -91,6 +99,15 @@ const envSchema = z.object({
   AI_CHAT_MODEL_FALLBACK_1: z.preprocess(emptyStringToUndefined, z.string().optional()),
   AI_CHAT_MODEL_FALLBACK_2: z.preprocess(emptyStringToUndefined, z.string().optional()),
   AI_CHAT_MODEL_FALLBACK_3: z.preprocess(emptyStringToUndefined, z.string().optional()),
+
+  // AI Billing & safety controls — monitor mode by default until plan limits are finalized
+  AI_ENFORCE_BILLING: stringBoolean.default(false),
+  AI_FREE_DAILY_REQUEST_LIMIT: z.preprocess(emptyStringToUndefined, z.coerce.number().int().positive().optional()),
+  AI_STANDARD_DAILY_REQUEST_LIMIT: z.preprocess(emptyStringToUndefined, z.coerce.number().int().positive().optional()),
+  AI_PREMIUM_DAILY_REQUEST_LIMIT: z.preprocess(emptyStringToUndefined, z.coerce.number().int().positive().optional()),
+  AI_FREE_DAILY_TOKEN_LIMIT: z.preprocess(emptyStringToUndefined, z.coerce.number().int().positive().optional()),
+  AI_STANDARD_DAILY_TOKEN_LIMIT: z.preprocess(emptyStringToUndefined, z.coerce.number().int().positive().optional()),
+  AI_PREMIUM_DAILY_TOKEN_LIMIT: z.preprocess(emptyStringToUndefined, z.coerce.number().int().positive().optional()),
 });
 
 // Validate environment variables — crashes if invalid

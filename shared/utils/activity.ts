@@ -92,7 +92,8 @@ type ActivityType =
   | "GITHUB_PR_CLOSED"
   | "GITHUB_PR_REVIEW"
   | "DRIVE_CONNECTED"
-  | "DRIVE_DISCONNECTED";
+  | "DRIVE_DISCONNECTED"
+  | "AI_ACTION_EXECUTED";
 
 interface LogActivityInput {
   workspaceId: string;

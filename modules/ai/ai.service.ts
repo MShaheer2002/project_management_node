@@ -10,16 +10,20 @@
  *   6. Resolve references (mentions → user IDs, project names → IDs)
  *   7. Return validated, resolved data
  *
- * AI NEVER writes to DB. This service returns data for the frontend to populate forms.
+ * AI NEVER writes work data to DB. Usage/accounting rows may be recorded.
  * The user reviews and submits — the normal issue creation flow handles persistence.
  */
 
 import { callAI } from "./ai.provider.js";
+import { assertAiAccess } from "./ai.access.js";
 import { runRuleBasedDetection } from "./ai.rules.js";
 import { buildIssueGenerationContext, resolveMentions } from "./ai.context.js";
+import { logAiError, logAiInfo } from "./ai.observability.js";
+import { recordAiDailyUsage } from "./ai.usage.js";
 import { aiIssueResponseSchema } from "./ai.schemas.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { prisma } from "../../shared/utils/prisma.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -174,11 +178,14 @@ export async function generateIssue(
   prompt: string,
   workspaceId: string,
   options?: {
+    userId?: string | undefined;
     modelOverride?: string | undefined;
     resolvedAssigneeId?: string | undefined;
     resolvedProjectId?: string | undefined;
   },
 ): Promise<GenerateIssueResult> {
+  const startedAt = Date.now();
+
   // Step 0: Sanitize prompt — defend against prompt injection
   const sanitizedPrompt = prompt
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "") // Strip control chars
@@ -239,6 +246,15 @@ export async function generateIssue(
   // Step 3: Build prompt and call AI
   const systemPrompt = buildSystemPrompt(context, ruleDetections);
 
+  if (options?.userId) {
+    await assertAiAccess({
+      workspaceId,
+      userId: options.userId,
+      feature: "issue_generation",
+      estimatedTokens: Math.ceil((sanitizedPrompt.length + systemPrompt.length) / 4) + 1500,
+    });
+  }
+
   const callOptions: Parameters<typeof callAI>[1] = {
     taskType: "generate_issue",
     temperature: 0.3,
@@ -251,16 +267,42 @@ export async function generateIssue(
     }
   }
 
-  const aiResult = await callAI(
-    [
-      { role: "system", content: systemPrompt },
-      // Wrap user input in delimiters to reduce prompt injection risk.
-      // The system prompt instructs "Generate issue from user's description" —
-      // wrapping makes it clear where user input starts/ends.
-      { role: "user", content: `<user_issue_description>\n${sanitizedPrompt}\n</user_issue_description>` },
-    ],
-    callOptions,
-  );
+  let aiResult;
+  try {
+    aiResult = await callAI(
+      [
+        { role: "system", content: systemPrompt },
+        // Wrap user input in delimiters to reduce prompt injection risk.
+        // The system prompt instructs "Generate issue from user's description" —
+        // wrapping makes it clear where user input starts/ends.
+        { role: "user", content: `<user_issue_description>\n${sanitizedPrompt}\n</user_issue_description>` },
+      ],
+      callOptions,
+    );
+  } catch (error) {
+    logAiError("issue_generation_failed", {
+      workspaceId,
+      userId: options?.userId,
+      feature: "issue_generation",
+      latencyMs: Date.now() - startedAt,
+      success: false,
+      errorCode: error instanceof AppError ? error.code : ERROR_CODES.AI_PROVIDER_ERROR,
+      errorMessage: error instanceof Error ? error.message : "AI issue generation failed",
+    });
+    throw error;
+  }
+
+  if (options?.userId) {
+    await prisma.$transaction(async (tx) => {
+      await recordAiDailyUsage(tx, {
+        workspaceId,
+        userId: options.userId!,
+        feature: "issue_generation",
+        inputTokens: aiResult.usage.inputTokens,
+        outputTokens: aiResult.usage.outputTokens,
+      });
+    });
+  }
 
   // Step 4: Parse and validate AI response with Zod
   let rawJson: unknown;
@@ -273,11 +315,37 @@ export async function generateIssue(
     rawJson = JSON.parse(cleaned);
   } catch {
     console.error("[AI Service] Failed to parse AI response:", aiResult.content.slice(0, 500));
+    logAiError("issue_generation_invalid_json", {
+      workspaceId,
+      userId: options?.userId,
+      feature: "issue_generation",
+      model: aiResult.model,
+      latencyMs: Date.now() - startedAt,
+      inputTokens: aiResult.usage.inputTokens,
+      outputTokens: aiResult.usage.outputTokens,
+      totalTokens: aiResult.usage.totalTokens,
+      success: false,
+      errorCode: ERROR_CODES.AI_RESPONSE_INVALID,
+      errorMessage: "AI returned invalid JSON",
+    });
     throw new AppError(502, ERROR_CODES.AI_RESPONSE_INVALID, "AI returned invalid JSON. Please try again.");
   }
 
   const parsed = aiIssueResponseSchema.safeParse(rawJson);
   if (!parsed.success) {
+    logAiError("issue_generation_validation_failed", {
+      workspaceId,
+      userId: options?.userId,
+      feature: "issue_generation",
+      model: aiResult.model,
+      latencyMs: Date.now() - startedAt,
+      inputTokens: aiResult.usage.inputTokens,
+      outputTokens: aiResult.usage.outputTokens,
+      totalTokens: aiResult.usage.totalTokens,
+      success: false,
+      errorCode: ERROR_CODES.AI_RESPONSE_INVALID,
+      errorMessage: "AI response failed validation",
+    });
     throw new AppError(502, ERROR_CODES.AI_RESPONSE_INVALID, "AI response failed validation. Please try again.");
   }
 
@@ -371,7 +439,7 @@ export async function generateIssue(
   // Resolve estimate — rule-based first, then AI
   const suggestedEstimate = ruleDetections.estimate ?? aiData.estimate ?? null;
 
-  return {
+  const response = {
     status: "generated" as const,
     title: aiData.title,
     type: aiData.type,
@@ -402,4 +470,25 @@ export async function generateIssue(
     aiModel: aiResult.model,
     tokensUsed: aiResult.usage.totalTokens,
   };
+
+  logAiInfo("issue_generation_succeeded", {
+    workspaceId,
+    userId: options?.userId,
+    feature: "issue_generation",
+    model: aiResult.model,
+    latencyMs: Date.now() - startedAt,
+    inputTokens: aiResult.usage.inputTokens,
+    outputTokens: aiResult.usage.outputTokens,
+    totalTokens: aiResult.usage.totalTokens,
+    success: true,
+    metadata: {
+      status: response.status,
+      type: response.type,
+      priority: response.priority,
+      suggestedProjectId: response.suggestedProjectId,
+      suggestedAssigneeId: response.suggestedAssigneeId,
+    },
+  });
+
+  return response;
 }
