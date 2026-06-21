@@ -362,6 +362,7 @@ model User {
   uploadedDocuments     EntityDocument[] @relation("EntityDocumentUploader")
   createdDocumentFolders DocumentFolder[] @relation("DocumentFolderCreator")
   driveConnection       UserDriveConnection? // Per-user Google Drive OAuth connection
+  aiConversations       AiConversation[] // Trussen AI chat conversations
 
   @@index([email])
 }
@@ -418,6 +419,7 @@ model Workspace {
   invoices       Invoice[]
   paymentMethods PaymentMethod[]
   billingWebhookEvents BillingWebhookEvent[]
+  aiConversations  AiConversation[]
 
   @@index([slug])
 }
@@ -1460,4 +1462,63 @@ model UserDriveConnection {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+// ============================================================================
+// TRUSSEN AI — CONVERSATIONS (Phase 20B)
+// ============================================================================
+
+/// AiConversation — persistent chat sessions between a user and Trussen AI
+///
+/// Each conversation belongs to a user + workspace pair.
+/// Conversations are resumable — the user can come back to old conversations.
+/// Title is auto-generated from the first message or set by the user.
+model AiConversation {
+  id          String   @id @default(uuid())
+  userId      String
+  workspaceId String
+  title       String   @default("New conversation")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // -- Relations --
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  messages  AiMessage[]
+
+  @@index([userId, workspaceId])
+  @@index([updatedAt])
+}
+
+/// AiMessage — individual messages in a Trussen AI conversation
+///
+/// Roles:
+///   USER — user's input message
+///   ASSISTANT — AI's text response
+///   TOOL_CALL — AI decided to call a tool (stored as JSON in toolCalls)
+///   TOOL_RESULT — result of tool execution (stored as JSON in toolResults)
+///
+/// Tool calls and results are stored for conversation history replay
+/// and audit trail. The AI sees previous tool calls when continuing a conversation.
+model AiMessage {
+  id             String        @id @default(uuid())
+  conversationId String
+  role           AiMessageRole
+  content        String        @db.Text // Message text (user input or AI response)
+  toolCalls      Json?         // For ASSISTANT: [{tool, args}] when AI invokes tools
+  toolResults    Json?         // For TOOL_RESULT: [{tool, result}] execution results
+  tokenCount     Int           @default(0) // Token usage for this message
+  createdAt      DateTime      @default(now())
+
+  // -- Relations --
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+enum AiMessageRole {
+  USER
+  ASSISTANT
+  TOOL_CALL
+  TOOL_RESULT
 }

@@ -91,17 +91,29 @@ export const AI_MODELS: Record<string, AiModel> = {
   },
 };
 
-// Default model + fallbacks — if one is rate-limited, try the next
-export const DEFAULT_AI_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+// ─── Model Configuration (from env, with hardcoded defaults) ────────────────
 
-export const FREE_MODEL_FALLBACKS = [
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "qwen/qwen3-coder:free",
-  "google/gemma-4-31b-it:free",
-  "qwen/qwen3-next-80b-a3b-instruct:free",
-  "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "openai/gpt-oss-120b:free",
-];
+// Issue Creator models (Phase 20A)
+export const ISSUE_MODEL_DEFAULT = env.AI_ISSUE_MODEL_DEFAULT ?? "deepseek/deepseek-v4-flash";
+export const ISSUE_MODEL_FALLBACKS = [
+  ISSUE_MODEL_DEFAULT,
+  env.AI_ISSUE_MODEL_FALLBACK_1 ?? "meta-llama/llama-3.3-70b-instruct:free",
+  env.AI_ISSUE_MODEL_FALLBACK_2 ?? "qwen/qwen3-coder:free",
+  env.AI_ISSUE_MODEL_FALLBACK_3 ?? "google/gemma-4-31b-it:free",
+].filter(Boolean);
+
+// Trussen AI Chat models (Phase 20B)
+export const CHAT_MODEL_DEFAULT = env.AI_CHAT_MODEL_DEFAULT ?? "deepseek/deepseek-v4-flash";
+export const CHAT_MODEL_FALLBACKS = [
+  CHAT_MODEL_DEFAULT,
+  env.AI_CHAT_MODEL_FALLBACK_1 ?? "meta-llama/llama-3.3-70b-instruct:free",
+  env.AI_CHAT_MODEL_FALLBACK_2 ?? "qwen/qwen3-coder:free",
+  env.AI_CHAT_MODEL_FALLBACK_3 ?? "google/gemma-4-31b-it:free",
+].filter(Boolean);
+
+// Legacy alias — used by callAI when no specific model config is passed
+export const DEFAULT_AI_MODEL = ISSUE_MODEL_DEFAULT;
+export const FREE_MODEL_FALLBACKS = ISSUE_MODEL_FALLBACKS;
 
 // ─── Task-Specific Max Tokens ───────────────────────────────────────────────
 

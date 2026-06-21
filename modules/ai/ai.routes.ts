@@ -5,8 +5,12 @@
  * All routes require authentication + workspace context.
  *
  * Routes:
- *   POST /generate-issue  — Generate a structured issue from natural language
- *   GET  /models           — List available AI models
+ *   POST /generate-issue           — Generate a structured issue from natural language (20A)
+ *   GET  /models                    — List available AI models
+ *   POST /chat                      — Send a message to Trussen AI (20B, SSE streaming)
+ *   GET  /conversations             — List user's conversations
+ *   GET  /conversations/:id/messages — Get conversation messages
+ *   DELETE /conversations/:id       — Delete a conversation
  */
 
 import { Router } from "express";
@@ -19,9 +23,8 @@ import { generateIssueSchema } from "./ai.schemas.js";
 
 const router = Router();
 
-// Generate a structured issue from natural language.
-// Rate-limited to prevent AI budget exhaustion.
-// Requires workspace context for fetching projects, members, labels, templates.
+// ── Phase 20A: Issue Creator ────────────────────────────────────────────────
+
 router.post(
   "/generate-issue",
   authenticate,
@@ -31,11 +34,39 @@ router.post(
   controller.generateIssue,
 );
 
-// List available AI models for workspace settings.
 router.get(
   "/models",
   authenticate,
   controller.getModels,
+);
+
+// ── Phase 20B: Trussen AI Chat ──────────────────────────────────────────────
+
+router.post(
+  "/chat",
+  authenticate,
+  requireWorkspace,
+  strictRateLimiter,
+  controller.chat,
+);
+
+router.get(
+  "/conversations",
+  authenticate,
+  requireWorkspace,
+  controller.listConversations,
+);
+
+router.get(
+  "/conversations/:id/messages",
+  authenticate,
+  controller.getConversationMessages,
+);
+
+router.delete(
+  "/conversations/:id",
+  authenticate,
+  controller.deleteConversation,
 );
 
 export default router;

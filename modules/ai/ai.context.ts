@@ -189,17 +189,24 @@ export async function resolveMentions(
 
   for (const mention of mentions) {
     const lower = mention.toLowerCase();
-    // Exact match first, then partial
-    const exact = members.find((m) => m.name.toLowerCase() === lower);
-    if (exact) {
-      resolved[mention] = exact.id;
-      continue;
-    }
 
-    const partial = members.find((m) => m.name.toLowerCase().includes(lower));
-    if (partial) {
-      resolved[mention] = partial.id;
+    // 1. Exact full name match
+    const exact = members.find((m) => m.name.toLowerCase() === lower);
+    if (exact) { resolved[mention] = exact.id; continue; }
+
+    // 2. Exact first or last name match
+    const firstLast = members.find((m) => {
+      const parts = m.name.toLowerCase().split(/\s+/);
+      return parts.some((p) => p === lower);
+    });
+    if (firstLast) { resolved[mention] = firstLast.id; continue; }
+
+    // 3. Partial match — only if exactly one member matches (avoid ambiguity)
+    const partials = members.filter((m) => m.name.toLowerCase().includes(lower));
+    if (partials.length === 1) {
+      resolved[mention] = partials[0]!.id;
     }
+    // If multiple partial matches, don't resolve — let AI handle ambiguity
   }
 
   return resolved;

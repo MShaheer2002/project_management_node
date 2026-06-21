@@ -79,6 +79,18 @@ const envSchema = z.object({
 
   // OpenRouter — AI gateway (Phase 20)
   OPENROUTER_API_KEY: z.preprocess(emptyStringToUndefined, z.string().optional()),
+
+  // AI Models — Issue Creator (Phase 20A)
+  AI_ISSUE_MODEL_DEFAULT: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  AI_ISSUE_MODEL_FALLBACK_1: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  AI_ISSUE_MODEL_FALLBACK_2: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  AI_ISSUE_MODEL_FALLBACK_3: z.preprocess(emptyStringToUndefined, z.string().optional()),
+
+  // AI Models — Trussen AI Chat/Panel (Phase 20B)
+  AI_CHAT_MODEL_DEFAULT: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  AI_CHAT_MODEL_FALLBACK_1: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  AI_CHAT_MODEL_FALLBACK_2: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  AI_CHAT_MODEL_FALLBACK_3: z.preprocess(emptyStringToUndefined, z.string().optional()),
 });
 
 // Validate environment variables — crashes if invalid

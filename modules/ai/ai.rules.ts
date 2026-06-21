@@ -159,9 +159,10 @@ export function isGibberish(text: string): boolean {
   if (cleaned.length < 3) return true;
 
   // Check consonant-to-vowel ratio — gibberish has very few vowels
+  // Only check for longer strings to avoid false positives on acronyms (CSS, API, RTL, etc.)
   const vowels = cleaned.match(/[aeiou]/gi)?.length ?? 0;
   const ratio = vowels / cleaned.length;
-  if (ratio < 0.1 && cleaned.length > 5) return true; // Less than 10% vowels in 5+ chars = gibberish
+  if (ratio < 0.05 && cleaned.length > 15) return true; // Very low vowels in long string = gibberish
 
   // Check for repeated characters (e.g., "aaaaaaa", "qqqqqq")
   if (/(.)\1{4,}/.test(cleaned)) return true;
@@ -185,9 +186,10 @@ export function isOffTopic(text: string): boolean {
   if (/^\d+\s*[+\-*/]\s*\d+/.test(lower)) return true;
   if (/^what\s+is\s+\d+/.test(lower)) return true;
 
-  // General knowledge questions not about project management
+  // General knowledge questions — only block if clearly not about work
+  // Be lenient: "what is our velocity" should NOT be blocked
   if (/^(who|what|where|when|why|how)\s+(is|are|was|were|did)\s+(the|a)\s/i.test(lower) &&
-      !/issue|bug|task|feature|project|sprint|team|assign|create|build|fix/i.test(lower)) {
+      !/issue|bug|task|feature|project|sprint|team|assign|create|build|fix|work|progress|status|member|cycle|velocity|deadline|priority|urgent|label|deploy|release/i.test(lower)) {
     return true;
   }
 
