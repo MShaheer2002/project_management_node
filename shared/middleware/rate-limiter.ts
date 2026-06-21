@@ -63,3 +63,52 @@ export const strictRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+/**
+ * AI Assistance user limiter — keeps the free guide available without letting
+ * one user burn provider calls. Must run after authenticate + requireWorkspace.
+ */
+export const aiAssistUserRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  keyGenerator: (req) => {
+    const workspaceId = req.workspace?.id;
+    const userId = req.user?.id;
+    return workspaceId && userId ? `ai-assist:user:${workspaceId}:${userId}` : "ai-assist:user:missing-context";
+  },
+  handler: (_req, res) => {
+    res.status(429).json({
+      success: false,
+      error: {
+        code: ERROR_CODES.RATE_LIMITED,
+        message: "Too many assistant requests. Please try again shortly.",
+      },
+    });
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+/**
+ * AI Assistance workspace limiter — protects shared workspace cost if multiple
+ * users spam the guide at once. Must run after authenticate + requireWorkspace.
+ */
+export const aiAssistWorkspaceRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 180,
+  keyGenerator: (req) => {
+    const workspaceId = req.workspace?.id;
+    return workspaceId ? `ai-assist:workspace:${workspaceId}` : "ai-assist:workspace:missing-context";
+  },
+  handler: (_req, res) => {
+    res.status(429).json({
+      success: false,
+      error: {
+        code: ERROR_CODES.RATE_LIMITED,
+        message: "This workspace is sending too many assistant requests. Please try again shortly.",
+      },
+    });
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

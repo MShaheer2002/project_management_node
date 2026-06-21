@@ -18,9 +18,9 @@ import { authenticate } from "../../shared/middleware/authenticate.js";
 import { requireRole } from "../../shared/middleware/require-role.js";
 import { requireWorkspace } from "../../shared/middleware/require-workspace.js";
 import { validate } from "../../shared/middleware/validate.js";
-import { strictRateLimiter } from "../../shared/middleware/rate-limiter.js";
+import { aiAssistUserRateLimiter, aiAssistWorkspaceRateLimiter, strictRateLimiter } from "../../shared/middleware/rate-limiter.js";
 import * as controller from "./ai.controller.js";
-import { aiUsageQuerySchema, chatSchema, conversationParamsSchema, generateIssueSchema } from "./ai.schemas.js";
+import { aiUsageQuerySchema, assistSchema, chatSchema, conversationParamsSchema, generateIssueSchema } from "./ai.schemas.js";
 
 const router = Router();
 
@@ -42,6 +42,17 @@ router.get(
 );
 
 // ── Phase 20B: Trussen AI Chat ──────────────────────────────────────────────
+
+router.post(
+  "/assist",
+  authenticate,
+  requireWorkspace,
+  aiAssistWorkspaceRateLimiter,
+  aiAssistUserRateLimiter,
+  strictRateLimiter,
+  validate(assistSchema),
+  controller.assist,
+);
 
 router.post(
   "/chat",

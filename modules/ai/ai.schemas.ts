@@ -29,6 +29,15 @@ export const chatSchema = {
   }),
 };
 
+/** POST /ai/assist — Ephemeral lightweight assistant */
+export const assistSchema = {
+  body: z.object({
+    message: z.string().trim().min(1, "Message is required").max(5000, "Message too long"),
+    route: z.string().trim().max(200).optional(),
+    pageTitle: z.string().trim().max(120).optional(),
+  }),
+};
+
 /** GET/DELETE /ai/conversations/:id — Conversation-scoped operations */
 export const conversationParamsSchema = {
   params: z.object({
@@ -89,10 +98,29 @@ export const aiIssueResponseSchema = z.object({
   notes: z.string().max(50000).optional(),
 });
 
+const aiAssistFactSchema = z.object({
+  label: z.string().min(1).max(80),
+  value: z.string().min(1).max(200),
+});
+
+export const aiAssistResponseSchema = z.object({
+  intent: z.enum(["guidance", "navigation", "permission", "feature", "status"]).default("guidance"),
+  title: z.string().max(120).optional(),
+  answer: z.string().min(1).max(8000),
+  followUps: z.array(z.string().min(1).max(120)).max(4).default([]),
+  navigation: z.object({
+    route: z.string().min(1).max(240),
+    label: z.string().min(1).max(80),
+  }).optional(),
+  facts: z.array(aiAssistFactSchema).max(6).default([]),
+});
+
 // ─── Inferred Types ─────────────────────────────────────────────────────────
 
 export type GenerateIssueInput = z.infer<typeof generateIssueSchema.body>;
 export type ChatInput = z.infer<typeof chatSchema.body>;
+export type AssistInput = z.infer<typeof assistSchema.body>;
 export type ConversationParamsInput = z.infer<typeof conversationParamsSchema.params>;
 export type AiUsageQuery = z.infer<typeof aiUsageQuerySchema.query>;
 export type AiIssueResponse = z.infer<typeof aiIssueResponseSchema>;
+export type AiAssistResponse = z.infer<typeof aiAssistResponseSchema>;

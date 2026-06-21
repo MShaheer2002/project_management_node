@@ -7,11 +7,12 @@
 
 import type { RequestHandler } from "express";
 import * as aiService from "./ai.service.js";
+import * as aiAssist from "./ai.assist.js";
 import * as aiChat from "./ai.chat.js";
 import * as aiUsage from "./ai.usage.js";
 import { sendSuccess } from "../../shared/utils/api-response.js";
 import { listAvailableModels } from "./ai.provider.js";
-import type { AiUsageQuery, ChatInput, ConversationParamsInput, GenerateIssueInput } from "./ai.schemas.js";
+import type { AiUsageQuery, AssistInput, ChatInput, ConversationParamsInput, GenerateIssueInput } from "./ai.schemas.js";
 
 /**
  * POST /ai/generate-issue — Generate a structured issue from natural language
@@ -47,6 +48,25 @@ export const getModels: RequestHandler = async (_req, res, next) => {
   try {
     const models = listAvailableModels();
     sendSuccess(res, 200, models);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /ai/assist — Lightweight ephemeral assistant (20C)
+ */
+export const assist: RequestHandler = async (req, res, next) => {
+  try {
+    const body = req.body as AssistInput;
+    const result = await aiAssist.assist({
+      ...body,
+      userId: req.user!.id,
+      workspaceId: req.workspace!.id,
+      userRole: req.workspace!.role,
+    });
+
+    sendSuccess(res, 200, result);
   } catch (error) {
     next(error);
   }
