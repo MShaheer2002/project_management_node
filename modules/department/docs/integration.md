@@ -137,5 +137,13 @@ The `team` field is limited to a team inside the same department when possible. 
 ## 7. Known Limits
 
 - `projectCount` and `issueCount` are returned from current DB state; in early phases they may still be `0`
+- `GET /departments/:id` now includes a lightweight `analytics` block for the overview screen:
+  - `summary.efficiencyPercent`
+  - `summary.resourceLoadPercent`
+  - `summary.stressIndex`
+  - `summary.overdueIssues`
+  - `charts.velocity`
+  - `charts.workload`
+- Analytics are computed from real issues, team assignments, due dates, and workspace custom final statuses
 - no icon field is returned even though the schema has `icon`
 - no department activity API exists in phase 3

@@ -20,7 +20,17 @@ import { requireWorkspace } from "../../shared/middleware/require-workspace.js";
 import { validate } from "../../shared/middleware/validate.js";
 import { aiAssistUserRateLimiter, aiAssistWorkspaceRateLimiter, strictRateLimiter } from "../../shared/middleware/rate-limiter.js";
 import * as controller from "./ai.controller.js";
-import { aiUsageQuerySchema, assistSchema, chatSchema, conversationParamsSchema, generateIssueSchema } from "./ai.schemas.js";
+import {
+  acceptSuggestionSchema,
+  aiUsageQuerySchema,
+  assistSchema,
+  chatSchema,
+  conversationParamsSchema,
+  dismissSuggestionSchema,
+  generateIssueSchema,
+  listSuggestionsSchema,
+  runSuggestionsSchema,
+} from "./ai.schemas.js";
 
 const router = Router();
 
@@ -102,6 +112,40 @@ router.delete(
   requireWorkspace,
   validate(conversationParamsSchema),
   controller.deleteConversation,
+);
+
+router.get(
+  "/suggestions",
+  authenticate,
+  requireWorkspace,
+  validate(listSuggestionsSchema),
+  controller.listSuggestions,
+);
+
+router.post(
+  "/suggestions/:id/accept",
+  authenticate,
+  requireWorkspace,
+  validate(acceptSuggestionSchema),
+  controller.acceptSuggestion,
+);
+
+router.post(
+  "/suggestions/:id/dismiss",
+  authenticate,
+  requireWorkspace,
+  validate(dismissSuggestionSchema),
+  controller.dismissSuggestion,
+);
+
+router.post(
+  "/suggestions/run",
+  authenticate,
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  strictRateLimiter,
+  validate(runSuggestionsSchema),
+  controller.runSuggestions,
 );
 
 export default router;

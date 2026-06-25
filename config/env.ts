@@ -108,6 +108,15 @@ const envSchema = z.object({
   AI_FREE_DAILY_TOKEN_LIMIT: z.preprocess(emptyStringToUndefined, z.coerce.number().int().positive().optional()),
   AI_STANDARD_DAILY_TOKEN_LIMIT: z.preprocess(emptyStringToUndefined, z.coerce.number().int().positive().optional()),
   AI_PREMIUM_DAILY_TOKEN_LIMIT: z.preprocess(emptyStringToUndefined, z.coerce.number().int().positive().optional()),
+
+  // Background AI infrastructure (Phase 20D)
+  REDIS_URL: z.preprocess(emptyStringToUndefined, z.string().url().optional()),
+  REDIS_QUEUE_PREFIX: z.preprocess(emptyStringToUndefined, z.string().trim().min(1).optional()),
+  AI_BACKGROUND_WORKERS_ENABLED: stringBoolean.default(true),
+  AI_BACKGROUND_SCHEDULER_ENABLED: stringBoolean.default(false),
+  AI_EMBEDDING_MODEL: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  AI_STALE_ISSUE_DAYS: z.coerce.number().int().min(1).max(180).default(7),
+  AI_BACKGROUND_ASSIGNEE_CANDIDATE_LIMIT: z.coerce.number().int().min(1).max(10).default(3),
 });
 
 // Validate environment variables — crashes if invalid

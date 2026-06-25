@@ -111,6 +111,8 @@ export const CHAT_MODEL_FALLBACKS = [
   env.AI_CHAT_MODEL_FALLBACK_3 ?? "google/gemma-4-31b-it:free",
 ].filter(Boolean);
 
+export const EMBEDDING_MODEL_DEFAULT = env.AI_EMBEDDING_MODEL ?? "openai/text-embedding-3-small";
+
 // Legacy alias — used by callAI when no specific model config is passed
 export const DEFAULT_AI_MODEL = ISSUE_MODEL_DEFAULT;
 export const FREE_MODEL_FALLBACKS = ISSUE_MODEL_FALLBACKS;
@@ -152,6 +154,15 @@ export interface AiCallResult {
   usage: {
     inputTokens: number;
     outputTokens: number;
+    totalTokens: number;
+  };
+}
+
+export interface AiEmbeddingResult {
+  embedding: number[];
+  model: string;
+  usage: {
+    inputTokens: number;
     totalTokens: number;
   };
 }
@@ -322,4 +333,70 @@ export function listAvailableModels(): AiModel[] {
  */
 export function isValidModel(modelId: string): boolean {
   return modelId in AI_MODELS;
+}
+
+export async function createEmbedding(
+  input: string,
+  model = EMBEDDING_MODEL_DEFAULT,
+): Promise<AiEmbeddingResult> {
+  if (!env.OPENROUTER_API_KEY) {
+    throw new AppError(500, ERROR_CODES.AI_NOT_CONFIGURED, "AI is not configured — OPENROUTER_API_KEY is missing");
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60_000);
+
+  let response: Response;
+  try {
+    response = await fetch("https://openrouter.ai/api/v1/embeddings", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": env.FRONTEND_URL,
+        "X-Title": "Trussen",
+      },
+      body: JSON.stringify({
+        model,
+        input,
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new AppError(504, ERROR_CODES.AI_PROVIDER_ERROR, "Embedding request timed out. Please try again.");
+    }
+    throw new AppError(502, ERROR_CODES.AI_PROVIDER_ERROR, "Failed to reach AI provider");
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!response.ok) {
+    const errorBody = await safeParseJson<{ error?: { message?: string } }>(response);
+    throw new AppError(
+      502,
+      ERROR_CODES.AI_PROVIDER_ERROR,
+      errorBody.error?.message || `Embedding provider returned error (HTTP ${response.status})`,
+    );
+  }
+
+  const data = await safeParseJson<{
+    data?: Array<{ embedding?: number[] }>;
+    usage?: { prompt_tokens?: number; total_tokens?: number };
+  }>(response);
+
+  const embedding = data.data?.[0]?.embedding;
+  if (!embedding || embedding.length === 0) {
+    throw new AppError(502, ERROR_CODES.AI_PROVIDER_ERROR, "Embedding provider returned an empty vector");
+  }
+
+  return {
+    embedding,
+    model,
+    usage: {
+      inputTokens: data.usage?.prompt_tokens ?? 0,
+      totalTokens: data.usage?.total_tokens ?? data.usage?.prompt_tokens ?? 0,
+    },
+  };
 }

@@ -11,6 +11,7 @@ import { createNotification } from "../notification/notification.service.js";
 import { createIssueAttachments } from "./issue-attachment.service.js";
 import { dispatchIntegrationEvent } from "../integration/dispatcher.js";
 import { decrementStorageUsage } from "../billing/billing.service.js";
+import { triggerIssueBackgroundJobs } from "../ai/ai.background.js";
 import type {
   CreateIssueInput,
   ListIssuesQuery,
@@ -427,7 +428,7 @@ function validateTypeSpecific(input: CreateIssueInput | UpdateIssueInput, curren
 }
 
 export async function createIssue(workspaceId: string, creatorId: string, input: CreateIssueInput) {
-  return prisma.$transaction(async (tx) => {
+  const mapped = await prisma.$transaction(async (tx) => {
     let template: any = null;
     if ((input as any).templateId) {
       template = await (tx as any).template.findFirst({
@@ -685,6 +686,15 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
 
     return mapped;
   });
+
+  await triggerIssueBackgroundJobs({
+    workspaceId,
+    issueId: mapped.id,
+    triggeredByUserId: creatorId,
+    reason: "created",
+  });
+
+  return mapped;
 }
 
 export async function resolveIssueRouteId(workspaceId: string, issueIdentifier: string) {
@@ -804,7 +814,7 @@ export async function getIssueById(workspaceId: string, workspaceRole: Workspace
 }
 
 export async function updateIssue(workspaceId: string, issueId: string, actorUserId: string, input: UpdateIssueInput) {
-  return prisma.$transaction(async (tx) => {
+  const mapped = await prisma.$transaction(async (tx) => {
     const current = await tx.issue.findFirst({
       where: { id: issueId, workspaceId },
       select: { id: true, type: true, status: true, priority: true, assigneeId: true, dueDate: true, projectId: true, teamId: true, creatorId: true, cycleId: true, completedAt: true },
@@ -1117,6 +1127,27 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
 
     return mapped;
   });
+
+  const shouldTriggerBackground = [
+    input.title,
+    input.description,
+    input.status,
+    input.priority,
+    input.assigneeId,
+    input.labels,
+    input.relatedIssueKeys,
+  ].some((value) => value !== undefined);
+
+  if (shouldTriggerBackground) {
+    await triggerIssueBackgroundJobs({
+      workspaceId,
+      issueId: mapped.id,
+      triggeredByUserId: actorUserId,
+      reason: "updated",
+    });
+  }
+
+  return mapped;
 }
 
 export async function updateIssueStatus(
@@ -1241,6 +1272,15 @@ export async function updateIssueStatus(
       projectName: issueData?.project?.name,
     };
     dispatchIntegrationEvent(workspaceId, { type: "issue.completed", payload: completePayload }).catch(() => {});
+  }
+
+  if (nextStatus !== issue.status) {
+    await triggerIssueBackgroundJobs({
+      workspaceId,
+      issueId,
+      triggeredByUserId: userId,
+      reason: "updated",
+    });
   }
 
   return resolved;

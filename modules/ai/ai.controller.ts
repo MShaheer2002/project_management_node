@@ -10,9 +10,21 @@ import * as aiService from "./ai.service.js";
 import * as aiAssist from "./ai.assist.js";
 import * as aiChat from "./ai.chat.js";
 import * as aiUsage from "./ai.usage.js";
+import * as aiSuggestions from "./ai.suggestions.js";
 import { sendSuccess } from "../../shared/utils/api-response.js";
 import { listAvailableModels } from "./ai.provider.js";
-import type { AiUsageQuery, AssistInput, ChatInput, ConversationParamsInput, GenerateIssueInput } from "./ai.schemas.js";
+import type {
+  AcceptSuggestionInput,
+  AiUsageQuery,
+  AssistInput,
+  ChatInput,
+  ConversationParamsInput,
+  DismissSuggestionInput,
+  GenerateIssueInput,
+  ListSuggestionsInput,
+  RunSuggestionsInput,
+  SuggestionParamsInput,
+} from "./ai.schemas.js";
 
 /**
  * POST /ai/generate-issue — Generate a structured issue from natural language
@@ -178,6 +190,86 @@ export const deleteConversation: RequestHandler = async (req, res, next) => {
     const { id } = req.params as ConversationParamsInput;
     await aiChat.deleteConversation(id, req.user!.id, req.workspace!.id);
     res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /ai/suggestions — list background AI suggestions
+ */
+export const listSuggestions: RequestHandler = async (req, res, next) => {
+  try {
+    const query = req.validated!.query as ListSuggestionsInput;
+    const result = await aiSuggestions.listSuggestions(
+      req.workspace!.id,
+      req.user!.id,
+      req.workspace!.role,
+      query,
+    );
+    res.status(200).json({
+      success: true,
+      data: result.items,
+      meta: result.meta,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /ai/suggestions/:id/accept
+ */
+export const acceptSuggestion: RequestHandler = async (req, res, next) => {
+  try {
+    const { id } = req.params as SuggestionParamsInput;
+    const body = req.body as AcceptSuggestionInput;
+    const result = await aiSuggestions.acceptSuggestion(
+      req.workspace!.id,
+      req.user!.id,
+      req.workspace!.role,
+      id,
+      body,
+    );
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /ai/suggestions/:id/dismiss
+ */
+export const dismissSuggestion: RequestHandler = async (req, res, next) => {
+  try {
+    const { id } = req.params as SuggestionParamsInput;
+    const body = req.body as DismissSuggestionInput;
+    const result = await aiSuggestions.dismissSuggestion(
+      req.workspace!.id,
+      req.user!.id,
+      req.workspace!.role,
+      id,
+      body,
+    );
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /ai/suggestions/run
+ */
+export const runSuggestions: RequestHandler = async (req, res, next) => {
+  try {
+    const body = req.body as RunSuggestionsInput;
+    const result = await aiSuggestions.runSuggestionJobs(
+      req.workspace!.id,
+      req.user!.id,
+      req.workspace!.role,
+      body,
+    );
+    sendSuccess(res, 202, result);
   } catch (error) {
     next(error);
   }

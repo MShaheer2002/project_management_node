@@ -8,14 +8,14 @@ type AiUsageFeature = "chat" | "issue_generation";
 
 interface RecordAiDailyUsageInput {
   workspaceId: string;
-  userId: string;
+  userId?: string | undefined;
   feature: AiUsageFeature;
   inputTokens: number;
   outputTokens: number;
-  requestCountIncrement?: number;
-  issueGenerationCountIncrement?: number;
-  chatTurnCountIncrement?: number;
-  occurredAt?: Date;
+  requestCountIncrement?: number | undefined;
+  issueGenerationCountIncrement?: number | undefined;
+  chatTurnCountIncrement?: number | undefined;
+  occurredAt?: Date | undefined;
 }
 
 function toUsageDate(date: Date): Date {
@@ -89,34 +89,36 @@ export async function recordAiDailyUsage(db: UsageDbClient, input: RecordAiDaily
     },
   });
 
-  await db.aiUserUsageDaily.upsert({
-    where: {
-      workspaceId_userId_date: {
+  if (input.userId) {
+    await db.aiUserUsageDaily.upsert({
+      where: {
+        workspaceId_userId_date: {
+          workspaceId: input.workspaceId,
+          userId: input.userId,
+          date: usageDate,
+        },
+      },
+      create: {
         workspaceId: input.workspaceId,
         userId: input.userId,
         date: usageDate,
+        inputTokens: input.inputTokens,
+        outputTokens: input.outputTokens,
+        totalTokens,
+        requestCount,
+        issueGenerationCount,
+        chatTurnCount,
       },
-    },
-    create: {
-      workspaceId: input.workspaceId,
-      userId: input.userId,
-      date: usageDate,
-      inputTokens: input.inputTokens,
-      outputTokens: input.outputTokens,
-      totalTokens,
-      requestCount,
-      issueGenerationCount,
-      chatTurnCount,
-    },
-    update: {
-      inputTokens: { increment: input.inputTokens },
-      outputTokens: { increment: input.outputTokens },
-      totalTokens: { increment: totalTokens },
-      requestCount: { increment: requestCount },
-      issueGenerationCount: { increment: issueGenerationCount },
-      chatTurnCount: { increment: chatTurnCount },
-    },
-  });
+      update: {
+        inputTokens: { increment: input.inputTokens },
+        outputTokens: { increment: input.outputTokens },
+        totalTokens: { increment: totalTokens },
+        requestCount: { increment: requestCount },
+        issueGenerationCount: { increment: issueGenerationCount },
+        chatTurnCount: { increment: chatTurnCount },
+      },
+    });
+  }
 }
 
 export async function getWorkspaceUsage(workspaceId: string, query: AiUsageQuery) {

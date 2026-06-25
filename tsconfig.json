@@ -32,6 +32,7 @@
     "shared/**/*.ts",
     "modules/**/*.ts",
     "infra/**/*.ts",
+    "workers/**/*.ts",
     "docs/api/**/*.ts",
     "prisma.config.ts",
   ],

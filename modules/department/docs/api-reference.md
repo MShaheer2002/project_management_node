@@ -204,6 +204,59 @@ Permissions: any workspace member if visible
       "teamCount": 2,
       "projectCount": 0,
       "issueCount": 0
+    },
+    "analytics": {
+      "period": {
+        "from": "2026-06-17T00:00:00.000Z",
+        "to": "2026-06-23T23:59:59.999Z",
+        "previousFrom": "2026-06-10T00:00:00.000Z",
+        "previousTo": "2026-06-16T23:59:59.999Z"
+      },
+      "summary": {
+        "efficiencyPercent": {
+          "value": 84,
+          "trend": {
+            "value": 5,
+            "direction": "up"
+          }
+        },
+        "resourceLoadPercent": {
+          "value": 72,
+          "trend": {
+            "value": 3,
+            "direction": "up"
+          }
+        },
+        "stressIndex": {
+          "value": 18,
+          "trend": {
+            "value": -2,
+            "direction": "down"
+          }
+        },
+        "overdueIssues": 4
+      },
+      "charts": {
+        "velocity": [
+          {
+            "date": "2026-06-23",
+            "label": "Mon",
+            "completed": 5,
+            "created": 4,
+            "velocity": 5
+          }
+        ],
+        "workload": [
+          {
+            "teamId": "team-id",
+            "name": "Platform",
+            "issues": 18,
+            "completed": 11,
+            "open": 7,
+            "completionRate": 61
+          }
+        ]
+      }
     }
   }
 }

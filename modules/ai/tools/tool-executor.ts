@@ -16,6 +16,7 @@ import { AppError } from "../../../shared/utils/api-error.js";
 import { randomBytes, createHash } from "node:crypto";
 import { logActivity } from "../../../shared/utils/activity.js";
 import { invalidateContextCache } from "../ai.context.js";
+import { triggerIssueBackgroundJobs } from "../ai.background.js";
 import { logAiError, logAiInfo, logAiWarn } from "../ai.observability.js";
 
 interface ToolContext {
@@ -439,6 +440,13 @@ export async function executeTool(
               },
             });
 
+            await triggerIssueBackgroundJobs({
+              workspaceId: ctx.workspaceId,
+              issueId: issue.id,
+              triggeredByUserId: ctx.userId,
+              reason: "created",
+            });
+
             return { success: true, data: { ...issue, message: `Issue ${issue.id} created` } };
           },
         );
@@ -508,6 +516,13 @@ export async function executeTool(
               },
             });
 
+            await triggerIssueBackgroundJobs({
+              workspaceId: ctx.workspaceId,
+              issueId: updated.id,
+              triggeredByUserId: ctx.userId,
+              reason: "updated",
+            });
+
             return { success: true, data: { ...updated, message: `${existing.id} updated` } };
           },
         );
@@ -554,6 +569,13 @@ export async function executeTool(
                 entityId: existing.id,
                 assigneeId: assigneeId ?? null,
               },
+            });
+
+            await triggerIssueBackgroundJobs({
+              workspaceId: ctx.workspaceId,
+              issueId: existing.id,
+              triggeredByUserId: ctx.userId,
+              reason: "updated",
             });
 
             return { success: true, data: { issueId: existing.id, message: `${existing.id} ${assigneeId ? "assigned" : "unassigned"}` } };
@@ -632,6 +654,13 @@ export async function executeTool(
                 labelId: label.id,
                 labelName: label.name,
               },
+            });
+
+            await triggerIssueBackgroundJobs({
+              workspaceId: ctx.workspaceId,
+              issueId: existing.id,
+              triggeredByUserId: ctx.userId,
+              reason: "updated",
             });
 
             return { success: true, data: { issueId: existing.id, label: label.name, message: `Label "${label.name}" added to ${existing.id}` } };
@@ -809,10 +838,31 @@ export async function executeTool(
 
         const members = await prisma.teamMembership.findMany({
           where: { teamId: team.id },
-          select: { role: true, user: { select: { id: true, name: true, email: true } } },
+          select: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                workspaceMemberships: {
+                  where: { workspaceId: ctx.workspaceId },
+                  select: { role: true },
+                  take: 1,
+                },
+              },
+            },
+          },
         });
 
-        return { success: true, data: members.map((m) => ({ id: m.user.id, name: m.user.name, email: m.user.email, role: m.role })) };
+        return {
+          success: true,
+          data: members.map((m) => ({
+            id: m.user.id,
+            name: m.user.name,
+            email: m.user.email,
+            role: m.user.workspaceMemberships[0]?.role ?? "MEMBER",
+          })),
+        };
       }
 
       case "list_members": {

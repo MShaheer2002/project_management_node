@@ -72,6 +72,130 @@ export interface GenerateIssueClarification {
 
 export type GenerateIssueResult = GenerateIssueSuccess | GenerateIssueClarification;
 
+type LooseAiIssuePayload = Record<string, unknown>;
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return (allowed.find((item) => item === normalized) ?? fallback) as T;
+}
+
+function normalizeOptionalEnum<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return allowed.find((item) => item === normalized);
+}
+
+function normalizeString(value: unknown, fallback = "", max = 50000) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  return value.trim().slice(0, max);
+}
+
+function normalizeOptionalString(value: unknown, max = 50000) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim().slice(0, max);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function deriveTitleFromPrompt(prompt: string) {
+  const compact = prompt
+    .replace(/\s+/g, " ")
+    .replace(/@\S+/g, "")
+    .trim();
+
+  if (compact.length === 0) {
+    return "Untitled Issue";
+  }
+
+  return compact.slice(0, 120);
+}
+
+function extractJsonCandidate(content: string) {
+  let cleaned = content.trim();
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+  }
+
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    return cleaned.slice(firstBrace, lastBrace + 1);
+  }
+
+  return cleaned;
+}
+
+function normalizeAiIssuePayload(raw: unknown, fallbackPrompt: string): LooseAiIssuePayload {
+  const source = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const subtasksSource = Array.isArray(source.subtasks) ? source.subtasks : [];
+  const labelsSource = Array.isArray(source.suggestedLabels) ? source.suggestedLabels : [];
+
+  const dueDateOffsetValue = typeof source.dueDateOffset === "number"
+    ? clampNumber(Math.round(source.dueDateOffset), 0, 365)
+    : typeof source.dueDateOffset === "string" && !Number.isNaN(Number(source.dueDateOffset))
+      ? clampNumber(Math.round(Number(source.dueDateOffset)), 0, 365)
+      : undefined;
+
+  const estimateValue = typeof source.estimate === "number"
+    ? clampNumber(Math.round(source.estimate), 1, 5)
+    : typeof source.estimate === "string" && !Number.isNaN(Number(source.estimate))
+      ? clampNumber(Math.round(Number(source.estimate)), 1, 5)
+      : undefined;
+
+  return {
+    title: normalizeString(source.title, deriveTitleFromPrompt(fallbackPrompt), 500),
+    type: normalizeEnum(source.type, ["task", "bug", "issue"] as const, "task"),
+    priority: normalizeEnum(source.priority, ["low", "medium", "high", "urgent"] as const, "medium"),
+    description: normalizeString(source.description, fallbackPrompt, 50000),
+    suggestedLabels: labelsSource
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 10),
+    suggestedAssigneeName: normalizeOptionalString(source.suggestedAssigneeName, 100),
+    suggestedProjectName: normalizeOptionalString(source.suggestedProjectName, 200),
+    subtasks: subtasksSource
+      .map((item) => {
+        if (typeof item === "string") {
+          const title = item.trim().slice(0, 500);
+          return title ? { title } : null;
+        }
+        if (item && typeof item === "object" && typeof (item as Record<string, unknown>).title === "string") {
+          const title = ((item as Record<string, unknown>).title as string).trim().slice(0, 500);
+          return title ? { title } : null;
+        }
+        return null;
+      })
+      .filter((item): item is { title: string } => Boolean(item))
+      .slice(0, 20),
+    dueDateOffset: dueDateOffsetValue,
+    dueDate: normalizeOptionalString(source.dueDate, 32),
+    estimate: estimateValue,
+    stepsToReproduce: normalizeOptionalString(source.stepsToReproduce),
+    expectedBehavior: normalizeOptionalString(source.expectedBehavior),
+    actualBehavior: normalizeOptionalString(source.actualBehavior),
+    severity: normalizeOptionalEnum(source.severity, ["low", "medium", "high"] as const),
+    acceptanceCriteria: normalizeOptionalString(source.acceptanceCriteria),
+    notes: normalizeOptionalString(source.notes),
+  };
+}
+
 // ─── System Prompt Builder ──────────────────────────────────────────────────
 
 function buildSystemPrompt(
@@ -306,16 +430,12 @@ export async function generateIssue(
 
   // Step 4: Parse and validate AI response with Zod
   let rawJson: unknown;
+  const cleanedContent = extractJsonCandidate(aiResult.content);
   try {
-    // Strip potential markdown code fences that some models add despite instructions
-    let cleaned = aiResult.content.trim();
-    if (cleaned.startsWith("```")) {
-      cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
-    }
-    rawJson = JSON.parse(cleaned);
+    rawJson = JSON.parse(cleanedContent);
   } catch {
-    console.error("[AI Service] Failed to parse AI response:", aiResult.content.slice(0, 500));
-    logAiError("issue_generation_invalid_json", {
+    rawJson = normalizeAiIssuePayload({ description: cleanedContent }, sanitizedPrompt);
+    logAiInfo("issue_generation_json_salvaged", {
       workspaceId,
       userId: options?.userId,
       feature: "issue_generation",
@@ -324,15 +444,18 @@ export async function generateIssue(
       inputTokens: aiResult.usage.inputTokens,
       outputTokens: aiResult.usage.outputTokens,
       totalTokens: aiResult.usage.totalTokens,
-      success: false,
-      errorCode: ERROR_CODES.AI_RESPONSE_INVALID,
-      errorMessage: "AI returned invalid JSON",
+      success: true,
+      metadata: {
+        recovery: "fallback-normalizer",
+      },
     });
-    throw new AppError(502, ERROR_CODES.AI_RESPONSE_INVALID, "AI returned invalid JSON. Please try again.");
   }
 
   const parsed = aiIssueResponseSchema.safeParse(rawJson);
-  if (!parsed.success) {
+  const salvaged = parsed.success
+    ? parsed
+    : aiIssueResponseSchema.safeParse(normalizeAiIssuePayload(rawJson, sanitizedPrompt));
+  if (!salvaged.success) {
     logAiError("issue_generation_validation_failed", {
       workspaceId,
       userId: options?.userId,
@@ -346,10 +469,26 @@ export async function generateIssue(
       errorCode: ERROR_CODES.AI_RESPONSE_INVALID,
       errorMessage: "AI response failed validation",
     });
-    throw new AppError(502, ERROR_CODES.AI_RESPONSE_INVALID, "AI response failed validation. Please try again.");
+    const fallbackData = normalizeAiIssuePayload(rawJson, sanitizedPrompt);
+    const fallbackParsed = aiIssueResponseSchema.parse(fallbackData);
+    logAiInfo("issue_generation_validation_salvaged", {
+      workspaceId,
+      userId: options?.userId,
+      feature: "issue_generation",
+      model: aiResult.model,
+      latencyMs: Date.now() - startedAt,
+      inputTokens: aiResult.usage.inputTokens,
+      outputTokens: aiResult.usage.outputTokens,
+      totalTokens: aiResult.usage.totalTokens,
+      success: true,
+      metadata: {
+        recovery: "schema-normalizer",
+      },
+    });
+    rawJson = fallbackParsed;
   }
 
-  const aiData = parsed.data;
+  const aiData = "data" in salvaged && salvaged.success ? salvaged.data : aiIssueResponseSchema.parse(rawJson);
 
   // Step 5: Override AI fields with rule-based detections (rules are more reliable)
   if (ruleDetections.type) {

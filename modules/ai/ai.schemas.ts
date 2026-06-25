@@ -8,6 +8,16 @@
 import { z } from "zod/v4";
 
 const aiUsagePeriodSchema = z.enum(["7d", "30d", "90d", "custom"]);
+const aiSuggestionTypeSchema = z.enum([
+  "ASSIGNEE",
+  "DUPLICATE",
+  "LABEL",
+  "PRIORITY",
+  "STALE_ISSUE",
+  "WEEKLY_DIGEST",
+  "SPRINT_PLANNING",
+]);
+const aiSuggestionStatusSchema = z.enum(["OPEN", "ACCEPTED", "DISMISSED", "EXPIRED", "SUPERSEDED"]);
 
 // ─── Request Schemas ────────────────────────────────────────────────────────
 
@@ -42,6 +52,50 @@ export const assistSchema = {
 export const conversationParamsSchema = {
   params: z.object({
     id: z.string().uuid("Conversation ID must be a valid UUID"),
+  }),
+};
+
+/** /ai/suggestions/:id scoped operations */
+export const suggestionParamsSchema = {
+  params: z.object({
+    id: z.string().uuid("Suggestion ID must be a valid UUID"),
+  }),
+};
+
+/** GET /ai/suggestions */
+export const listSuggestionsSchema = {
+  query: z.object({
+    status: aiSuggestionStatusSchema.optional(),
+    type: aiSuggestionTypeSchema.optional(),
+    targetType: z.string().trim().min(1).max(50).optional(),
+    targetId: z.string().trim().min(1).max(255).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    cursor: z.string().uuid().optional(),
+  }),
+};
+
+/** POST /ai/suggestions/:id/accept */
+export const acceptSuggestionSchema = {
+  params: suggestionParamsSchema.params,
+  body: z.object({
+    selectedIds: z.array(z.string().min(1).max(255)).max(50).optional(),
+  }),
+};
+
+/** POST /ai/suggestions/:id/dismiss */
+export const dismissSuggestionSchema = {
+  params: suggestionParamsSchema.params,
+  body: z.object({
+    reason: z.string().trim().max(200).optional(),
+  }),
+};
+
+/** POST /ai/suggestions/run */
+export const runSuggestionsSchema = {
+  body: z.object({
+    targetType: z.enum(["issue", "cycle", "workspace"]),
+    targetId: z.string().trim().min(1).max(255),
+    jobs: z.array(z.enum(["labels", "priority", "duplicate", "assignee", "stale-scan", "weekly-digest", "sprint-planning", "embedding"])).min(1).max(8),
   }),
 };
 
@@ -121,6 +175,11 @@ export type GenerateIssueInput = z.infer<typeof generateIssueSchema.body>;
 export type ChatInput = z.infer<typeof chatSchema.body>;
 export type AssistInput = z.infer<typeof assistSchema.body>;
 export type ConversationParamsInput = z.infer<typeof conversationParamsSchema.params>;
+export type SuggestionParamsInput = z.infer<typeof suggestionParamsSchema.params>;
+export type ListSuggestionsInput = z.infer<typeof listSuggestionsSchema.query>;
+export type AcceptSuggestionInput = z.infer<typeof acceptSuggestionSchema.body>;
+export type DismissSuggestionInput = z.infer<typeof dismissSuggestionSchema.body>;
+export type RunSuggestionsInput = z.infer<typeof runSuggestionsSchema.body>;
 export type AiUsageQuery = z.infer<typeof aiUsageQuerySchema.query>;
 export type AiIssueResponse = z.infer<typeof aiIssueResponseSchema>;
 export type AiAssistResponse = z.infer<typeof aiAssistResponseSchema>;

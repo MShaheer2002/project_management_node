@@ -366,6 +366,9 @@ model User {
   aiConversations       AiConversation[] // Trussen AI chat conversations
   aiUserUsageDaily      AiUserUsageDaily[] // Daily AI usage rollups per workspace
   aiToolExecutions      AiToolExecution[] // Recent AI mutation executions for duplicate protection
+  createdAiSuggestions  AiSuggestion[] @relation("AiSuggestionCreatedBy")
+  acceptedAiSuggestions AiSuggestion[] @relation("AiSuggestionAcceptedBy")
+  dismissedAiSuggestions AiSuggestion[] @relation("AiSuggestionDismissedBy")
 
   @@index([email])
 }
@@ -426,6 +429,9 @@ model Workspace {
   aiWorkspaceUsageDaily AiWorkspaceUsageDaily[]
   aiUserUsageDaily      AiUserUsageDaily[]
   aiToolExecutions      AiToolExecution[]
+  aiSuggestions         AiSuggestion[]
+  aiEmbeddings          AiEmbedding[]
+  aiJobRuns             AiJobRun[]
 
   @@index([slug])
 }
@@ -1562,6 +1568,46 @@ enum AiMessageRole {
   TOOL_RESULT
 }
 
+enum AiSuggestionType {
+  ASSIGNEE
+  DUPLICATE
+  LABEL
+  PRIORITY
+  STALE_ISSUE
+  WEEKLY_DIGEST
+  SPRINT_PLANNING
+}
+
+enum AiSuggestionStatus {
+  OPEN
+  ACCEPTED
+  DISMISSED
+  EXPIRED
+  SUPERSEDED
+}
+
+enum AiSuggestionSource {
+  RULE
+  EMBEDDING
+  AI_MODEL
+  SQL
+  TEMPLATE
+  SYSTEM
+}
+
+enum AiEmbeddingEntityType {
+  ISSUE
+  COMMENT
+  DOCUMENT
+}
+
+enum AiJobRunStatus {
+  STARTED
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
 /// AiWorkspaceUsageDaily — daily AI usage totals per workspace
 model AiWorkspaceUsageDaily {
   id                  String   @id @default(uuid())
@@ -1604,4 +1650,83 @@ model AiUserUsageDaily {
   @@index([workspaceId, date])
   @@index([workspaceId, userId])
   @@index([userId, date])
+}
+
+/// AiSuggestion — durable passive-intelligence outputs waiting for user action
+model AiSuggestion {
+  id              String             @id @default(uuid())
+  workspaceId     String
+  type            AiSuggestionType
+  status          AiSuggestionStatus @default(OPEN)
+  source          AiSuggestionSource
+  targetType      String
+  targetId        String
+  title           String
+  message         String             @db.Text
+  confidence      Float?
+  reason          String?            @db.Text
+  payload         Json
+  dedupeKey       String
+  model           String?
+  inputTokens     Int                @default(0)
+  outputTokens    Int                @default(0)
+  createdByUserId String?
+  acceptedById    String?
+  dismissedById   String?
+  acceptedAt      DateTime?
+  dismissedAt     DateTime?
+  expiresAt       DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User?     @relation("AiSuggestionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  acceptedBy User?    @relation("AiSuggestionAcceptedBy", fields: [acceptedById], references: [id], onDelete: SetNull)
+  dismissedBy User?   @relation("AiSuggestionDismissedBy", fields: [dismissedById], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, dedupeKey])
+  @@index([workspaceId, status, type])
+  @@index([workspaceId, targetType, targetId])
+  @@index([workspaceId, createdAt])
+}
+
+/// AiEmbedding — vector storage for duplicate detection and future semantic search
+model AiEmbedding {
+  id          String                @id @default(uuid())
+  workspaceId String
+  entityType  AiEmbeddingEntityType
+  entityId    String
+  contentHash String
+  content     String                @db.Text
+  embedding   Unsupported("vector(1536)")
+  model       String
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, entityType, entityId])
+  @@index([workspaceId, entityType])
+  @@index([workspaceId, entityId])
+}
+
+/// AiJobRun — background AI execution health and support tracing
+model AiJobRun {
+  id           String         @id @default(uuid())
+  workspaceId  String?
+  jobName      String
+  jobId        String?
+  status       AiJobRunStatus
+  targetType   String?
+  targetId     String?
+  errorCode    String?
+  errorMessage String?        @db.Text
+  metadata     Json?
+  startedAt    DateTime       @default(now())
+  finishedAt   DateTime?
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, jobName, startedAt])
+  @@index([jobName, status, startedAt])
 }

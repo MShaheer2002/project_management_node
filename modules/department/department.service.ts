@@ -7,6 +7,12 @@ import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
+import {
+  buildDaySeries,
+  calculateTrend,
+  formatDayKey,
+  resolveDateRange,
+} from "../analytics/analytics.utils.js";
 import type {
   CreateDepartmentInput,
   ListDepartmentsQuery,
@@ -43,6 +49,26 @@ const departmentSummarySelect = {
 type DepartmentSummaryRecord = Prisma.DepartmentGetPayload<{
   select: typeof departmentSummarySelect;
 }>;
+
+type DepartmentAnalyticsIssueRecord = {
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
+  completedAt: Date | null;
+  dueDate: Date | null;
+  assigneeId: string | null;
+  teamId: string;
+};
+
+type DepartmentAnalyticsTeamRecord = {
+  id: string;
+  name: string;
+};
+
+type WorkspaceStatusRecord = {
+  key?: string;
+  isFinal?: boolean;
+};
 
 const departmentCompactSelect = {
   id: true,
@@ -81,6 +107,148 @@ function mapDepartment(record: DepartmentSummaryRecord, includeIssueCount: boole
       teamCount: record._count.teams,
       projectCount: record._count.projects,
       ...(includeIssueCount ? { issueCount: record._count.issues } : {}),
+    },
+  };
+}
+
+function isFinalStatus(statuses: WorkspaceStatusRecord[], status: string) {
+  const normalizedStatus = status.trim().toLowerCase();
+  const matched = statuses.find((item) => String(item.key ?? "").trim().toLowerCase() === normalizedStatus);
+  if (matched) {
+    return matched.isFinal === true;
+  }
+
+  return normalizedStatus === "done";
+}
+
+function getPercent(numerator: number, denominator: number) {
+  if (denominator <= 0) {
+    return 0;
+  }
+
+  return Math.round((numerator / denominator) * 100);
+}
+
+function getOpenIssuesAtDate(
+  issues: DepartmentAnalyticsIssueRecord[],
+  statuses: WorkspaceStatusRecord[],
+  at: Date,
+) {
+  return issues.filter((issue) => {
+    if (issue.createdAt > at) {
+      return false;
+    }
+
+    if (issue.completedAt && issue.completedAt <= at) {
+      return false;
+    }
+
+    return !isFinalStatus(statuses, issue.status);
+  });
+}
+
+function countCompletedInRange(issues: DepartmentAnalyticsIssueRecord[], from: Date, to: Date) {
+  return issues.filter((issue) => issue.completedAt && issue.completedAt >= from && issue.completedAt <= to).length;
+}
+
+function countCreatedInRange(issues: DepartmentAnalyticsIssueRecord[], from: Date, to: Date) {
+  return issues.filter((issue) => issue.createdAt >= from && issue.createdAt <= to).length;
+}
+
+function buildDepartmentAnalytics(
+  department: DepartmentSummaryRecord,
+  statuses: WorkspaceStatusRecord[],
+  issues: DepartmentAnalyticsIssueRecord[],
+  teams: DepartmentAnalyticsTeamRecord[],
+) {
+  const range = resolveDateRange("7d");
+  const now = range.to;
+
+  const totalIssues = issues.length;
+  const totalCompleted = issues.filter((issue) => isFinalStatus(statuses, issue.status)).length;
+  const currentCompleted = countCompletedInRange(issues, range.from, range.to);
+  const previousCompleted = countCompletedInRange(issues, range.previousFrom, range.previousTo);
+  const currentCreated = countCreatedInRange(issues, range.from, range.to);
+  const previousCreated = countCreatedInRange(issues, range.previousFrom, range.previousTo);
+
+  const currentEfficiency = currentCreated + currentCompleted > 0
+    ? getPercent(currentCompleted, currentCreated + currentCompleted)
+    : getPercent(totalCompleted, totalIssues);
+  const previousEfficiency = previousCreated + previousCompleted > 0
+    ? getPercent(previousCompleted, previousCreated + previousCompleted)
+    : 0;
+
+  const openIssuesNow = getOpenIssuesAtDate(issues, statuses, now);
+  const openIssuesPrevious = getOpenIssuesAtDate(issues, statuses, range.previousTo);
+  const membersWithAssignmentsNow = new Set(
+    openIssuesNow.filter((issue) => issue.assigneeId).map((issue) => issue.assigneeId as string),
+  ).size;
+  const membersWithAssignmentsPrevious = new Set(
+    openIssuesPrevious.filter((issue) => issue.assigneeId).map((issue) => issue.assigneeId as string),
+  ).size;
+  const memberCount = department._count.memberships;
+  const resourceLoadCurrent = getPercent(membersWithAssignmentsNow, memberCount);
+  const resourceLoadPrevious = getPercent(membersWithAssignmentsPrevious, memberCount);
+
+  const overdueNow = openIssuesNow.filter((issue) => issue.dueDate && issue.dueDate < now).length;
+  const overduePrevious = openIssuesPrevious.filter((issue) => issue.dueDate && issue.dueDate < range.previousTo).length;
+  const stressCurrent = getPercent(overdueNow, openIssuesNow.length);
+  const stressPrevious = getPercent(overduePrevious, openIssuesPrevious.length);
+
+  const velocity = buildDaySeries(range.from, range.to).map((day) => {
+    const key = formatDayKey(day);
+    const completed = issues.filter((issue) => issue.completedAt && formatDayKey(issue.completedAt) === key).length;
+    const created = issues.filter((issue) => formatDayKey(issue.createdAt) === key).length;
+
+    return {
+      date: key,
+      label: day.toLocaleDateString("en-US", { weekday: "short" }),
+      completed,
+      created,
+      velocity: completed,
+    };
+  });
+
+  const workload = teams.map((team) => {
+    const teamIssues = issues.filter((issue) => issue.teamId === team.id);
+    const completed = teamIssues.filter((issue) => isFinalStatus(statuses, issue.status)).length;
+    const open = teamIssues.length - completed;
+
+    return {
+      teamId: team.id,
+      name: team.name,
+      issues: teamIssues.length,
+      completed,
+      open,
+      completionRate: getPercent(completed, teamIssues.length),
+    };
+  }).sort((left, right) => right.issues - left.issues || left.name.localeCompare(right.name));
+
+  return {
+    period: {
+      from: range.from,
+      to: range.to,
+      previousFrom: range.previousFrom,
+      previousTo: range.previousTo,
+    },
+    summary: {
+      efficiencyPercent: {
+        value: currentEfficiency,
+        trend: calculateTrend(currentEfficiency, previousEfficiency),
+      },
+      resourceLoadPercent: {
+        value: resourceLoadCurrent,
+        trend: calculateTrend(resourceLoadCurrent, resourceLoadPrevious),
+      },
+      stressIndex: {
+        value: stressCurrent,
+        trend: calculateTrend(stressCurrent, stressPrevious),
+      },
+      overdueIssues: overdueNow,
+    },
+    charts: {
+      velocity,
+      workload,
     },
   };
 }
@@ -303,7 +471,43 @@ export async function getDepartmentById(
   departmentId: string,
 ) {
   const department = await assertDepartmentAccessible(workspaceId, workspaceRole, departmentId);
-  return mapDepartment(department, true);
+  const [workspace, issues, teams] = await Promise.all([
+    prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { customStatuses: true },
+    }),
+    prisma.issue.findMany({
+      where: { workspaceId, departmentId },
+      select: {
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        completedAt: true,
+        dueDate: true,
+        assigneeId: true,
+        teamId: true,
+      },
+    }),
+    prisma.team.findMany({
+      where: { workspaceId, departmentId },
+      select: {
+        id: true,
+        name: true,
+      },
+    }),
+  ]);
+
+  const analytics = buildDepartmentAnalytics(
+    department,
+    ((workspace?.customStatuses as WorkspaceStatusRecord[] | null) ?? []),
+    issues,
+    teams,
+  );
+
+  return {
+    ...mapDepartment(department, true),
+    analytics,
+  };
 }
 
 export async function updateDepartment(

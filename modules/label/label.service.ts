@@ -6,6 +6,7 @@ import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { prisma } from "../../shared/utils/prisma.js";
 import { logActivity } from "../../shared/utils/activity.js";
 import { resolveIssueRouteId } from "../issue/issue.service.js";
+import { triggerLabelRefreshForWorkspace } from "../ai/ai.background.js";
 import type {
   AttachIssueLabelsInput,
   CreateLabelInput,
@@ -104,6 +105,8 @@ export async function createLabel(workspaceId: string, actorId: string, input: C
     message: `${label.name} label created`,
     metadata: { labelId: label.id, labelName: label.name, color: label.color },
   });
+
+  await triggerLabelRefreshForWorkspace({ workspaceId, triggeredByUserId: actorId });
   return mapLabel(label);
 }
 
@@ -189,6 +192,8 @@ export async function updateLabel(workspaceId: string, actorId: string, labelId:
     message: `${updated.name} label updated`,
     metadata: { labelId: updated.id, labelName: updated.name, color: updated.color },
   });
+
+  await triggerLabelRefreshForWorkspace({ workspaceId, triggeredByUserId: actorId });
   return mapLabel(updated);
 }
 
@@ -204,6 +209,8 @@ export async function deleteLabel(workspaceId: string, actorId: string, labelId:
     message: "Label deleted",
     metadata: { labelId },
   });
+
+  await triggerLabelRefreshForWorkspace({ workspaceId, triggeredByUserId: actorId });
 }
 
 export async function attachIssueLabels(

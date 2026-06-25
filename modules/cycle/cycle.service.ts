@@ -8,6 +8,7 @@ import { prisma } from "../../shared/utils/prisma.js";
 import { createNotification } from "../notification/notification.service.js";
 import { resolveIssueRouteId } from "../issue/issue.service.js";
 import { dispatchIntegrationEvent } from "../integration/dispatcher.js";
+import { triggerCycleBackgroundJobs } from "../ai/ai.background.js";
 import { getSocketServer } from "../../socket/index.js";
 import { createRealtimeEnvelope } from "../../socket/serializers.js";
 import type {
@@ -309,6 +310,14 @@ export async function createCycle(workspaceId: string, userId: string, role: Wor
       },
     }).catch(() => {});
   }
+
+  await triggerCycleBackgroundJobs({
+    workspaceId,
+    cycleId: cycle.id,
+    triggeredByUserId: userId,
+    reason: "created",
+  });
+
   return mapCycleSummary(cycle, computed.stats);
 }
 
