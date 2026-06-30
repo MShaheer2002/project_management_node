@@ -18,13 +18,16 @@ import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { assertAiAccess } from "./ai.access.js";
-import { callAI, CHAT_MODEL_DEFAULT, CHAT_MODEL_FALLBACKS } from "./ai.provider.js";
-import { getMemberNames } from "./ai.context.js";
-import { logAiError, logAiInfo, logAiWarn } from "./ai.observability.js";
+import { callAI, CHAT_MODEL_DEFAULT, fallbackChainForPrimary } from "./ai.provider.js";
+import { incrementAiMetricCounter, logAiError, logAiInfo, logAiWarn } from "./ai.observability.js";
 import { callAIWithTools } from "./ai.tool-runtime.js";
 import { recordAiDailyUsage } from "./ai.usage.js";
 import { getToolDefinitions } from "./tools/tool-definitions.js";
-import { executeTool } from "./tools/tool-executor.js";
+import { buildHighImpactApprovalHash, executeTool } from "./tools/tool-executor.js";
+import { parsePendingAiAction, resolveAiPreflight, type PendingAiAction } from "./ai.action-state.js";
+import { classifyAiIntentHybrid } from "./ai.intent.js";
+import { parseConversationMemory, rememberResolvedEntity, updateConversationMemoryFromPendingAction, updateConversationMemoryFromUserMessage, type ConversationMemory } from "./ai.memory.js";
+import { buildExecutionPlan, getPendingPlanSteps, observeAndReplanExecution, shouldUseDeterministicPlanLoop, type ExecutionPlan, type ExecutionPlanContinuation, type ExecutionPlanObservation, type ExecutorResult } from "./ai.planner.js";
 
 const MAX_TOOL_CALLS_PER_TURN = 5;
 const MAX_RECENT_HISTORY_MESSAGES = 30;
@@ -49,83 +52,23 @@ interface ChatEvent {
   data: unknown;
 }
 
-const isAdminRole = (role: string): boolean => role === "OWNER" || role === "ADMIN";
+type ToolRunAudit = {
+  tool: string;
+  success: boolean;
+  confirmationRequired: boolean;
+  replayed: boolean;
+  error?: string;
+};
 
-const SUMMARY_MODEL =
-  CHAT_MODEL_FALLBACKS.find((model) => model.includes(":free")) ?? CHAT_MODEL_DEFAULT;
-
-async function getVisibleProjects(workspaceId: string, userId: string, userRole: string) {
-  return prisma.project.findMany({
-    where: {
-      workspaceId,
-      ...(isAdminRole(userRole)
-        ? {}
-        : {
-            OR: [
-              { visibility: "PUBLIC" },
-              { leadId: userId },
-              { memberships: { some: { userId } } },
-            ],
-          }),
-    },
-    select: { id: true, name: true },
-    orderBy: { name: "asc" },
-    take: 50,
-  });
-}
-
-async function getVisibleTeams(workspaceId: string, userId: string, userRole: string) {
-  return prisma.team.findMany({
-    where: {
-      workspaceId,
-      ...(isAdminRole(userRole)
-        ? {}
-        : {
-            OR: [
-              { visibility: "PUBLIC" },
-              { leadId: userId },
-              { memberships: { some: { userId } } },
-            ],
-          }),
-    },
-    select: { id: true, name: true },
-    orderBy: { name: "asc" },
-    take: 50,
-  });
-}
-
-async function getVisibleDepartments(workspaceId: string, userId: string, userRole: string) {
-  return prisma.department.findMany({
-    where: {
-      workspaceId,
-      ...(isAdminRole(userRole)
-        ? {}
-        : {
-            OR: [
-              { visibility: "PUBLIC" },
-              { headId: userId },
-              { memberships: { some: { userId } } },
-            ],
-          }),
-    },
-    select: { id: true, name: true },
-    orderBy: { name: "asc" },
-    take: 30,
-  });
-}
+const SUMMARY_MODEL = CHAT_MODEL_DEFAULT;
 
 // ─── System Prompt ──────────────────────────────────────────────────────────
 
 async function buildChatSystemPrompt(workspaceId: string, userId: string, userRole: string): Promise<string> {
-  const [projects, members, teams, departments, labels] = await Promise.all([
-    getVisibleProjects(workspaceId, userId, userRole),
-    getMemberNames(workspaceId),
-    getVisibleTeams(workspaceId, userId, userRole),
-    getVisibleDepartments(workspaceId, userId, userRole),
+  const [currentUser, labels] = await Promise.all([
+    prisma.user.findFirst({ where: { id: userId }, select: { name: true } }),
     prisma.label.findMany({ where: { workspaceId }, select: { name: true }, orderBy: { name: "asc" }, take: 50 }),
   ]);
-
-  const currentUser = members.find((m) => m.id === userId);
 
   return [
     "You are Trussen AI — the intelligent assistant for the Trussen project management platform.",
@@ -150,13 +93,10 @@ async function buildChatSystemPrompt(workspaceId: string, userId: string, userRo
     "- If the user says 'due tomorrow', 'due in 3 days', 'due next week' — pass it to the dueDate field.",
     "- If the user mentions priority words like 'urgent', 'critical', 'low priority' — set the priority accordingly.",
     "",
-    "ID RESOLUTION (CRITICAL):",
-    "- ALWAYS use IDs from the lookup tables below when calling tools. Never pass names as IDs.",
-    "- When user mentions a person → find their ID from Members list.",
-    "- When user mentions a project → find its ID from Projects list.",
-    "- When user mentions a team → find its ID from Teams list.",
-    "- 'me', 'my', 'I' → use the current user's ID.",
-    "- If a name doesn't match any entry, ask the user to clarify.",
+    "RESOLUTION AND SAFETY:",
+    "- Entity resolution is handled by deterministic workspace-scoped services before tool execution. Do not invent IDs or targets.",
+    "- If system context provides a resolved tool call or resolved slots, trust that deterministic state over guessing from names.",
+    "- If a name is still unresolved, ask one focused clarification question rather than guessing.",
     "",
     "STATUS VALUES (use lowercase kebab-case):",
     "- backlog, todo, in-progress, review, done",
@@ -166,17 +106,13 @@ async function buildChatSystemPrompt(workspaceId: string, userId: string, userRo
     "",
     "WHAT YOU CANNOT DO (be honest about it):",
     "- You cannot delete anything (issues, projects, members, comments).",
+    "- If the user asks to delete something, refuse only. Do not mark it done, unassign it, archive it, deactivate it, or perform any substitute mutation unless the user later asks for that exact non-delete action explicitly.",
     "- You cannot change workspace settings, billing, or user roles.",
     "- You cannot access external URLs, files, or services.",
     "- If asked to do something outside your tools, explain what you can do instead.",
     "",
     `CURRENT USER: ${currentUser?.name ?? "Unknown"} (ID: ${userId})`,
     "",
-    "WORKSPACE LOOKUP TABLES:",
-    `Projects: ${JSON.stringify(projects.map((p) => ({ id: p.id, name: p.name })))}`,
-    `Members: ${JSON.stringify(members.map((m) => ({ id: m.id, name: m.name })))}`,
-    `Teams: ${JSON.stringify(teams.map((t) => ({ id: t.id, name: t.name })))}`,
-    departments.length > 0 ? `Departments: ${JSON.stringify(departments.map((d) => ({ id: d.id, name: d.name })))}` : "",
     labels.length > 0 ? `Available labels: ${JSON.stringify(labels.map((l) => l.name))}` : "",
     "",
     `Today: ${new Date().toISOString().slice(0, 10)}`,
@@ -189,6 +125,33 @@ function estimateTokens(value: string): number {
 
 function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
+}
+
+function updateMemoryFromResolvedTool(memory: ConversationMemory, toolName: string, toolArgs: Record<string, unknown>) {
+  let nextMemory = memory;
+
+  const entityMappings: Array<{ key: string; entityType: "project" | "issue" | "team" | "department" | "member" | "cycle" }> = [
+    { key: "projectId", entityType: "project" },
+    { key: "issueId", entityType: "issue" },
+    { key: "teamId", entityType: "team" },
+    { key: "departmentId", entityType: "department" },
+    { key: "userId", entityType: "member" },
+    { key: "memberId", entityType: "member" },
+    { key: "cycleId", entityType: "cycle" },
+  ];
+
+  for (const mapping of entityMappings) {
+    const value = toolArgs[mapping.key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      nextMemory = rememberResolvedEntity(nextMemory, {
+        entityType: mapping.entityType,
+        entityId: value,
+        name: value,
+      });
+    }
+  }
+
+  return nextMemory;
 }
 
 function compactJson(value: unknown, depth = 0): unknown {
@@ -231,25 +194,25 @@ function compactJson(value: unknown, depth = 0): unknown {
   return String(value);
 }
 
-function shapeToolResult(toolName: string, result: {
-  success: boolean;
-  data: unknown;
-  error?: string;
-  meta?: Record<string, unknown>;
-}) {
-  const compactData = compactJson(result.data);
+function shapeToolResult(toolName: string, result: ExecutorResult) {
+  const safeMeta = result.meta
+    ? Object.fromEntries(
+        Object.entries(result.meta).filter(([key]) => key !== "artifact"),
+      )
+    : undefined;
+  const compactData = compactJson(result.payload);
   const payload: Record<string, unknown> = {
     success: result.success,
     tool: toolName,
-    data: compactData,
+    payload: compactData,
   };
 
   if (result.error) {
     payload.error = truncate(result.error, 300);
   }
 
-  if (result.meta) {
-    payload.meta = compactJson(result.meta);
+  if (safeMeta && Object.keys(safeMeta).length > 0) {
+    payload.meta = compactJson(safeMeta);
   }
 
   const serialized = JSON.stringify(payload);
@@ -260,9 +223,9 @@ function shapeToolResult(toolName: string, result: {
   return JSON.stringify({
     success: result.success,
     tool: toolName,
-    data: "Result too large — showing compact summary only",
+    payload: "Result too large — showing compact summary only",
     error: result.error ? truncate(result.error, 200) : undefined,
-    meta: result.meta ? compactJson(result.meta) : undefined,
+    meta: safeMeta && Object.keys(safeMeta).length > 0 ? compactJson(safeMeta) : undefined,
   });
 }
 
@@ -283,9 +246,12 @@ function formatMessageForSummary(message: {
   return `${message.role}: ${truncate(message.content, 400)}`;
 }
 
-async function buildSafeChatSystemPrompt(workspaceId: string, userId: string, userRole: string) {
+async function buildSafeChatSystemPrompt(workspaceId: string, userId: string, userRole: string, preferredLanguage?: string) {
   try {
-    return await buildChatSystemPrompt(workspaceId, userId, userRole);
+    const base = await buildChatSystemPrompt(workspaceId, userId, userRole);
+    return preferredLanguage
+      ? `${base}\nPreferred reply language: ${preferredLanguage}.`
+      : base;
   } catch (error) {
     logAiWarn("chat_prompt_context_degraded", {
       workspaceId,
@@ -300,9 +266,23 @@ async function buildSafeChatSystemPrompt(workspaceId: string, userId: string, us
       "Be concise, professional, and direct.",
       "Use tools whenever the user asks for workspace data or mutations.",
       "If a tool fails, explain the failure briefly and continue when possible.",
+      ...(preferredLanguage ? [`Prefer replying in: ${preferredLanguage}.`] : []),
       `Today: ${new Date().toISOString().slice(0, 10)}`,
     ].join("\n");
   }
+}
+
+function buildCompactConfirmationSystemPrompt(preferredLanguage?: string) {
+  return [
+    "You are Trussen AI — the workspace assistant for the Trussen project management platform.",
+    "This turn is a confirmed high-impact action continuation.",
+    "Be concise and deterministic.",
+    "If the system context includes a confirmed tool call, execute exactly that tool once.",
+    "Do not reinterpret the request, expand scope, or ask follow-up questions unless the tool fails.",
+    "After execution, reply with a short confirmation of what changed.",
+    ...(preferredLanguage ? [`Reply in ${preferredLanguage} when possible.`] : []),
+    "You cannot delete anything.",
+  ].join("\n");
 }
 
 async function refreshConversationSummary(input: {
@@ -511,6 +491,633 @@ async function persistConversationTurn(input: {
   });
 }
 
+async function updateConversationState(conversationId: string, input: {
+  pendingAction: PendingAiAction | null;
+  memory: ConversationMemory;
+}) {
+  await prisma.aiConversation.update({
+    where: { id: conversationId },
+    data: {
+      pendingAction: input.pendingAction ? JSON.parse(JSON.stringify(input.pendingAction)) : null,
+      pendingActionUpdatedAt: input.pendingAction ? new Date() : null,
+      memory: JSON.parse(JSON.stringify(input.memory)),
+      memoryUpdatedAt: new Date(),
+    },
+  });
+}
+
+function buildToolConfirmationPendingAction(input: {
+  message: string;
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  explanation: string;
+  completedTools: ToolRunAudit[];
+}): PendingAiAction {
+  const now = new Date().toISOString();
+  return {
+    action: "high_impact_action",
+    status: "awaiting_confirmation",
+    slots: {
+      toolName: input.toolName,
+      toolArgsJson: JSON.stringify(input.toolArgs),
+      explanation: input.explanation,
+      completedToolsJson: JSON.stringify(input.completedTools),
+    },
+    missing: [],
+    prompt: input.message,
+    createdAt: now,
+    updatedAt: now,
+    confirmationRequired: true,
+  };
+}
+
+function buildConfirmationResponse(input: {
+  explanation: string;
+  completedTools: ToolRunAudit[];
+}) {
+  const completed = input.completedTools.filter((entry) => entry.success && !entry.confirmationRequired);
+  const completedLine = completed.length > 0
+    ? `Already completed in this request: ${completed.map((entry) => entry.tool).join(", ")}.`
+    : "";
+
+  return [
+    input.explanation,
+    completedLine,
+    "Reply `Confirm` to proceed, or `Cancel` to stop.",
+  ].filter(Boolean).join(" ");
+}
+
+function buildDeterministicToolCompletionResponse(input: {
+  toolRuns: Array<{
+    tool: string;
+    success: boolean;
+    error?: string | undefined;
+    result: ExecutorResult;
+  }>;
+}) {
+  if (input.toolRuns.length === 0) {
+    return "The requested action finished, but no tool result was available to summarize.";
+  }
+
+  const lines = input.toolRuns.map(({ tool, success, error, result }) => {
+    const data = result.payload && typeof result.payload === "object" ? (result.payload as Record<string, unknown>) : null;
+    const meta = result.meta && typeof result.meta === "object" ? result.meta : null;
+    const message =
+      typeof meta?.report === "string" && meta.report.trim().length > 0
+        ? meta.report.trim()
+        : typeof data?.message === "string" && data.message.trim().length > 0
+          ? data.message.trim()
+          : typeof result.error === "string" && result.error.trim().length > 0
+            ? result.error.trim()
+            : error?.trim();
+
+    if (success) {
+      return message ? message : `Completed ${tool.replace(/_/g, " ")}.`;
+    }
+
+    return message ? `Could not complete ${tool.replace(/_/g, " ")}: ${message}` : `Could not complete ${tool.replace(/_/g, " ")}.`;
+  });
+
+  return lines.join("\n");
+}
+
+function shouldExecuteToolBatch(aiResponse: { toolCalls?: Array<unknown> | null }, toolCallCount: number) {
+  return Boolean(aiResponse.toolCalls && aiResponse.toolCalls.length > 0 && toolCallCount < MAX_TOOL_CALLS_PER_TURN);
+}
+
+async function persistToolResultMessage(input: {
+  conversationId: string;
+  toolCallId: string;
+  content: string;
+}) {
+  await prisma.aiMessage.create({
+    data: {
+      conversationId: input.conversationId,
+      role: "TOOL_RESULT",
+      content: "",
+      toolResults: JSON.parse(JSON.stringify([{ tool_call_id: input.toolCallId, content: input.content }])),
+    },
+  });
+}
+
+async function executeResolvedToolTurn(input: {
+  conversationId: string;
+  isNewConversation: boolean;
+  titleSource: string;
+  userPrompt: string;
+  workspaceId: string;
+  userId: string;
+  userRole: string;
+  toolName: string;
+  toolArgs: Record<string, unknown>;
+  responseMode?: "overloaded";
+}) {
+  const syntheticToolCallId = `resolved_${Date.now()}`;
+
+    await prisma.aiMessage.create({
+      data: {
+        conversationId: input.conversationId,
+        role: "ASSISTANT",
+        content: "",
+        toolCalls: JSON.parse(JSON.stringify([
+          {
+            id: syntheticToolCallId,
+          type: "function",
+          function: {
+            name: input.toolName,
+            arguments: JSON.stringify(input.toolArgs),
+          },
+        },
+      ])),
+      tokenCount: 0,
+    },
+  });
+
+  let result: Awaited<ReturnType<typeof executeTool>>;
+  try {
+    result = await executeTool(input.toolName, input.toolArgs, {
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      userRole: input.userRole,
+      conversationId: input.conversationId,
+      confirmedHighImpact: false,
+    });
+  } catch (error) {
+    result = { success: false, payload: null, warnings: [], nextSuggestions: [], error: error instanceof Error ? error.message : "Tool failed" };
+  }
+
+  const resultContent = shapeToolResult(input.toolName, result);
+  await persistToolResultMessage({
+    conversationId: input.conversationId,
+    toolCallId: syntheticToolCallId,
+    content: resultContent,
+  });
+
+  const deterministicFallback = input.responseMode === "overloaded"
+    ? buildOverloadedResponse(input.toolName, result)
+    : buildDeterministicToolCompletionResponse({
+        toolRuns: [{
+          tool: input.toolName,
+          success: result.success,
+          ...(result.error ? { error: result.error } : {}),
+          result,
+        }],
+      });
+
+  const finalContent = await formatResolvedToolReply({
+    userPrompt: input.userPrompt,
+    toolName: input.toolName,
+    result,
+    deterministicFallback,
+    ...(input.responseMode ? { responseMode: input.responseMode } : {}),
+  });
+
+  await persistConversationTurn({
+    conversationId: input.conversationId,
+    finalContent,
+    isNewConversation: input.isNewConversation,
+    titleSource: input.titleSource,
+    currentModel: "deterministic",
+    inputTokens: 0,
+    outputTokens: 0,
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+  });
+
+  return {
+    finalContent,
+    result,
+  };
+}
+
+function buildDeterministicPlanCompletionResponse(observations: ExecutionPlanObservation[]) {
+  return buildDeterministicToolCompletionResponse({
+    toolRuns: observations.map((observation) => ({
+      tool: observation.executor,
+      success: observation.result.success,
+      ...(observation.result.error ? { error: observation.result.error } : {}),
+      result: observation.result,
+    })),
+  });
+}
+
+async function formatPlannedExecutionReply(input: {
+  userPrompt: string;
+  observations: ExecutionPlanObservation[];
+  deterministicFallback: string;
+}) {
+  try {
+    const response = await callAI(
+      [
+        {
+          role: "system",
+          content: [
+            "You are Trussen AI.",
+            "A bounded deterministic execution plan has already been executed.",
+            "Summarize the grounded results naturally.",
+            "Do not mention internal tool names, planning, orchestration, or execution loops.",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: [
+            `User request: ${input.userPrompt}`,
+            `Deterministic summary: ${input.deterministicFallback}`,
+            `Observed plan results: ${JSON.stringify(compactJson(input.observations.map((observation) => ({
+              stepId: observation.stepId,
+              executor: observation.executor,
+              success: observation.result.success,
+              payload: observation.result.payload,
+              error: observation.result.error,
+              meta: observation.result.meta,
+            }))))}`,
+          ].join("\n\n"),
+        },
+      ],
+      {
+        model: CHAT_MODEL_DEFAULT,
+        taskType: "chat_response",
+        maxTokens: 360,
+        temperature: 0.2,
+      },
+    );
+
+    return response.content?.trim() || input.deterministicFallback;
+  } catch {
+    return input.deterministicFallback;
+  }
+}
+
+async function executeDeterministicPlanTurn(input: {
+  conversationId: string;
+  isNewConversation: boolean;
+  titleSource: string;
+  userPrompt: string;
+  workspaceId: string;
+  userId: string;
+  userRole: string;
+  plan: ExecutionPlan;
+  memory: ConversationMemory;
+  responseMode?: "overloaded";
+}) {
+  const observations: ExecutionPlanObservation[] = [];
+  let plan = input.plan;
+  const maxPlanPasses = 4;
+
+  for (let iteration = 0; iteration < maxPlanPasses; iteration += 1) {
+    const nextSteps = getPendingPlanSteps(plan, observations);
+    if (nextSteps.length === 0) break;
+
+    const step = nextSteps[0]!;
+    const syntheticToolCallId = `${step.id}_${Date.now()}`;
+
+    await prisma.aiMessage.create({
+      data: {
+        conversationId: input.conversationId,
+        role: "ASSISTANT",
+        content: "",
+        toolCalls: JSON.parse(JSON.stringify([{
+          id: syntheticToolCallId,
+          type: "function",
+          function: {
+            name: step.executor,
+            arguments: JSON.stringify(step.args),
+          },
+        }])),
+        tokenCount: 0,
+      },
+    });
+
+    let result: Awaited<ReturnType<typeof executeTool>>;
+    try {
+      result = await executeTool(step.executor, step.args, {
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        userRole: input.userRole,
+        conversationId: input.conversationId,
+        confirmedHighImpact: false,
+      });
+    } catch (error) {
+      result = { success: false, payload: null, warnings: [], nextSuggestions: [], error: error instanceof Error ? error.message : "Tool failed" };
+    }
+
+    await persistToolResultMessage({
+      conversationId: input.conversationId,
+      toolCallId: syntheticToolCallId,
+      content: shapeToolResult(step.executor, result),
+    });
+
+    observations.push({
+      stepId: step.id,
+      executor: step.executor,
+      result,
+    });
+
+    if (result.warnings.length > 0) {
+      logAiWarn("chat_executor_warning", {
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        feature: "chat",
+        toolName: step.executor,
+        success: result.success,
+        metadata: {
+          stepId: step.id,
+          warnings: result.warnings,
+        },
+      });
+      void incrementAiMetricCounter({
+        workspaceId: input.workspaceId,
+        feature: "chat",
+        metric: "executor_warning",
+        dimensions: {
+          toolName: step.executor,
+        },
+      });
+    }
+
+    logAiInfo("chat_plan_step_executed", {
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      conversationId: input.conversationId,
+      feature: "chat",
+      toolName: step.executor,
+      success: result.success,
+      metadata: {
+        stepId: step.id,
+        iteration,
+        intent: plan.intent,
+      },
+    });
+
+    const observed = observeAndReplanExecution({
+      plan,
+      observations,
+    });
+
+    if (observed.continuation) {
+      const pendingAction = buildPlanContinuationPendingAction(observed.continuation, input.userPrompt);
+      await updateConversationState(input.conversationId, {
+        pendingAction,
+        memory: input.memory,
+      });
+      const finalContent = [
+        observed.continuation.prompt,
+        "Available options:",
+        ...observed.continuation.candidates.map((candidate) => candidate.label),
+      ].join("\n");
+      await persistConversationTurn({
+        conversationId: input.conversationId,
+        finalContent,
+        isNewConversation: input.isNewConversation,
+        titleSource: input.titleSource,
+        currentModel: "deterministic",
+        inputTokens: 0,
+        outputTokens: 0,
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+      });
+      return {
+        finalContent,
+        observations,
+      };
+    }
+
+    if (observed.replanned) {
+      logAiInfo("chat_plan_replanned", {
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        feature: "chat",
+        success: true,
+        metadata: {
+          intent: plan.intent,
+          iteration,
+          completedSteps: observations.map((observation) => observation.stepId),
+        },
+      });
+      void incrementAiMetricCounter({
+        workspaceId: input.workspaceId,
+        feature: "chat",
+        metric: "replanning",
+        dimensions: {
+          intent: plan.intent,
+        },
+      });
+    }
+
+    plan = observed.plan;
+    if (observed.shouldStop) break;
+  }
+
+  if (observations.length === 0) {
+    return null;
+  }
+
+  const deterministicFallback =
+    input.responseMode === "overloaded" && observations.length === 1
+      ? buildOverloadedResponse(observations[0]!.executor, observations[0]!.result)
+      : buildDeterministicPlanCompletionResponse(observations);
+  const finalContent =
+    observations.length === 1
+      ? await formatResolvedToolReply({
+          userPrompt: input.userPrompt,
+          toolName: observations[0]!.executor,
+          result: observations[0]!.result,
+          deterministicFallback,
+          ...(input.responseMode ? { responseMode: input.responseMode } : {}),
+        })
+      : await formatPlannedExecutionReply({
+          userPrompt: input.userPrompt,
+          observations,
+          deterministicFallback,
+        });
+
+  await persistConversationTurn({
+    conversationId: input.conversationId,
+    finalContent,
+    isNewConversation: input.isNewConversation,
+    titleSource: input.titleSource,
+    currentModel: "deterministic",
+    inputTokens: 0,
+    outputTokens: 0,
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+  });
+
+  return {
+    finalContent,
+    observations,
+  };
+}
+
+function buildPlanContinuationPendingAction(continuation: ExecutionPlanContinuation, prompt: string): PendingAiAction {
+  return {
+    action: "issue_action",
+    intent: continuation.intent,
+    status: "collecting_slots",
+    slots: {
+      ...continuation.slots,
+      intent: continuation.intent,
+    },
+    missing: [continuation.field],
+    ambiguity: [
+      {
+        field: continuation.field,
+        candidates: continuation.candidates.map((candidate) => ({
+          id: candidate.id,
+          label: candidate.label,
+        })),
+      },
+    ],
+    prompt,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    riskLevel: continuation.intent === "ADD_COMMENT" ? "low" : "medium",
+  };
+}
+
+async function formatResolvedToolReply(input: {
+  userPrompt: string;
+  toolName: string;
+  responseMode?: "overloaded";
+  result: ExecutorResult;
+  deterministicFallback: string;
+}) {
+  try {
+    const modeInstruction = input.responseMode === "overloaded"
+      ? [
+          "Decide who is actually overloaded from the workload data.",
+          "Do not just restate raw rankings unless they support your conclusion.",
+          "If nobody clearly appears overloaded, say that directly.",
+          "Keep the answer concise but useful.",
+        ].join("\n")
+      : [
+          "Answer the user's exact request using the tool result.",
+          "Do not mention internal tool names, tool execution, or routing.",
+          "Be concise, but answer naturally as Trussen AI.",
+        ].join("\n");
+
+    const response = await callAI(
+      [
+        {
+          role: "system",
+          content: [
+            "You are Trussen AI.",
+            "A backend tool has already been executed successfully or failed.",
+            "Your job is only to answer the user's request from the tool result.",
+            modeInstruction,
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: [
+            `User request: ${input.userPrompt}`,
+            `Tool result summary: ${input.deterministicFallback}`,
+            `Tool result payload: ${JSON.stringify(compactJson({ payload: input.result.payload, error: input.result.error, meta: input.result.meta }))}`,
+          ].join("\n\n"),
+        },
+      ],
+      {
+        model: CHAT_MODEL_DEFAULT,
+        taskType: "chat_response",
+        maxTokens: 320,
+        temperature: input.responseMode === "overloaded" ? 0.2 : 0.3,
+      },
+    );
+
+    return response.content?.trim() || input.deterministicFallback;
+  } catch {
+    return input.deterministicFallback;
+  }
+}
+
+function buildOverloadedResponse(
+  toolName: string,
+  result: ExecutorResult,
+) {
+  if (!result.success) {
+    return buildDeterministicToolCompletionResponse({
+      toolRuns: [{ tool: toolName, success: false, ...(result.error ? { error: result.error } : {}), result }],
+    });
+  }
+
+  const data = result.payload && typeof result.payload === "object" ? (result.payload as Record<string, any>) : {};
+  const overloadedSummary = (rows: any[], emptyMessage: string, heading: string) => {
+    const candidates = selectOverloadedRows(rows);
+    if (candidates.length === 0) {
+      return emptyMessage;
+    }
+
+    return `${heading} ${candidates
+      .map((row: any) => `${row.name} (${row.open ?? 0} open, ${row.overdue ?? 0} overdue, ${row.assigned ?? 0} assigned)`)
+      .join("; ")}.`;
+  };
+
+  if (toolName === "get_workspace_analytics") {
+    const members = Array.isArray(data?.tables?.memberWorkload)
+      ? data.tables.memberWorkload
+      : Array.isArray(data?.tables?.topContributors)
+        ? data.tables.topContributors
+        : [];
+    return overloadedSummary(members, "No one looks overloaded across the workspace right now.", "Most overloaded people in the workspace:");
+  }
+
+  if (toolName === "get_team_analytics") {
+    const members = Array.isArray(data?.tables?.memberPerformance) ? data.tables.memberPerformance : [];
+    return overloadedSummary(members, "No one on this team looks overloaded right now.", "Most overloaded team members:");
+  }
+
+  if (toolName === "get_project_analytics") {
+    const members = Array.isArray(data?.tables?.memberWorkload) ? data.tables.memberWorkload : [];
+    return overloadedSummary(members, "No one on this project looks overloaded right now.", "Most overloaded project members:");
+  }
+
+  if (toolName === "get_member_analytics") {
+    const summary = data?.summary ?? {};
+    return `${data?.member?.name ?? "This member"} has ${summary.assigned ?? 0} assigned, ${summary.inProgress ?? 0} in progress, and ${summary.overdue ?? 0} overdue.`;
+  }
+
+  return buildDeterministicToolCompletionResponse({
+    toolRuns: [{ tool: toolName, success: true, result }],
+  });
+}
+
+function selectOverloadedRows(rows: any[]) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+
+  const normalized = rows
+    .map((row) => ({
+      ...row,
+      assigned: Number(row?.assigned ?? 0),
+      open: Number(row?.open ?? 0),
+      overdue: Number(row?.overdue ?? 0),
+      completionRate: Number(row?.completionRate ?? 0),
+    }))
+    .filter((row) => row.assigned > 0 || row.open > 0 || row.overdue > 0);
+
+  if (normalized.length === 0) return [];
+
+  const scored = normalized.map((row) => ({
+    ...row,
+    loadScore: (row.overdue * 6) + (row.open * 2) + row.assigned + Math.max(0, Math.round((60 - row.completionRate) / 10)),
+  }));
+
+  const mean = scored.reduce((sum, row) => sum + row.loadScore, 0) / scored.length;
+  const variance = scored.reduce((sum, row) => sum + ((row.loadScore - mean) ** 2), 0) / scored.length;
+  const stddev = Math.sqrt(variance);
+  const maxScore = Math.max(...scored.map((row) => row.loadScore));
+  const dynamicThreshold = Math.max(10, mean + (stddev * 0.5), maxScore * 0.72);
+
+  return scored
+    .filter((row) =>
+      row.loadScore >= dynamicThreshold &&
+      (row.overdue >= 1 || row.open >= 5 || row.assigned >= 8),
+    )
+    .sort((a, b) => b.loadScore - a.loadScore)
+    .slice(0, 3);
+}
+
 // ─── Main Chat Function ─────────────────────────────────────────────────────
 
 export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> {
@@ -535,27 +1142,33 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
   let isNewConversation = false;
   let currentSummary: string | null = null;
   let summaryMessageCount = 0;
+  let pendingAction: PendingAiAction | null = null;
+  let conversationMemory: ConversationMemory = parseConversationMemory(null);
 
   if (conversationId) {
     // Verify ownership — user must own the conversation AND it must be in the same workspace
     const existing = await prisma.aiConversation.findFirst({
       where: { id: conversationId, userId, workspaceId },
-      select: { id: true, summary: true, summaryMessageCount: true },
+      select: { id: true, summary: true, summaryMessageCount: true, pendingAction: true, memory: true },
     });
     if (!existing) {
       throw new AppError(404, ERROR_CODES.NOT_FOUND, "Conversation not found");
     }
     currentSummary = existing.summary;
     summaryMessageCount = existing.summaryMessageCount;
+    pendingAction = parsePendingAiAction(existing.pendingAction);
+    conversationMemory = parseConversationMemory(existing.memory);
   } else {
     isNewConversation = true;
     const conv = await prisma.aiConversation.create({
       data: { userId, workspaceId, title: sanitized.slice(0, 80) || "New conversation" },
-      select: { id: true, summary: true, summaryMessageCount: true },
+      select: { id: true, summary: true, summaryMessageCount: true, pendingAction: true, memory: true },
     });
     conversationId = conv.id;
     currentSummary = conv.summary;
     summaryMessageCount = conv.summaryMessageCount;
+    pendingAction = parsePendingAiAction(conv.pendingAction);
+    conversationMemory = parseConversationMemory(conv.memory);
   }
 
   const resolvedConversationId = conversationId;
@@ -565,34 +1178,394 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
     data: { conversationId: resolvedConversationId, role: "USER", content: sanitized },
   });
 
-  const summaryState = await refreshConversationSummary({
-    conversationId: resolvedConversationId,
+  conversationMemory = updateConversationMemoryFromUserMessage(conversationMemory, sanitized);
+  const preflight = await resolveAiPreflight({
+    message: sanitized,
+    pendingAction,
+    conversationMemory,
     workspaceId,
     userId,
-    currentSummary,
-    summaryMessageCount,
+    userRole,
   });
+
+  conversationMemory = updateConversationMemoryFromPendingAction(conversationMemory, preflight.pendingAction);
+  await updateConversationState(resolvedConversationId, {
+    pendingAction: preflight.pendingAction,
+    memory: conversationMemory,
+  });
+
+  if (preflight.kind === "respond") {
+    await persistConversationTurn({
+      conversationId: resolvedConversationId,
+      finalContent: preflight.content,
+      isNewConversation,
+      titleSource: sanitized,
+      currentModel: "deterministic",
+      inputTokens: 0,
+      outputTokens: 0,
+      workspaceId,
+      userId,
+    });
+
+    logAiInfo("chat_preflight_responded", {
+      workspaceId,
+      userId,
+      conversationId: resolvedConversationId,
+      feature: "chat",
+      model: "deterministic",
+      latencyMs: Date.now() - startedAt,
+      success: true,
+      metadata: {
+        pendingAction: preflight.pendingAction?.action ?? null,
+        pendingStatus: preflight.pendingAction?.status ?? null,
+      },
+    });
+
+    yield { type: "message", data: { content: preflight.content, model: "deterministic", tokensUsed: 0 } };
+    yield { type: "done", data: { conversationId: resolvedConversationId, tokensUsed: 0, model: "deterministic" } };
+    return;
+  }
+
+  const classifiedIntent = await classifyAiIntentHybrid(sanitized, {
+    workspaceId,
+    userId,
+    conversationId: resolvedConversationId,
+    allowModel: true,
+  });
+
+  if (preflight.resolvedToolName && preflight.resolvedToolArgsJson) {
+    let resolvedToolArgs: Record<string, unknown>;
+    try {
+      resolvedToolArgs = JSON.parse(preflight.resolvedToolArgsJson) as Record<string, unknown>;
+    } catch {
+      const finalContent = "That resolved action payload is invalid now. Please send the request again.";
+      await persistConversationTurn({
+        conversationId: resolvedConversationId,
+        finalContent,
+        isNewConversation,
+        titleSource: sanitized,
+        currentModel: "deterministic",
+        inputTokens: 0,
+        outputTokens: 0,
+        workspaceId,
+        userId,
+      });
+
+      yield { type: "message", data: { content: finalContent, model: "deterministic", tokensUsed: 0 } };
+      yield { type: "done", data: { conversationId: resolvedConversationId, tokensUsed: 0, model: "deterministic" } };
+      return;
+    }
+
+    conversationMemory = updateMemoryFromResolvedTool(conversationMemory, preflight.resolvedToolName, resolvedToolArgs);
+    await updateConversationState(resolvedConversationId, {
+      pendingAction: null,
+      memory: conversationMemory,
+    });
+
+    const resolvedPlan = (
+      classifiedIntent.intent === "MY_TASKS" ||
+      classifiedIntent.intent === "OVERDUE_TASKS" ||
+      classifiedIntent.intent === "BLOCKED_TASKS" ||
+      classifiedIntent.intent === "COMPARE_PROJECTS"
+    )
+      ? buildExecutionPlan({
+          intent: classifiedIntent.intent,
+          slots: resolvedToolArgs,
+        })
+      : {
+          intent: classifiedIntent.intent,
+          steps: [{
+            id: `step:resolved:${preflight.resolvedToolName}`,
+            capability: classifiedIntent.intent,
+            executor: preflight.resolvedToolName,
+            args: resolvedToolArgs,
+            dependsOn: [],
+          }],
+          requiresUserInput: false,
+          requiresConfirmation: false,
+        };
+
+    const planned = await executeDeterministicPlanTurn({
+      conversationId: resolvedConversationId,
+      isNewConversation,
+      titleSource: sanitized,
+      userPrompt: sanitized,
+      workspaceId,
+      userId,
+      userRole,
+      plan: resolvedPlan,
+      memory: conversationMemory,
+      ...(preflight.resolvedResponseMode ? { responseMode: preflight.resolvedResponseMode } : {}),
+    });
+    yield { type: "message", data: { content: planned?.finalContent ?? "I couldn't complete that request.", model: "deterministic", tokensUsed: 0 } };
+    yield { type: "done", data: { conversationId: resolvedConversationId, tokensUsed: 0, model: "deterministic" } };
+    return;
+  }
+
+  if (preflight.confirmedHighImpact === true && preflight.confirmedHighImpactToolName && preflight.confirmedHighImpactToolArgsJson) {
+    const approvedToolName = preflight.confirmedHighImpactToolName;
+    const validTools = new Set(getToolDefinitions().map((tool) => tool.function.name));
+
+    if (!validTools.has(approvedToolName)) {
+      const finalContent = "That confirmed action is no longer available. Please send the request again.";
+      await persistConversationTurn({
+        conversationId: resolvedConversationId,
+        finalContent,
+        isNewConversation,
+        titleSource: sanitized,
+        currentModel: "deterministic",
+        inputTokens: 0,
+        outputTokens: 0,
+        workspaceId,
+        userId,
+      });
+
+      yield { type: "message", data: { content: finalContent, model: "deterministic", tokensUsed: 0 } };
+      yield { type: "done", data: { conversationId: resolvedConversationId, tokensUsed: 0, model: "deterministic" } };
+      return;
+    }
+
+    let approvedToolArgs: Record<string, unknown>;
+    try {
+      approvedToolArgs = JSON.parse(preflight.confirmedHighImpactToolArgsJson) as Record<string, unknown>;
+    } catch {
+      const finalContent = "That confirmation payload is invalid now. Please send the request again.";
+      await persistConversationTurn({
+        conversationId: resolvedConversationId,
+        finalContent,
+        isNewConversation,
+        titleSource: sanitized,
+        currentModel: "deterministic",
+        inputTokens: 0,
+        outputTokens: 0,
+        workspaceId,
+        userId,
+      });
+
+      yield { type: "message", data: { content: finalContent, model: "deterministic", tokensUsed: 0 } };
+      yield { type: "done", data: { conversationId: resolvedConversationId, tokensUsed: 0, model: "deterministic" } };
+      return;
+    }
+
+    conversationMemory = updateMemoryFromResolvedTool(conversationMemory, approvedToolName, approvedToolArgs);
+    await updateConversationState(resolvedConversationId, {
+      pendingAction: null,
+      memory: conversationMemory,
+    });
+
+    const approvalHash = buildHighImpactApprovalHash(approvedToolArgs);
+    const syntheticToolCallId = `confirmed_${Date.now()}`;
+
+    await prisma.aiMessage.create({
+      data: {
+        conversationId: resolvedConversationId,
+        role: "ASSISTANT",
+        content: "",
+        toolCalls: JSON.parse(JSON.stringify([
+          {
+            id: syntheticToolCallId,
+            type: "function",
+            function: {
+              name: approvedToolName,
+              arguments: JSON.stringify(approvedToolArgs),
+            },
+          },
+        ])),
+        tokenCount: 0,
+      },
+    });
+
+    yield { type: "tool_call", data: { tool: approvedToolName, args: approvedToolArgs } };
+
+    const toolStartedAt = Date.now();
+    let result: Awaited<ReturnType<typeof executeTool>>;
+    try {
+      result = await executeTool(approvedToolName, approvedToolArgs, {
+        workspaceId,
+        userId,
+        userRole,
+        conversationId: resolvedConversationId,
+        confirmedHighImpact: true,
+        approvedHighImpactToolName: approvedToolName,
+        approvedHighImpactArgsHash: approvalHash,
+      });
+    } catch (error) {
+      result = { success: false, payload: null, warnings: [], nextSuggestions: [], error: error instanceof Error ? error.message : "Tool failed" };
+    }
+
+    logAiInfo("chat_tool_executed", {
+      workspaceId,
+      userId,
+      conversationId: resolvedConversationId,
+      feature: "chat",
+      toolName: approvedToolName,
+      latencyMs: Date.now() - toolStartedAt,
+      success: result.success,
+      metadata: {
+        args: compactJson(approvedToolArgs),
+        replayed: Boolean(result.meta?.replayed),
+        deterministicConfirmation: true,
+        warningsCount: result.warnings.length,
+      },
+    });
+
+    yield {
+      type: "tool_result",
+      data: {
+        tool: approvedToolName,
+        success: result.success,
+        replayed: Boolean(result.meta?.replayed),
+        ...(result.meta?.artifact ? { artifact: result.meta.artifact } : {}),
+      },
+    };
+
+    const resultContent = shapeToolResult(approvedToolName, result);
+    await persistToolResultMessage({
+      conversationId: resolvedConversationId,
+      toolCallId: syntheticToolCallId,
+      content: resultContent,
+    });
+
+    const finalContent = buildDeterministicToolCompletionResponse({
+      toolRuns: [{
+        tool: approvedToolName,
+        success: result.success,
+        ...(result.error ? { error: result.error } : {}),
+        result,
+      }],
+    });
+
+    await persistConversationTurn({
+      conversationId: resolvedConversationId,
+      finalContent,
+      isNewConversation,
+      titleSource: sanitized,
+      currentModel: "deterministic",
+      inputTokens: 0,
+      outputTokens: 0,
+      workspaceId,
+      userId,
+    });
+
+    yield { type: "message", data: { content: finalContent, model: "deterministic", tokensUsed: 0 } };
+    yield { type: "done", data: { conversationId: resolvedConversationId, tokensUsed: 0, model: "deterministic" } };
+    return;
+  }
+
+  const shouldUseCompactConfirmationMode = preflight.compactMode === "confirmation";
+  const summaryState = shouldUseCompactConfirmationMode
+    ? {
+        summary: currentSummary,
+        summaryMessageCount,
+      }
+    : await refreshConversationSummary({
+        conversationId: resolvedConversationId,
+        workspaceId,
+        userId,
+        currentSummary,
+        summaryMessageCount,
+      });
 
   // Step 3: Load conversation history (only messages for this conversation + user)
   const historyDesc = await prisma.aiMessage.findMany({
     where: { conversationId: resolvedConversationId, conversation: { userId } }, // Double-check ownership
     orderBy: { createdAt: "desc" },
-    take: MAX_RECENT_HISTORY_MESSAGES,
+    take: preflight.historyLimit ?? MAX_RECENT_HISTORY_MESSAGES,
     select: { role: true, content: true, toolCalls: true, toolResults: true },
   });
   const history = historyDesc.reverse();
+  const executionPlan = buildExecutionPlan({
+    intent: classifiedIntent.intent,
+    ...(preflight.pendingAction ? { slots: preflight.pendingAction.slots } : {}),
+    ...(preflight.pendingAction?.riskLevel ? { riskLevel: preflight.pendingAction.riskLevel } : {}),
+  });
+
+  logAiInfo("chat_orchestration_plan_built", {
+    workspaceId,
+    userId,
+    conversationId: resolvedConversationId,
+    feature: "chat",
+    success: true,
+    metadata: {
+      intent: classifiedIntent.intent,
+      confidence: classifiedIntent.confidence,
+      source: classifiedIntent.source,
+      reason: classifiedIntent.reason,
+      expectedEntityTypes: classifiedIntent.expectedEntityTypes,
+      plan: executionPlan,
+    },
+  });
+  if (executionPlan.steps.length > 1) {
+    void incrementAiMetricCounter({
+      workspaceId,
+      feature: "chat",
+      metric: "multi_step_plan",
+      dimensions: {
+        intent: classifiedIntent.intent,
+        stepCount: executionPlan.steps.length,
+      },
+    });
+  }
+
+  if (shouldUseDeterministicPlanLoop(executionPlan) && executionPlan.steps.length > 1) {
+    if (preflight.pendingAction) {
+      await updateConversationState(resolvedConversationId, {
+        pendingAction: null,
+        memory: conversationMemory,
+      });
+    }
+    const planned = await executeDeterministicPlanTurn({
+      conversationId: resolvedConversationId,
+      isNewConversation,
+      titleSource: sanitized,
+      userPrompt: sanitized,
+      workspaceId,
+      userId,
+      userRole,
+      plan: executionPlan,
+      memory: conversationMemory,
+    });
+
+    if (planned) {
+      yield { type: "message", data: { content: planned.finalContent, model: "deterministic", tokensUsed: 0 } };
+      yield { type: "done", data: { conversationId: resolvedConversationId, tokensUsed: 0, model: "deterministic" } };
+      return;
+    }
+  }
 
   // Step 4: Build messages for AI
-  const systemPrompt = await buildSafeChatSystemPrompt(workspaceId, userId, userRole);
+  const systemPrompt = shouldUseCompactConfirmationMode
+    ? buildCompactConfirmationSystemPrompt(conversationMemory.language)
+    : await buildSafeChatSystemPrompt(workspaceId, userId, userRole, conversationMemory.language);
 
   const aiMessages: Array<{ role: string; content: string; tool_call_id?: string; tool_calls?: unknown[] }> = [
     { role: "system", content: systemPrompt },
   ];
 
-  if (summaryState.summary) {
+  if (!shouldUseCompactConfirmationMode && summaryState.summary) {
     aiMessages.push({
       role: "system",
       content: `Conversation memory:\n${summaryState.summary}`,
+    });
+  }
+
+  if (preflight.systemContext) {
+    aiMessages.push({
+      role: "system",
+      content: preflight.systemContext,
+    });
+  }
+
+  if (classifiedIntent.intent !== "UNKNOWN") {
+    aiMessages.push({
+      role: "system",
+      content: [
+        `Semantic intent: ${classifiedIntent.intent}`,
+        `Intent confidence: ${classifiedIntent.confidence.toFixed(3)}`,
+        `Intent reason: ${classifiedIntent.reason}`,
+        `Execution plan: ${JSON.stringify(executionPlan)}`,
+        "Stay within this plan and intent boundary unless the user explicitly changes the request.",
+      ].join("\n"),
     });
   }
 
@@ -612,12 +1585,19 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
   }
 
   // Step 5: Call AI with tool calling loop
-  const modelsToTry = [CHAT_MODEL_DEFAULT, ...CHAT_MODEL_FALLBACKS.filter((m) => m !== CHAT_MODEL_DEFAULT)];
+  const modelsToTry = fallbackChainForPrimary(CHAT_MODEL_DEFAULT);
   let currentModel = CHAT_MODEL_DEFAULT;
   let totalTokens = 0;
   let turnInputTokens = 0;
   let turnOutputTokens = 0;
   let toolCallCount = 0;
+  const toolExecutionAudit: ToolRunAudit[] = [];
+  const executedToolRuns: Array<{
+    tool: string;
+    success: boolean;
+    error?: string | undefined;
+    result: ExecutorResult;
+  }> = [];
 
   const callChatModel = async (
     messages: Array<{ role: string; content: string; tool_call_id?: string; tool_calls?: unknown[] }>,
@@ -721,32 +1701,29 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
   }
 
   // Tool calling loop — with budget enforcement
-  while (
-    aiResponse.toolCalls &&
-    aiResponse.toolCalls.length > 0 &&
-    toolCallCount < MAX_TOOL_CALLS_PER_TURN &&
-    totalTokens < MAX_TOKENS_PER_TURN
-  ) {
+  while (shouldExecuteToolBatch(aiResponse, toolCallCount)) {
+    const toolCalls = aiResponse.toolCalls ?? [];
+
     // Save assistant message with tool calls
     await prisma.aiMessage.create({
       data: {
         conversationId: resolvedConversationId,
         role: "ASSISTANT",
-        content: aiResponse.content ?? "",
-        toolCalls: JSON.parse(JSON.stringify(aiResponse.toolCalls)),
+        content: "",
+        toolCalls: JSON.parse(JSON.stringify(toolCalls)),
         tokenCount: aiResponse.usage.inputTokens + aiResponse.usage.outputTokens,
       },
     });
 
     aiMessages.push({
       role: "assistant",
-      content: aiResponse.content ?? "",
-      tool_calls: aiResponse.toolCalls as unknown[],
+      content: "",
+      tool_calls: toolCalls as unknown[],
     });
 
     const toolResults: Array<{ tool_call_id: string; content: string }> = [];
 
-    for (const tc of aiResponse.toolCalls) {
+    for (const tc of toolCalls) {
       if (toolCallCount >= MAX_TOOL_CALLS_PER_TURN) break;
       toolCallCount++;
 
@@ -767,6 +1744,19 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
         toolArgs = {};
       }
 
+      let approvedHighImpactToolName: string | undefined;
+      let approvedHighImpactArgsHash: string | undefined;
+      if (preflight.confirmedHighImpact === true && preflight.confirmedHighImpactToolName && preflight.confirmedHighImpactToolArgsJson) {
+        try {
+          const approvedArgs = JSON.parse(preflight.confirmedHighImpactToolArgsJson) as Record<string, unknown>;
+          approvedHighImpactToolName = preflight.confirmedHighImpactToolName;
+          approvedHighImpactArgsHash = buildHighImpactApprovalHash(approvedArgs);
+        } catch {
+          approvedHighImpactToolName = undefined;
+          approvedHighImpactArgsHash = undefined;
+        }
+      }
+
       yield { type: "tool_call", data: { tool: toolName, args: toolArgs } };
 
       // Execute tool with error handling
@@ -778,9 +1768,12 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
           userId,
           userRole,
           conversationId: resolvedConversationId,
+          confirmedHighImpact: preflight.confirmedHighImpact === true,
+          ...(approvedHighImpactToolName ? { approvedHighImpactToolName } : {}),
+          ...(approvedHighImpactArgsHash ? { approvedHighImpactArgsHash } : {}),
         });
       } catch (error) {
-        result = { success: false, data: null, error: error instanceof Error ? error.message : "Tool failed" };
+        result = { success: false, payload: null, warnings: [], nextSuggestions: [], error: error instanceof Error ? error.message : "Tool failed" };
       }
 
       logAiInfo("chat_tool_executed", {
@@ -799,8 +1792,27 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
 
       yield {
         type: "tool_result",
-        data: { tool: toolName, success: result.success, replayed: Boolean(result.meta?.replayed) },
+        data: {
+          tool: toolName,
+          success: result.success,
+          replayed: Boolean(result.meta?.replayed),
+          ...(result.meta?.artifact ? { artifact: result.meta.artifact } : {}),
+        },
       };
+
+      toolExecutionAudit.push({
+        tool: toolName,
+        success: result.success,
+        confirmationRequired: Boolean(result.meta?.confirmationRequired),
+        replayed: Boolean(result.meta?.replayed),
+        ...(result.error ? { error: result.error } : {}),
+      });
+      executedToolRuns.push({
+        tool: toolName,
+        success: result.success,
+        ...(result.error ? { error: result.error } : {}),
+        result,
+      });
 
       const resultContent = shapeToolResult(toolName, result);
 
@@ -810,6 +1822,53 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
         content: resultContent,
         tool_call_id: tc.id,
       });
+
+      if (result.meta?.confirmationRequired) {
+        const explanation = result.error ?? "This action requires explicit confirmation first.";
+        const pendingConfirmation = buildToolConfirmationPendingAction({
+          message: sanitized,
+          toolName,
+          toolArgs,
+          explanation,
+          completedTools: toolExecutionAudit,
+        });
+
+        conversationMemory = updateConversationMemoryFromPendingAction(conversationMemory, pendingConfirmation);
+        await updateConversationState(resolvedConversationId, {
+          pendingAction: pendingConfirmation,
+          memory: conversationMemory,
+        });
+
+        await prisma.aiMessage.create({
+          data: {
+            conversationId: resolvedConversationId,
+            role: "TOOL_RESULT",
+            content: "",
+            toolResults: JSON.parse(JSON.stringify(toolResults)),
+          },
+        });
+
+        const confirmationContent = buildConfirmationResponse({
+          explanation,
+          completedTools: toolExecutionAudit,
+        });
+
+        await persistConversationTurn({
+          conversationId: resolvedConversationId,
+          finalContent: confirmationContent,
+          isNewConversation,
+          titleSource: sanitized,
+          currentModel,
+          inputTokens: turnInputTokens,
+          outputTokens: turnOutputTokens,
+          workspaceId,
+          userId,
+        });
+
+        yield { type: "message", data: { content: confirmationContent, model: "deterministic", tokensUsed: totalTokens } };
+        yield { type: "done", data: { conversationId: resolvedConversationId, tokensUsed: totalTokens, model: "deterministic" } };
+        return;
+      }
     }
 
     // Save tool results
@@ -822,11 +1881,37 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
       },
     });
 
+    const hadSuccess = toolExecutionAudit.some((entry) => entry.success && !entry.confirmationRequired);
+    const hadFailure = toolExecutionAudit.some((entry) => !entry.success && !entry.confirmationRequired);
+    if (hadSuccess && hadFailure) {
+      aiMessages.push({
+        role: "system",
+        content: [
+          "Partial execution state:",
+          `Succeeded tools: ${toolExecutionAudit.filter((entry) => entry.success && !entry.confirmationRequired).map((entry) => entry.tool).join(", ") || "none"}`,
+          `Failed tools: ${toolExecutionAudit.filter((entry) => !entry.success && !entry.confirmationRequired).map((entry) => entry.tool).join(", ") || "none"}`,
+          "Do not claim full completion.",
+          "Do not imply rollback for successful actions.",
+          "Explain exactly what succeeded and what still needs user attention.",
+        ].join("\n"),
+      });
+    }
+
+    // If the turn already exhausted the token budget, do not ask the model to format
+    // a follow-up reply. Return a deterministic tool summary instead.
+    if (totalTokens >= MAX_TOKENS_PER_TURN) {
+      aiResponse = {
+        content: buildDeterministicToolCompletionResponse({ toolRuns: executedToolRuns }),
+        toolCalls: null,
+        usage: { inputTokens: 0, outputTokens: 0 },
+      };
+      break;
+    }
+
     // Call AI again with tool results
     try {
       const followUp = await callChatModel(aiMessages, [
-        currentModel,
-        ...CHAT_MODEL_FALLBACKS.filter((model) => model !== currentModel),
+        ...fallbackChainForPrimary(currentModel),
       ]);
       currentModel = followUp.model;
       aiResponse = followUp.result;
@@ -835,8 +1920,7 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
       totalTokens += aiResponse.usage.inputTokens + aiResponse.usage.outputTokens;
     } catch (error) {
       // If follow-up AI call fails, return what we have
-      const errorMsg = error instanceof Error ? error.message : "AI follow-up failed";
-      const fallbackContent = `Tool results received but AI couldn't format the response: ${errorMsg}`;
+      const fallbackContent = buildDeterministicToolCompletionResponse({ toolRuns: executedToolRuns });
       await persistConversationTurn({
         conversationId: resolvedConversationId,
         finalContent: fallbackContent,
@@ -882,7 +1966,10 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
   }
 
   // Step 6: Save final assistant response
-  const finalContent = aiResponse.content ?? "I couldn't generate a response. Please try again.";
+  const fallbackToolContent = executedToolRuns.length > 0
+    ? buildDeterministicToolCompletionResponse({ toolRuns: executedToolRuns })
+    : "I couldn't generate a response. Please try again.";
+  const finalContent = aiResponse.content?.trim() ? aiResponse.content : fallbackToolContent;
   await persistConversationTurn({
     conversationId: resolvedConversationId,
     finalContent,

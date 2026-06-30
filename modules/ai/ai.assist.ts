@@ -30,7 +30,7 @@ interface AssistResult {
   usage: AssistUsage;
 }
 
-const ASSIST_MODEL_DEFAULT = CHAT_MODEL_FALLBACKS.find((model) => model.endsWith(":free")) ?? CHAT_MODEL_DEFAULT;
+const ASSIST_MODEL_DEFAULT = CHAT_MODEL_DEFAULT;
 const ASSIST_FALLBACKS = [
   ASSIST_MODEL_DEFAULT,
   ...CHAT_MODEL_FALLBACKS.filter((model) => model !== ASSIST_MODEL_DEFAULT),

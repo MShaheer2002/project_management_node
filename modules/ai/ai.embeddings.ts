@@ -5,6 +5,7 @@ import { createEmbedding } from "./ai.provider.js";
 import { recordAiDailyUsage } from "./ai.usage.js";
 
 const EMBEDDING_SIMILARITY_THRESHOLD = 0.85;
+type SupportedEmbeddingEntityType = "ISSUE" | "PROJECT" | "TEAM" | "DEPARTMENT" | "MEMBER" | "CYCLE";
 
 function normalizeWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -27,37 +28,55 @@ function vectorLiteral(embedding: number[]) {
   return `[${embedding.map((value) => Number.isFinite(value) ? value : 0).join(",")}]`;
 }
 
-export async function generateAndStoreIssueEmbedding(input: {
-  workspaceId: string;
-  issueId: string;
-  title: string;
+function normalizeEmbeddingContent(parts: Array<string | null | undefined>) {
+  return normalizeWhitespace(parts.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join("\n\n")).slice(0, 12_000);
+}
+
+export function buildEntityEmbeddingContent(input: {
+  entityType: SupportedEmbeddingEntityType;
+  name: string;
   description?: string | null | undefined;
+  extraParts?: Array<string | null | undefined>;
+}) {
+  const heading = `${input.entityType}: ${input.name}`;
+  return normalizeEmbeddingContent([
+    heading,
+    input.description ?? "",
+    ...(input.extraParts ?? []),
+  ]);
+}
+
+async function generateAndStoreEmbedding(input: {
+  workspaceId: string;
+  entityType: SupportedEmbeddingEntityType;
+  entityId: string;
+  content: string;
   triggeredByUserId?: string | undefined;
 }) {
-  const content = buildIssueEmbeddingContent({ title: input.title, description: input.description });
-  if (!content) {
+  if (!input.content) {
     return null;
   }
 
-  const contentHash = hashEmbeddingContent(content);
+  const contentHash = hashEmbeddingContent(input.content);
 
   const existing = await prisma.$queryRawUnsafe<Array<{ "contentHash": string }>>(
     `SELECT "contentHash" FROM "AiEmbedding"
-     WHERE "workspaceId" = $1 AND "entityType" = 'ISSUE' AND "entityId" = $2
+     WHERE "workspaceId" = $1 AND "entityType" = $2::"AiEmbeddingEntityType" AND "entityId" = $3
      LIMIT 1`,
     input.workspaceId,
-    input.issueId,
+    input.entityType,
+    input.entityId,
   ).catch(() => []);
 
   if (existing[0]?.contentHash === contentHash) {
     return { model: null, contentHash, usage: null };
   }
 
-  const result = await createEmbedding(content);
+  const result = await createEmbedding(input.content);
 
   await prisma.$executeRawUnsafe(
     `INSERT INTO "AiEmbedding" ("id", "workspaceId", "entityType", "entityId", "contentHash", "content", "embedding", "model", "createdAt", "updatedAt")
-     VALUES (gen_random_uuid()::text, $1, 'ISSUE', $2, $3, $4, $5::vector, $6, NOW(), NOW())
+     VALUES (gen_random_uuid()::text, $1, $2::"AiEmbeddingEntityType", $3, $4, $5, $6::vector, $7, NOW(), NOW())
      ON CONFLICT ("workspaceId", "entityType", "entityId")
      DO UPDATE SET
        "contentHash" = EXCLUDED."contentHash",
@@ -66,9 +85,10 @@ export async function generateAndStoreIssueEmbedding(input: {
        "model" = EXCLUDED."model",
        "updatedAt" = NOW()`,
     input.workspaceId,
-    input.issueId,
+    input.entityType,
+    input.entityId,
     contentHash,
-    content,
+    input.content,
     vectorLiteral(result.embedding),
     result.model,
   );
@@ -86,6 +106,48 @@ export async function generateAndStoreIssueEmbedding(input: {
   }
 
   return { model: result.model, contentHash, usage: result.usage, embedding: result.embedding };
+}
+
+export async function generateAndStoreIssueEmbedding(input: {
+  workspaceId: string;
+  issueId: string;
+  title: string;
+  description?: string | null | undefined;
+  triggeredByUserId?: string | undefined;
+}) {
+  const content = buildIssueEmbeddingContent({ title: input.title, description: input.description });
+  return generateAndStoreEmbedding({
+    workspaceId: input.workspaceId,
+    entityType: "ISSUE",
+    entityId: input.issueId,
+    content,
+    triggeredByUserId: input.triggeredByUserId,
+  });
+}
+
+export async function generateAndStoreNamedEntityEmbedding(input: {
+  workspaceId: string;
+  entityType: Exclude<SupportedEmbeddingEntityType, "ISSUE">;
+  entityId: string;
+  name: string;
+  description?: string | null | undefined;
+  extraParts?: Array<string | null | undefined>;
+  triggeredByUserId?: string | undefined;
+}) {
+  const content = buildEntityEmbeddingContent({
+    entityType: input.entityType,
+    name: input.name,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.extraParts !== undefined ? { extraParts: input.extraParts } : {}),
+  });
+
+  return generateAndStoreEmbedding({
+    workspaceId: input.workspaceId,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    content,
+    triggeredByUserId: input.triggeredByUserId,
+  });
 }
 
 export async function findSimilarIssueEmbeddings(input: {

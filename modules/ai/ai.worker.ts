@@ -4,6 +4,7 @@ import { env } from "../../config/env.js";
 import { closeAllQueues } from "../../infra/queue/queues.js";
 import { closeSharedQueueConnection, createWorkerQueueConnection } from "../../infra/queue/redis.js";
 import {
+  processProactiveSummaryJob,
   processEmbeddingJob,
   processIssueIntelligenceJob,
   processSprintPlanningJob,
@@ -14,6 +15,7 @@ import {
   AI_QUEUE_NAMES,
   type EmbeddingJob,
   type IssueIntelligenceJob,
+  type ProactiveSummaryJob,
   type SprintPlanningJob,
   type StaleScanJob,
   type WeeklyDigestJob,
@@ -89,6 +91,11 @@ export async function startAiBackgroundWorkers() {
       AI_QUEUE_NAMES.sprintPlanning,
       "sprint-planning",
       async (payload, job) => processSprintPlanningJob(payload, { jobId: String(job.id ?? "") }),
+    ),
+    createAiWorker<ProactiveSummaryJob>(
+      AI_QUEUE_NAMES.proactiveSummary,
+      "proactive-summary",
+      async (payload, job) => processProactiveSummaryJob(payload, { jobId: String(job.id ?? "") }),
     ),
   ];
 

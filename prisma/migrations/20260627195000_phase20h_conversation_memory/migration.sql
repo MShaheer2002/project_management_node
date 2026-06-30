@@ -1,0 +1,3 @@
+ALTER TABLE "AiConversation"
+ADD COLUMN IF NOT EXISTS "memory" JSONB,
+ADD COLUMN IF NOT EXISTS "memoryUpdatedAt" TIMESTAMP(3);

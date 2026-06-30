@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "tsx watch app/server.ts",
     "build": "tsc",
+    "test": "node --import tsx --test modules/**/*.test.ts",
     "start": "node dist/app/server.js",
     "worker": "node dist/workers/ai-background.worker.js",
     "scheduler": "node dist/workers/ai-background.scheduler.js",

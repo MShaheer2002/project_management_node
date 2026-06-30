@@ -117,6 +117,25 @@ export const EMBEDDING_MODEL_DEFAULT = env.AI_EMBEDDING_MODEL ?? "openai/text-em
 export const DEFAULT_AI_MODEL = ISSUE_MODEL_DEFAULT;
 export const FREE_MODEL_FALLBACKS = ISSUE_MODEL_FALLBACKS;
 
+function uniqueModels(models: Array<string | undefined | null>) {
+  return Array.from(new Set(models.filter((model): model is string => Boolean(model))));
+}
+
+export function fallbackChainForPrimary(primaryModel: string) {
+  if (CHAT_MODEL_FALLBACKS.includes(primaryModel) || primaryModel === CHAT_MODEL_DEFAULT) {
+    return uniqueModels([primaryModel, ...CHAT_MODEL_FALLBACKS.filter((model) => model.includes(":free"))]);
+  }
+  if (ISSUE_MODEL_FALLBACKS.includes(primaryModel) || primaryModel === ISSUE_MODEL_DEFAULT) {
+    return uniqueModels([primaryModel, ...ISSUE_MODEL_FALLBACKS.filter((model) => model.includes(":free"))]);
+  }
+
+  return uniqueModels([
+    primaryModel,
+    ...CHAT_MODEL_FALLBACKS.filter((model) => model.includes(":free")),
+    ...ISSUE_MODEL_FALLBACKS.filter((model) => model.includes(":free")),
+  ]);
+}
+
 // ─── Task-Specific Max Tokens ───────────────────────────────────────────────
 
 const TASK_MAX_TOKENS: Record<string, number> = {
@@ -240,10 +259,7 @@ export async function callAI(
   const temperature = Math.max(0, Math.min(1, options.temperature ?? 0.3));
 
   // Build model list: primary first, then fallbacks (excluding primary to avoid retry)
-  const modelsToTry = [
-    primaryModel,
-    ...FREE_MODEL_FALLBACKS.filter((m) => m !== primaryModel),
-  ];
+  const modelsToTry = fallbackChainForPrimary(primaryModel);
 
   let lastError: AppError | null = null;
 

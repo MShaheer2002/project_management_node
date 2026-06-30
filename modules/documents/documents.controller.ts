@@ -29,6 +29,7 @@ export const createWorkspaceDocument: RequestHandler = async (req, res, next) =>
   try {
     const document = await documentsService.createWorkspaceDocument(
       req.workspace!.id,
+      req.workspace!.role,
       req.user!.id,
       req.body as DocumentDraftInput,
     );
@@ -84,6 +85,7 @@ export const createTeamDocument: RequestHandler = async (req, res, next) => {
   try {
     const document = await documentsService.createTeamDocument(
       req.workspace!.id,
+      req.workspace!.role,
       req.params.id as string,
       req.user!.id,
       req.body as DocumentDraftInput,
@@ -142,6 +144,7 @@ export const createProjectDocument: RequestHandler = async (req, res, next) => {
   try {
     const document = await documentsService.createProjectDocument(
       req.workspace!.id,
+      req.workspace!.role,
       req.params.id as string,
       req.user!.id,
       req.body as DocumentDraftInput,

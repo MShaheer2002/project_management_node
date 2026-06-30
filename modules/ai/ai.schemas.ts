@@ -16,6 +16,9 @@ const aiSuggestionTypeSchema = z.enum([
   "STALE_ISSUE",
   "WEEKLY_DIGEST",
   "SPRINT_PLANNING",
+  "PROJECT_HEALTH",
+  "TEAM_HEALTH",
+  "CYCLE_HEALTH",
 ]);
 const aiSuggestionStatusSchema = z.enum(["OPEN", "ACCEPTED", "DISMISSED", "EXPIRED", "SUPERSEDED"]);
 
@@ -93,9 +96,21 @@ export const dismissSuggestionSchema = {
 /** POST /ai/suggestions/run */
 export const runSuggestionsSchema = {
   body: z.object({
-    targetType: z.enum(["issue", "cycle", "workspace"]),
+    targetType: z.enum(["issue", "project", "team", "cycle", "workspace"]),
     targetId: z.string().trim().min(1).max(255),
-    jobs: z.array(z.enum(["labels", "priority", "duplicate", "assignee", "stale-scan", "weekly-digest", "sprint-planning", "embedding"])).min(1).max(8),
+    jobs: z.array(z.enum([
+      "labels",
+      "priority",
+      "duplicate",
+      "assignee",
+      "stale-scan",
+      "weekly-digest",
+      "sprint-planning",
+      "embedding",
+      "project-health",
+      "team-health",
+      "cycle-health",
+    ])).min(1).max(12),
   }),
 };
 

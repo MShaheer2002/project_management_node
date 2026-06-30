@@ -366,6 +366,7 @@ model User {
   aiConversations       AiConversation[] // Trussen AI chat conversations
   aiUserUsageDaily      AiUserUsageDaily[] // Daily AI usage rollups per workspace
   aiToolExecutions      AiToolExecution[] // Recent AI mutation executions for duplicate protection
+  aiResolverSnapshots   AiResolverSnapshot[] // Entity-resolution audit snapshots
   createdAiSuggestions  AiSuggestion[] @relation("AiSuggestionCreatedBy")
   acceptedAiSuggestions AiSuggestion[] @relation("AiSuggestionAcceptedBy")
   dismissedAiSuggestions AiSuggestion[] @relation("AiSuggestionDismissedBy")
@@ -431,7 +432,10 @@ model Workspace {
   aiToolExecutions      AiToolExecution[]
   aiSuggestions         AiSuggestion[]
   aiEmbeddings          AiEmbedding[]
+  entityAliases         EntityAlias[]
   aiJobRuns             AiJobRun[]
+  aiResolverSnapshots   AiResolverSnapshot[]
+  aiMetricCountersDaily AiMetricCounterDaily[]
 
   @@index([slug])
 }
@@ -1491,8 +1495,12 @@ model AiConversation {
   workspaceId String
   title       String   @default("New conversation")
   summary     String?  @db.Text
+  memory      Json?
   summaryMessageCount Int @default(0)
   summaryUpdatedAt DateTime?
+  pendingAction Json?
+  memoryUpdatedAt DateTime?
+  pendingActionUpdatedAt DateTime?
   requestCount Int     @default(0)
   totalInputTokens Int @default(0)
   totalOutputTokens Int @default(0)
@@ -1522,7 +1530,11 @@ model AiToolExecution {
   conversationId String?
   toolName       String
   fingerprint    String
-  result         Json
+  windowKey      String
+  status         String   @default("STARTED")
+  result         Json?
+  errorMessage   String?
+  completedAt    DateTime?
   createdAt      DateTime @default(now())
 
   workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1533,6 +1545,7 @@ model AiToolExecution {
   @@index([workspaceId, userId, createdAt])
   @@index([conversationId, createdAt])
   @@index([fingerprint, createdAt])
+  @@unique([workspaceId, fingerprint, windowKey])
 }
 
 /// AiMessage — individual messages in a Trussen AI conversation
@@ -1576,6 +1589,9 @@ enum AiSuggestionType {
   STALE_ISSUE
   WEEKLY_DIGEST
   SPRINT_PLANNING
+  PROJECT_HEALTH
+  TEAM_HEALTH
+  CYCLE_HEALTH
 }
 
 enum AiSuggestionStatus {
@@ -1599,6 +1615,19 @@ enum AiEmbeddingEntityType {
   ISSUE
   COMMENT
   DOCUMENT
+  PROJECT
+  TEAM
+  DEPARTMENT
+  MEMBER
+  CYCLE
+}
+
+enum EntityAliasType {
+  PROJECT
+  TEAM
+  DEPARTMENT
+  MEMBER
+  CYCLE
 }
 
 enum AiJobRunStatus {
@@ -1710,6 +1739,26 @@ model AiEmbedding {
   @@index([workspaceId, entityId])
 }
 
+/// EntityAlias — normalized alternate names used by Trussen AI entity resolution
+model EntityAlias {
+  id          String          @id @default(uuid())
+  workspaceId String
+  entityType  EntityAliasType
+  entityId    String
+  alias       String
+  normalized  String
+  locale      String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, entityType])
+  @@index([workspaceId, entityType, normalized])
+  @@index([workspaceId, entityType, entityId])
+  @@unique([workspaceId, entityType, entityId, normalized])
+}
+
 /// AiJobRun — background AI execution health and support tracing
 model AiJobRun {
   id           String         @id @default(uuid())
@@ -1729,4 +1778,55 @@ model AiJobRun {
 
   @@index([workspaceId, jobName, startedAt])
   @@index([jobName, status, startedAt])
+}
+
+/// AiResolverSnapshot — persisted entity-resolution audit trail for replay and tuning
+model AiResolverSnapshot {
+  id                String   @id @default(uuid())
+  workspaceId       String
+  userId            String?
+  conversationId    String?
+  triggeringIntent  String?
+  requestedEntityType String
+  expectedEntityTypes String[]
+  rawTextFragment   String   @db.Text
+  accessMode        String
+  actionRisk        String
+  chosenCandidateId String?
+  chosenCandidateName String?
+  confidence        Float?
+  resolutionStatus  String
+  confirmationRequired Boolean @default(false)
+  contextOnly       Boolean @default(false)
+  memoryAssisted    Boolean @default(false)
+  topCandidates     Json?
+  reason            String?  @db.Text
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, triggeringIntent, createdAt])
+  @@index([workspaceId, requestedEntityType, resolutionStatus, createdAt])
+}
+
+/// AiMetricCounterDaily — durable daily counters for AI quality and orchestration metrics
+model AiMetricCounterDaily {
+  id             String   @id @default(uuid())
+  workspaceId    String
+  feature        String
+  metric         String
+  bucketDate     DateTime @db.Date
+  dimensionsHash String
+  dimensions     Json?
+  count          Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, feature, metric, bucketDate, dimensionsHash])
+  @@index([workspaceId, feature, metric, bucketDate])
 }

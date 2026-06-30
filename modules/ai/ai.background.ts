@@ -1,15 +1,26 @@
 import { prisma } from "../../shared/utils/prisma.js";
 import { env } from "../../config/env.js";
+import { AppError } from "../../shared/utils/api-error.js";
+import { AiSuggestionType } from "../../app/generated/prisma/client.js";
 import { logAiError, logAiInfo, logAiWarn } from "./ai.observability.js";
+import { upsertEntityAliases } from "./ai.entity-aliases.js";
 import { detectPriority } from "./ai.rules.js";
+import {
+  buildCycleHealthSummary,
+  buildProjectHealthSummary,
+  buildTeamHealthSummary,
+  buildWorkspaceDigestPayload,
+} from "./ai.background-summaries.js";
 import {
   enqueueEmbedding,
   enqueueIssueIntelligence,
+  enqueueProactiveSummary,
   enqueueSprintPlanning,
   enqueueStaleScan,
   enqueueWeeklyDigest,
   type EmbeddingJob,
   type IssueIntelligenceJob,
+  type ProactiveSummaryJob,
   type SprintPlanningJob,
   type StaleScanJob,
   type WeeklyDigestJob,
@@ -17,6 +28,7 @@ import {
 import {
   findSimilarIssueEmbeddings,
   findSimilarIssuesByText,
+  generateAndStoreNamedEntityEmbedding,
   generateAndStoreIssueEmbedding,
 } from "./ai.embeddings.js";
 
@@ -31,8 +43,9 @@ const LABEL_ALIAS_MAP: Record<string, string[]> = {
 };
 
 type IssueIntelligenceReason = IssueIntelligenceJob["reason"];
-type SuggestionType = "ASSIGNEE" | "DUPLICATE" | "LABEL" | "PRIORITY" | "STALE_ISSUE" | "WEEKLY_DIGEST" | "SPRINT_PLANNING";
+type SuggestionType = typeof AiSuggestionType[keyof typeof AiSuggestionType];
 const STALE_SUGGESTION_COOLDOWN_DAYS = 7;
+const ISSUE_SUGGESTION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 function summarizeError(error: unknown) {
   return error instanceof Error ? error.message : "Unknown background AI failure";
@@ -74,7 +87,23 @@ function dedupeVersion(date: Date) {
   return date.toISOString();
 }
 
+async function expireOpenSuggestions(workspaceId: string, targetType?: string, targetId?: string) {
+  await (prisma as any).aiSuggestion.updateMany({
+    where: {
+      workspaceId,
+      status: "OPEN",
+      expiresAt: { lte: new Date() },
+      ...(targetType ? { targetType } : {}),
+      ...(targetId ? { targetId } : {}),
+    },
+    data: {
+      status: "EXPIRED",
+    },
+  });
+}
+
 async function markSuggestionsSuperseded(workspaceId: string, targetType: string, targetId: string, types: SuggestionType[]) {
+  await expireOpenSuggestions(workspaceId, targetType, targetId);
   await (prisma as any).aiSuggestion.updateMany({
     where: {
       workspaceId,
@@ -87,6 +116,25 @@ async function markSuggestionsSuperseded(workspaceId: string, targetType: string
       status: "SUPERSEDED",
     },
   });
+}
+
+async function loadEntityAliasEmbeddingParts(workspaceId: string, entityType: "PROJECT" | "TEAM" | "DEPARTMENT" | "MEMBER" | "CYCLE", entityId: string) {
+  const rows = await (prisma as any).entityAlias.findMany({
+    where: {
+      workspaceId,
+      entityType,
+      entityId,
+    },
+    select: {
+      alias: true,
+      locale: true,
+    },
+    orderBy: { createdAt: "asc" },
+    take: 20,
+  }).catch(() => []);
+
+  return (rows as Array<{ alias: string; locale: string | null }>)
+    .flatMap((row) => row.locale ? [row.alias, `alias:${row.locale}:${row.alias}`] : [row.alias]);
 }
 
 async function upsertSuggestion(input: {
@@ -107,6 +155,19 @@ async function upsertSuggestion(input: {
   createdByUserId?: string | undefined;
   expiresAt?: Date | null | undefined;
 }) {
+  const payload = {
+    ...input.payload,
+    anchor: {
+      targetType: input.targetType,
+      targetId: input.targetId,
+      ...((input.payload.anchor ?? {}) as Record<string, unknown>),
+    },
+    lifecycle: {
+      dedupeKey: input.dedupeKey,
+      expiresAt: input.expiresAt ? input.expiresAt.toISOString() : null,
+    },
+  };
+
   return (prisma as any).aiSuggestion.upsert({
     where: {
       workspaceId_dedupeKey: {
@@ -125,7 +186,7 @@ async function upsertSuggestion(input: {
       message: input.message,
       confidence: input.confidence,
       reason: input.reason ?? null,
-      payload: input.payload,
+      payload,
       dedupeKey: input.dedupeKey,
       model: input.model ?? null,
       inputTokens: input.inputTokens ?? 0,
@@ -140,7 +201,7 @@ async function upsertSuggestion(input: {
       message: input.message,
       confidence: input.confidence,
       reason: input.reason ?? null,
-      payload: input.payload,
+      payload,
       model: input.model ?? null,
       inputTokens: input.inputTokens ?? 0,
       outputTokens: input.outputTokens ?? 0,
@@ -159,7 +220,7 @@ async function notifySuggestionRecipients(input: {
   suggestionId: string;
   title: string;
   message: string;
-  targetType: "issue" | "workspace" | "team";
+  targetType: "issue" | "workspace" | "team" | "project";
   targetId: string;
   targetPublicId?: string | null;
   targetUrl: string;
@@ -249,6 +310,7 @@ async function suggestLabelsForIssue(input: {
     payload: { issueId: input.issueId, labels: matches },
     dedupeKey: `label:issue:${input.issueId}:version:${dedupeVersion(input.updatedAt)}`,
     createdByUserId: input.createdByUserId,
+    expiresAt: new Date(Date.now() + ISSUE_SUGGESTION_TTL_MS),
   });
 }
 
@@ -282,6 +344,7 @@ async function suggestPriorityForIssue(input: {
     },
     dedupeKey: `priority:issue:${input.issueId}:priority:${suggestedPriority}:version:${dedupeVersion(input.updatedAt)}`,
     createdByUserId: input.createdByUserId,
+    expiresAt: new Date(Date.now() + ISSUE_SUGGESTION_TTL_MS),
   });
 }
 
@@ -355,6 +418,7 @@ async function suggestAssigneeForIssue(input: {
     },
     dedupeKey: `assignee:issue:${input.issueId}:version:${dedupeVersion(input.updatedAt)}`,
     createdByUserId: input.createdByUserId,
+    expiresAt: new Date(Date.now() + ISSUE_SUGGESTION_TTL_MS),
   });
 }
 
@@ -393,6 +457,7 @@ async function suggestDuplicatesByText(input: {
     },
     dedupeKey: `duplicate:issue:${input.issueId}:version:${dedupeVersion(input.updatedAt)}:text`,
     createdByUserId: input.createdByUserId,
+    expiresAt: new Date(Date.now() + ISSUE_SUGGESTION_TTL_MS),
   });
 }
 
@@ -469,6 +534,7 @@ async function suggestDuplicatesByEmbedding(input: {
     inputTokens: embeddingResult.usage?.inputTokens ?? 0,
     outputTokens: 0,
     createdByUserId: input.createdByUserId,
+    expiresAt: new Date(Date.now() + ISSUE_SUGGESTION_TTL_MS),
   });
 }
 
@@ -568,6 +634,7 @@ export async function triggerLabelRefreshForWorkspace(input: { workspaceId: stri
           {
             includeEmbedding: false,
             includeIssueIntelligence: true,
+            includeScopeSummaries: false,
           },
         ),
       ),
@@ -611,6 +678,7 @@ export async function processIssueIntelligenceJob(payload: IssueIntelligenceJob,
       "LABEL",
       "PRIORITY",
       "DUPLICATE",
+      "STALE_ISSUE",
     ]);
 
     const currentLabels = issue.labels.map((label) => label.label.name);
@@ -712,8 +780,210 @@ export async function processEmbeddingJob(payload: EmbeddingJob, jobMeta?: { job
   });
 
   try {
-    if (payload.entityType !== "ISSUE") {
-      await finishJobRun(run.id, "SKIPPED", { reason: "Unsupported embedding entity type" });
+    if (payload.entityType === "PROJECT") {
+      const project = await prisma.project.findFirst({
+        where: { id: payload.entityId, workspaceId: payload.workspaceId },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          status: true,
+          team: { select: { name: true } },
+          department: { select: { name: true } },
+        },
+      });
+
+      if (!project) {
+        await finishJobRun(run.id, "SKIPPED", { reason: "Project not found" });
+        return;
+      }
+
+      const aliases = await loadEntityAliasEmbeddingParts(payload.workspaceId, "PROJECT", project.id);
+      await generateAndStoreNamedEntityEmbedding({
+        workspaceId: payload.workspaceId,
+        entityType: "PROJECT",
+        entityId: project.id,
+        name: project.name,
+        description: project.description,
+        extraParts: [project.status, project.team?.name, project.department?.name, ...aliases],
+        triggeredByUserId: payload.triggeredByUserId,
+      });
+      await upsertEntityAliases({
+        workspaceId: payload.workspaceId,
+        entityType: "PROJECT",
+        entityId: project.id,
+        aliases: [project.name],
+      });
+
+      await finishJobRun(run.id, "SUCCEEDED", { entityType: payload.entityType, entityId: payload.entityId });
+      return;
+    }
+
+    if (payload.entityType === "TEAM") {
+      const team = await prisma.team.findFirst({
+        where: { id: payload.entityId, workspaceId: payload.workspaceId },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          visibility: true,
+          department: { select: { name: true } },
+          projects: { select: { name: true }, orderBy: { name: "asc" }, take: 20 },
+        },
+      });
+
+      if (!team) {
+        await finishJobRun(run.id, "SKIPPED", { reason: "Team not found" });
+        return;
+      }
+
+      const aliases = await loadEntityAliasEmbeddingParts(payload.workspaceId, "TEAM", team.id);
+      await generateAndStoreNamedEntityEmbedding({
+        workspaceId: payload.workspaceId,
+        entityType: "TEAM",
+        entityId: team.id,
+        name: team.name,
+        description: team.description,
+        extraParts: [team.visibility, team.department?.name, ...team.projects.map((project) => project.name), ...aliases],
+        triggeredByUserId: payload.triggeredByUserId,
+      });
+      await upsertEntityAliases({
+        workspaceId: payload.workspaceId,
+        entityType: "TEAM",
+        entityId: team.id,
+        aliases: [team.name],
+      });
+
+      await finishJobRun(run.id, "SUCCEEDED", { entityType: payload.entityType, entityId: payload.entityId });
+      return;
+    }
+
+    if (payload.entityType === "DEPARTMENT") {
+      const department = await prisma.department.findFirst({
+        where: { id: payload.entityId, workspaceId: payload.workspaceId },
+        select: { id: true, name: true, description: true, visibility: true },
+      });
+
+      if (!department) {
+        await finishJobRun(run.id, "SKIPPED", { reason: "Department not found" });
+        return;
+      }
+
+      const aliases = await loadEntityAliasEmbeddingParts(payload.workspaceId, "DEPARTMENT", department.id);
+      await generateAndStoreNamedEntityEmbedding({
+        workspaceId: payload.workspaceId,
+        entityType: "DEPARTMENT",
+        entityId: department.id,
+        name: department.name,
+        description: department.description,
+        extraParts: [department.visibility, ...aliases],
+        triggeredByUserId: payload.triggeredByUserId,
+      });
+      await upsertEntityAliases({
+        workspaceId: payload.workspaceId,
+        entityType: "DEPARTMENT",
+        entityId: department.id,
+        aliases: [department.name],
+      });
+
+      await finishJobRun(run.id, "SUCCEEDED", { entityType: payload.entityType, entityId: payload.entityId });
+      return;
+    }
+
+    if (payload.entityType === "MEMBER") {
+      const member = await prisma.workspaceMembership.findFirst({
+        where: {
+          workspaceId: payload.workspaceId,
+          userId: payload.entityId,
+        },
+        select: {
+          role: true,
+          user: { select: { id: true, name: true, email: true } },
+          workspace: { select: { id: true } },
+        },
+      });
+
+      if (!member?.user) {
+        await finishJobRun(run.id, "SKIPPED", { reason: "Member not found" });
+        return;
+      }
+
+      const [aliases, teamMemberships, departmentMemberships] = await Promise.all([
+        loadEntityAliasEmbeddingParts(payload.workspaceId, "MEMBER", member.user.id),
+        prisma.teamMembership.findMany({
+          where: { userId: member.user.id, team: { workspaceId: payload.workspaceId } },
+          select: { team: { select: { name: true } } },
+          orderBy: { teamId: "asc" },
+          take: 20,
+        }),
+        prisma.departmentMembership.findMany({
+          where: { userId: member.user.id, department: { workspaceId: payload.workspaceId } },
+          select: { department: { select: { name: true } } },
+          orderBy: { departmentId: "asc" },
+          take: 20,
+        }),
+      ]);
+      await generateAndStoreNamedEntityEmbedding({
+        workspaceId: payload.workspaceId,
+        entityType: "MEMBER",
+        entityId: member.user.id,
+        name: member.user.name,
+        description: member.user.email,
+        extraParts: [
+          member.role,
+          ...teamMemberships.map((entry) => entry.team.name),
+          ...departmentMemberships.map((entry) => entry.department.name),
+          ...aliases,
+        ],
+        triggeredByUserId: payload.triggeredByUserId,
+      });
+      await upsertEntityAliases({
+        workspaceId: payload.workspaceId,
+        entityType: "MEMBER",
+        entityId: member.user.id,
+        aliases: [member.user.name, member.user.email],
+      });
+
+      await finishJobRun(run.id, "SUCCEEDED", { entityType: payload.entityType, entityId: payload.entityId });
+      return;
+    }
+
+    if (payload.entityType === "CYCLE") {
+      const cycle = await (prisma as any).cycle.findFirst({
+        where: { id: payload.entityId, workspaceId: payload.workspaceId },
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          goal: true,
+          status: true,
+          team: { select: { name: true } },
+        },
+      });
+
+      if (!cycle) {
+        await finishJobRun(run.id, "SKIPPED", { reason: "Cycle not found" });
+        return;
+      }
+
+      const aliases = await loadEntityAliasEmbeddingParts(payload.workspaceId, "CYCLE", cycle.id);
+      await generateAndStoreNamedEntityEmbedding({
+        workspaceId: payload.workspaceId,
+        entityType: "CYCLE",
+        entityId: cycle.id,
+        name: cycle.name,
+        description: cycle.description,
+        extraParts: [cycle.goal, cycle.status, cycle.team?.name, ...aliases],
+        triggeredByUserId: payload.triggeredByUserId,
+      });
+      await upsertEntityAliases({
+        workspaceId: payload.workspaceId,
+        entityType: "CYCLE",
+        entityId: cycle.id,
+        aliases: [cycle.name],
+      });
+
+      await finishJobRun(run.id, "SUCCEEDED", { entityType: payload.entityType, entityId: payload.entityId });
       return;
     }
 
@@ -911,83 +1181,8 @@ export async function processWeeklyDigestJob(payload: WeeklyDigestJob, jobMeta?:
       : await prisma.workspace.findMany({ select: { id: true }, take: 500 });
 
     for (const workspace of workspaces) {
-      const staleCutoff = new Date(Date.now() - env.AI_STALE_ISSUE_DAYS * 24 * 60 * 60 * 1000);
-      const [createdIssues, completedIssues, activeIssues, overdueIssues, staleIssues, blockedRows, owners, currentCycles] = await Promise.all([
-        prisma.issue.count({ where: { workspaceId: workspace.id, createdAt: { gte: since } } }),
-        prisma.issue.count({ where: { workspaceId: workspace.id, completedAt: { gte: since } } }),
-        prisma.issue.count({ where: { workspaceId: workspace.id, status: { notIn: ["done", "DONE"] as any } } }),
-        prisma.issue.count({
-          where: {
-            workspaceId: workspace.id,
-            dueDate: { lt: new Date() },
-            completedAt: null,
-            status: { notIn: ["done", "DONE"] as any },
-          },
-        }),
-        prisma.issue.count({
-          where: {
-            workspaceId: workspace.id,
-            updatedAt: { lte: staleCutoff },
-            completedAt: null,
-            status: { in: ["in-progress", "review"] as any },
-          },
-        }),
-        prisma.issueRelation.findMany({
-          where: { type: "BLOCKED_BY" as any, issue: { workspaceId: workspace.id, completedAt: null } },
-          select: {
-            issueId: true,
-            issue: { select: { id: true, title: true, internalId: true, status: true } },
-          },
-        }),
-        prisma.workspaceMembership.findMany({
-          where: {
-            workspaceId: workspace.id,
-            role: { in: ["OWNER", "ADMIN"] as any },
-          },
-          select: { userId: true },
-        }),
-        prisma.cycle.findMany({
-          where: { workspaceId: workspace.id, status: "CURRENT" as any },
-          select: {
-            id: true,
-            name: true,
-            issues: {
-              select: { id: true, status: true },
-            },
-          },
-          take: 10,
-        }),
-      ]);
-
-      const blockerCount = new Map<string, { issueId: string; title: string; publicId: string; count: number; status: string }>();
-      for (const row of blockedRows) {
-        if (!row.issue) continue;
-        const current = blockerCount.get(row.issueId) ?? {
-          issueId: row.issue.id,
-          title: row.issue.title,
-          publicId: row.issue.internalId,
-          status: row.issue.status,
-          count: 0,
-        };
-        current.count += 1;
-        blockerCount.set(row.issueId, current);
-      }
-
-      const topBlockers = [...blockerCount.values()]
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 5);
-
-      const cycleProgress = currentCycles.map((cycle) => {
-        const total = cycle.issues.length;
-        const completed = cycle.issues.filter((issue) => isDoneStatus(issue.status)).length;
-        return {
-          cycleId: cycle.id,
-          cycleName: cycle.name,
-          totalIssues: total,
-          completedIssues: completed,
-          progressPercent: total === 0 ? 0 : Math.round((completed / total) * 100),
-        };
-      });
+      const digest = await buildWorkspaceDigestPayload(workspace.id);
+      await markSuggestionsSuperseded(workspace.id, "workspace", workspace.id, ["WEEKLY_DIGEST"]);
 
       const suggestion = await upsertSuggestion({
         workspaceId: workspace.id,
@@ -995,22 +1190,13 @@ export async function processWeeklyDigestJob(payload: WeeklyDigestJob, jobMeta?:
         source: "SQL",
         targetType: "workspace",
         targetId: workspace.id,
-        title: "Weekly AI digest ready",
-        message: "Weekly workspace summary is ready.",
-        confidence: 1,
-        reason: "Built from workspace issue activity aggregates over the last 7 days.",
-        payload: {
-          range: { from: since.toISOString(), to: new Date().toISOString() },
-          createdIssues,
-          completedIssues,
-          activeIssues,
-          overdueIssues,
-          staleIssues,
-          topBlockers,
-          cycleProgress,
-        },
+        title: digest.title,
+        message: digest.message,
+        confidence: digest.confidence,
+        reason: digest.reason,
+        payload: digest.payload,
         dedupeKey: `weekly-digest:workspace:${workspace.id}:week:${since.toISOString().slice(0, 10)}`,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expiresAt: digest.expiresAt,
       });
 
       await notifySuggestionRecipients({
@@ -1021,7 +1207,7 @@ export async function processWeeklyDigestJob(payload: WeeklyDigestJob, jobMeta?:
         targetType: "workspace",
         targetId: workspace.id,
         targetUrl: "/dashboard",
-        recipientUserIds: owners.map((owner) => owner.userId),
+        recipientUserIds: digest.recipientUserIds,
         metadata: {
           suggestionType: suggestion.type,
         },
@@ -1156,6 +1342,7 @@ export async function processSprintPlanningJob(payload: SprintPlanningJob, jobMe
       },
       dedupeKey: `sprint-planning:cycle:${cycle.id}:version:${dedupeVersion(cycle.updatedAt)}`,
       createdByUserId: payload.triggeredByUserId,
+      expiresAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
     });
 
     const recipients = await getSprintPlanningRecipientIds(payload.workspaceId, cycle.teamId);
@@ -1182,6 +1369,90 @@ export async function processSprintPlanningJob(payload: SprintPlanningJob, jobMe
   }
 }
 
+export async function processProactiveSummaryJob(payload: ProactiveSummaryJob, jobMeta?: { jobId?: string }) {
+  const run = await createJobRun({
+    workspaceId: payload.workspaceId,
+    jobName: "proactive-summary",
+    jobId: jobMeta?.jobId,
+    targetType: payload.scope,
+    targetId: payload.scopeId,
+  });
+
+  try {
+    let summary;
+    try {
+      summary = payload.scope === "project"
+        ? await buildProjectHealthSummary(payload.workspaceId, payload.scopeId)
+        : payload.scope === "team"
+          ? await buildTeamHealthSummary(payload.workspaceId, payload.scopeId)
+          : await buildCycleHealthSummary(payload.workspaceId, payload.scopeId);
+    } catch (error) {
+      if (error instanceof AppError && error.statusCode === 404) {
+        await finishJobRun(run.id, "SKIPPED", {
+          scope: payload.scope,
+          scopeId: payload.scopeId,
+          reason: error.message,
+        });
+        return;
+      }
+      throw error;
+    }
+
+    if (!summary || summary.recipientUserIds.length === 0) {
+      await finishJobRun(run.id, "SKIPPED", {
+        scope: payload.scope,
+        scopeId: payload.scopeId,
+        reason: "No proactive summary was warranted for the current scope state",
+      });
+      return;
+    }
+
+    await markSuggestionsSuperseded(payload.workspaceId, summary.targetType, summary.targetId, [summary.type]);
+
+    const suggestion = await upsertSuggestion({
+      workspaceId: payload.workspaceId,
+      type: summary.type,
+      source: "SQL",
+      targetType: summary.targetType,
+      targetId: summary.targetId,
+      title: summary.title,
+      message: summary.message,
+      confidence: summary.confidence,
+      reason: summary.reason,
+      payload: summary.payload,
+      dedupeKey: `${summary.targetType}-health:${summary.targetId}:${summary.dedupeSuffix}`,
+      createdByUserId: payload.triggeredByUserId,
+      expiresAt: summary.expiresAt,
+    });
+
+    await notifySuggestionRecipients({
+      workspaceId: payload.workspaceId,
+      suggestionId: suggestion.id,
+      title: suggestion.title,
+      message: suggestion.message,
+      targetType: summary.notificationTargetType ?? "workspace",
+      targetId: summary.notificationTargetId ?? summary.targetId,
+      targetUrl: summary.notificationUrl ?? `/${summary.targetType}s/${summary.targetId}`,
+      recipientUserIds: summary.recipientUserIds,
+      metadata: {
+        suggestionType: suggestion.type,
+        scope: payload.scope,
+        scopeId: payload.scopeId,
+      },
+    });
+
+    await finishJobRun(run.id, "SUCCEEDED", {
+      scope: payload.scope,
+      scopeId: payload.scopeId,
+      suggestionId: suggestion.id,
+      suggestionType: suggestion.type,
+    });
+  } catch (error) {
+    await finishJobRun(run.id, "FAILED", undefined, "PROACTIVE_SUMMARY_FAILED", summarizeError(error));
+    throw error;
+  }
+}
+
 function runDetached(label: string, task: () => Promise<void>) {
   setImmediate(() => {
     task().catch((error) => {
@@ -1197,11 +1468,12 @@ function runDetached(label: string, task: () => Promise<void>) {
 
 export async function triggerIssueBackgroundJobs(
   input: { workspaceId: string; issueId: string; triggeredByUserId?: string | undefined; reason: IssueIntelligenceReason },
-  options?: { includeIssueIntelligence?: boolean; includeEmbedding?: boolean },
+  options?: { includeIssueIntelligence?: boolean; includeEmbedding?: boolean; includeScopeSummaries?: boolean },
 ) {
   await triggerBackgroundSafely("issue-background", async () => {
     const includeIssueIntelligence = options?.includeIssueIntelligence ?? true;
     const includeEmbedding = options?.includeEmbedding ?? true;
+    const includeScopeSummaries = options?.includeScopeSummaries ?? true;
 
     const [issueJob, embeddingJob] = await Promise.all([
       includeIssueIntelligence ? enqueueIssueIntelligence(input) : Promise.resolve(null),
@@ -1228,14 +1500,57 @@ export async function triggerIssueBackgroundJobs(
         reason: input.reason,
       }));
     }
+
+    if (includeScopeSummaries) {
+      const issue = await prisma.issue.findFirst({
+        where: { id: input.issueId, workspaceId: input.workspaceId },
+        select: { projectId: true, teamId: true },
+      });
+
+      if (issue?.projectId) {
+        await triggerProactiveSummary({
+          workspaceId: input.workspaceId,
+          scope: "project",
+          scopeId: issue.projectId,
+          triggeredByUserId: input.triggeredByUserId,
+          reason: input.reason,
+        });
+      }
+
+      if (issue?.teamId) {
+        await triggerProactiveSummary({
+          workspaceId: input.workspaceId,
+          scope: "team",
+          scopeId: issue.teamId,
+          triggeredByUserId: input.triggeredByUserId,
+          reason: input.reason,
+        });
+      }
+    }
   });
 }
 
-export async function triggerCycleBackgroundJobs(input: { workspaceId: string; cycleId: string; triggeredByUserId?: string | undefined; reason: SprintPlanningJob["reason"] }) {
+export async function triggerCycleBackgroundJobs(
+  input: { workspaceId: string; cycleId: string; triggeredByUserId?: string | undefined; reason: SprintPlanningJob["reason"] },
+  options?: { includeSprintPlanning?: boolean; includeHealthSummary?: boolean },
+) {
   await triggerBackgroundSafely("cycle-background", async () => {
-    const job = await enqueueSprintPlanning(input);
-    if (!job) {
+    const includeSprintPlanning = options?.includeSprintPlanning ?? true;
+    const includeHealthSummary = options?.includeHealthSummary ?? true;
+
+    const job = includeSprintPlanning ? await enqueueSprintPlanning(input) : null;
+    if (includeSprintPlanning && !job) {
       runDetached("sprint-planning", () => processSprintPlanningJob(input));
+    }
+
+    if (includeHealthSummary) {
+      await triggerProactiveSummary({
+        workspaceId: input.workspaceId,
+        scope: "cycle",
+        scopeId: input.cycleId,
+        triggeredByUserId: input.triggeredByUserId,
+        reason: input.reason,
+      });
     }
   });
 }
@@ -1254,6 +1569,15 @@ export async function triggerWeeklyDigest(input: WeeklyDigestJob) {
     const job = await enqueueWeeklyDigest(input);
     if (!job) {
       runDetached("weekly-digest", () => processWeeklyDigestJob(input));
+    }
+  });
+}
+
+export async function triggerProactiveSummary(input: ProactiveSummaryJob) {
+  await triggerBackgroundSafely("proactive-summary", async () => {
+    const job = await enqueueProactiveSummary(input);
+    if (!job) {
+      runDetached("proactive-summary", () => processProactiveSummaryJob(input));
     }
   });
 }

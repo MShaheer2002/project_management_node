@@ -326,9 +326,15 @@ async function createDocumentsForScope(
   return created;
 }
 
-async function createDocument(workspaceId: string, userId: string, context: ScopeContext, input: DocumentDraftInput) {
+async function createDocument(
+  workspaceId: string,
+  workspaceRole: WorkspaceRole,
+  userId: string,
+  context: ScopeContext,
+  input: DocumentDraftInput,
+) {
   const created = await prisma.$transaction(async (tx) => {
-    await assertScopeExists(workspaceId, context);
+    await assertScopeAccessible(workspaceId, workspaceRole, userId, context);
     const [document] = await createDocumentsForScope(tx, workspaceId, userId, context, [input]);
     return document;
   });
@@ -449,8 +455,13 @@ export async function listWorkspaceDocuments(workspaceId: string, query: ListDoc
   return listDocuments(workspaceId, { scope: "WORKSPACE" }, query);
 }
 
-export async function createWorkspaceDocument(workspaceId: string, userId: string, input: DocumentDraftInput) {
-  return createDocument(workspaceId, userId, { scope: "WORKSPACE" }, input);
+export async function createWorkspaceDocument(
+  workspaceId: string,
+  workspaceRole: WorkspaceRole,
+  userId: string,
+  input: DocumentDraftInput,
+) {
+  return createDocument(workspaceId, workspaceRole, userId, { scope: "WORKSPACE" }, input);
 }
 
 export async function updateWorkspaceDocument(workspaceId: string, documentId: string, userId: string, input: UpdateDocumentInput) {
@@ -466,8 +477,14 @@ export async function listTeamDocuments(workspaceId: string, workspaceRole: Work
   return listDocuments(workspaceId, { scope: "TEAM", teamId }, query);
 }
 
-export async function createTeamDocument(workspaceId: string, teamId: string, userId: string, input: DocumentDraftInput) {
-  return createDocument(workspaceId, userId, { scope: "TEAM", teamId }, input);
+export async function createTeamDocument(
+  workspaceId: string,
+  workspaceRole: WorkspaceRole,
+  teamId: string,
+  userId: string,
+  input: DocumentDraftInput,
+) {
+  return createDocument(workspaceId, workspaceRole, userId, { scope: "TEAM", teamId }, input);
 }
 
 export async function updateTeamDocument(workspaceId: string, teamId: string, documentId: string, userId: string, input: UpdateDocumentInput) {
@@ -489,8 +506,14 @@ export async function listProjectDocuments(
   return listDocuments(workspaceId, { scope: "PROJECT", projectId }, query);
 }
 
-export async function createProjectDocument(workspaceId: string, projectId: string, userId: string, input: DocumentDraftInput) {
-  return createDocument(workspaceId, userId, { scope: "PROJECT", projectId }, input);
+export async function createProjectDocument(
+  workspaceId: string,
+  workspaceRole: WorkspaceRole,
+  projectId: string,
+  userId: string,
+  input: DocumentDraftInput,
+) {
+  return createDocument(workspaceId, workspaceRole, userId, { scope: "PROJECT", projectId }, input);
 }
 
 export async function updateProjectDocument(workspaceId: string, projectId: string, documentId: string, userId: string, input: UpdateDocumentInput) {

@@ -10,13 +10,32 @@ import type {
   ListSuggestionsInput,
   RunSuggestionsInput,
 } from "./ai.schemas.js";
-import { triggerCycleBackgroundJobs, triggerIssueBackgroundJobs, triggerStaleScan, triggerWeeklyDigest } from "./ai.background.js";
+import {
+  triggerCycleBackgroundJobs,
+  triggerIssueBackgroundJobs,
+  triggerProactiveSummary,
+  triggerStaleScan,
+  triggerWeeklyDigest,
+} from "./ai.background.js";
 import { updateIssue } from "../issue/issue.service.js";
 import { assignIssueToCycle } from "../cycle/cycle.service.js";
 import { logActivity } from "../../shared/utils/activity.js";
 
 function isAdminRole(role: WorkspaceRole) {
   return role === "OWNER" || role === "ADMIN";
+}
+
+async function expireVisibleSuggestions(workspaceId: string) {
+  await (prisma as any).aiSuggestion.updateMany({
+    where: {
+      workspaceId,
+      status: "OPEN",
+      expiresAt: { lte: new Date() },
+    },
+    data: {
+      status: "EXPIRED",
+    },
+  });
 }
 
 async function canAccessIssue(workspaceId: string, userId: string, role: WorkspaceRole, issueId: string) {
@@ -39,6 +58,52 @@ async function canAccessIssue(workspaceId: string, userId: string, role: Workspa
   return Boolean(issue);
 }
 
+async function canAccessProject(workspaceId: string, userId: string, role: WorkspaceRole, projectId: string) {
+  const project = await prisma.project.findFirst({
+    where: {
+      id: projectId,
+      workspaceId,
+      ...(isAdminRole(role)
+        ? {}
+        : {
+            OR: [
+              { visibility: "PUBLIC" },
+              { leadId: userId },
+              { memberships: { some: { userId } } },
+            ],
+          }),
+    },
+    select: { id: true },
+  });
+  return Boolean(project);
+}
+
+async function canAccessTeam(workspaceId: string, userId: string, role: WorkspaceRole, teamId: string) {
+  if (isAdminRole(role)) {
+    const team = await prisma.team.findFirst({
+      where: { id: teamId, workspaceId },
+      select: { id: true },
+    });
+    return Boolean(team);
+  }
+
+  const team = await prisma.team.findFirst({
+    where: { id: teamId, workspaceId },
+    select: { id: true, leadId: true },
+  });
+  if (!team) return false;
+
+  if (team.leadId === userId) {
+    return true;
+  }
+
+  const membership = await prisma.teamMembership.findUnique({
+    where: { userId_teamId: { userId, teamId } },
+    select: { userId: true },
+  });
+  return Boolean(membership);
+}
+
 async function canAccessCycle(workspaceId: string, userId: string, role: WorkspaceRole, cycleId: string) {
   if (isAdminRole(role)) {
     const cycle = await prisma.cycle.findFirst({ where: { id: cycleId, workspaceId }, select: { id: true } });
@@ -53,6 +118,14 @@ async function canAccessCycle(workspaceId: string, userId: string, role: Workspa
     },
   });
   if (!cycle) return false;
+
+  const team = await prisma.team.findFirst({
+    where: { id: cycle.teamId, workspaceId },
+    select: { leadId: true },
+  });
+  if (team?.leadId === userId) {
+    return true;
+  }
 
   const membership = await prisma.teamMembership.findUnique({
     where: { userId_teamId: { userId, teamId: cycle.teamId } },
@@ -72,11 +145,19 @@ async function canAccessSuggestion(workspaceId: string, userId: string, role: Wo
     return canAccessIssue(workspaceId, userId, role, suggestion.targetId);
   }
 
+  if (targetType === "project") {
+    return canAccessProject(workspaceId, userId, role, suggestion.targetId);
+  }
+
+  if (targetType === "team") {
+    return canAccessTeam(workspaceId, userId, role, suggestion.targetId);
+  }
+
   if (targetType === "cycle") {
     return canAccessCycle(workspaceId, userId, role, suggestion.targetId);
   }
 
-  if (suggestion.type === "WEEKLY_DIGEST") {
+  if (targetType === "workspace") {
     return isAdminRole(role);
   }
 
@@ -109,6 +190,7 @@ function mapSuggestion(item: any) {
 }
 
 export async function listSuggestions(workspaceId: string, userId: string, role: WorkspaceRole, query: ListSuggestionsInput) {
+  await expireVisibleSuggestions(workspaceId);
   const limit = clampListLimit(query.limit, 20);
 
   const records = await (prisma as any).aiSuggestion.findMany({
@@ -144,6 +226,7 @@ export async function listSuggestions(workspaceId: string, userId: string, role:
 }
 
 async function getOpenSuggestionOrThrow(id: string, workspaceId: string) {
+  await expireVisibleSuggestions(workspaceId);
   const suggestion = await (prisma as any).aiSuggestion.findFirst({
     where: { id, workspaceId },
   });
@@ -200,6 +283,10 @@ export async function acceptSuggestion(
   const allowed = await canAccessSuggestion(workspaceId, userId, role, suggestion);
   if (!allowed) {
     throw new AppError(403, ERROR_CODES.FORBIDDEN, "You do not have access to this suggestion");
+  }
+
+  if (!["ASSIGNEE", "PRIORITY", "LABEL", "SPRINT_PLANNING"].includes(suggestion.type)) {
+    throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "This suggestion is informational only and cannot be applied");
   }
 
   const payload = (suggestion.payload ?? {}) as Record<string, unknown>;
@@ -336,6 +423,8 @@ export async function runSuggestionJobs(
     throw new AppError(403, ERROR_CODES.FORBIDDEN, "Only admins and owners can rerun background AI jobs");
   }
 
+  let queuedAny = false;
+
   if (input.targetType === "issue") {
     const includeEmbedding = input.jobs.includes("embedding") || input.jobs.includes("duplicate");
     const includeIssueIntelligence = input.jobs.some((job) =>
@@ -353,18 +442,61 @@ export async function runSuggestionJobs(
         {
           includeEmbedding,
           includeIssueIntelligence,
+          includeScopeSummaries: false,
         },
       );
+      queuedAny = true;
     }
   } else if (input.targetType === "cycle") {
-    await triggerCycleBackgroundJobs({ workspaceId, cycleId: input.targetId, triggeredByUserId: userId, reason: "manual" });
+    const includeSprintPlanning = input.jobs.includes("sprint-planning");
+    const includeHealthSummary = input.jobs.includes("cycle-health");
+    if (includeSprintPlanning || includeHealthSummary) {
+      await triggerCycleBackgroundJobs({
+        workspaceId,
+        cycleId: input.targetId,
+        triggeredByUserId: userId,
+        reason: "manual",
+      }, {
+        includeSprintPlanning,
+        includeHealthSummary,
+      });
+      queuedAny = true;
+    }
+  } else if (input.targetType === "project") {
+    if (input.jobs.includes("project-health")) {
+      await triggerProactiveSummary({
+        workspaceId,
+        scope: "project",
+        scopeId: input.targetId,
+        triggeredByUserId: userId,
+        reason: "manual",
+      });
+      queuedAny = true;
+    }
+  } else if (input.targetType === "team") {
+    if (input.jobs.includes("team-health")) {
+      await triggerProactiveSummary({
+        workspaceId,
+        scope: "team",
+        scopeId: input.targetId,
+        triggeredByUserId: userId,
+        reason: "manual",
+      });
+      queuedAny = true;
+    }
   } else if (input.targetType === "workspace") {
     if (input.jobs.includes("stale-scan")) {
       await triggerStaleScan({ workspaceId, triggeredByUserId: userId, reason: "manual" });
+      queuedAny = true;
     }
     if (input.jobs.includes("weekly-digest")) {
       await triggerWeeklyDigest({ workspaceId, triggeredByUserId: userId, reason: "manual" });
+      queuedAny = true;
     }
+  }
+
+  if (!queuedAny) {
+    throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "No supported background jobs were selected for this target type");
   }
 
   return {

@@ -77,6 +77,111 @@ function flattenSection(section: string, rows: Array<Record<string, unknown>>) {
   return rows.map((row) => ({ section, ...row }));
 }
 
+type AnalyticsScope = "workspace" | "project" | "team" | "member" | "cycle";
+
+function buildAnalyticsProvenance(
+  scope: AnalyticsScope,
+  query: AnalyticsQuery,
+  range: { from: Date; to: Date; previousFrom: Date; previousTo: Date },
+  input?: { scopeId?: string; partialDataNotes?: string[] },
+) {
+  const partialDataNotes = [...new Set((input?.partialDataNotes ?? []).filter(Boolean))];
+  return {
+    scope,
+    ...(input?.scopeId ? { scopeId: input.scopeId } : {}),
+    range: {
+      period: query.period,
+      from: range.from.toISOString(),
+      to: range.to.toISOString(),
+      previousFrom: range.previousFrom.toISOString(),
+      previousTo: range.previousTo.toISOString(),
+    },
+    asOf: new Date().toISOString(),
+    partialDataNotes,
+  };
+}
+
+function withAnalyticsProvenance<T extends Record<string, unknown>>(
+  payload: T,
+  scope: AnalyticsScope,
+  query: AnalyticsQuery,
+  range: { from: Date; to: Date; previousFrom: Date; previousTo: Date },
+  input?: { scopeId?: string; partialDataNotes?: string[] },
+) {
+  return {
+    ...payload,
+    provenance: buildAnalyticsProvenance(scope, query, range, input),
+  };
+}
+
+export function formatAnalyticsReport(scope: AnalyticsScope, payload: Record<string, any>) {
+  const provenance = payload.provenance as
+    | {
+        range?: { from?: string; to?: string };
+        partialDataNotes?: string[];
+      }
+    | undefined;
+  const rangeText = provenance?.range?.from && provenance?.range?.to
+    ? `${provenance.range.from.slice(0, 10)} to ${provenance.range.to.slice(0, 10)}`
+    : "current range";
+  const notes = provenance?.partialDataNotes?.length
+    ? ` Notes: ${provenance.partialDataNotes.join(" ")}`
+    : "";
+
+  if (scope === "workspace") {
+    const summary = payload.summary ?? {};
+    return [
+      `Workspace report for ${rangeText}.`,
+      `Completed ${summary.tasksCompleted?.value ?? 0} issues.`,
+      `Open vs closed: ${summary.openVsClosed?.open ?? 0} open, ${summary.openVsClosed?.closed ?? 0} closed.`,
+      `Overdue issues: ${summary.overdueIssues?.value ?? 0}.`,
+      notes,
+    ].filter(Boolean).join(" ");
+  }
+
+  if (scope === "project") {
+    const project = payload.project ?? {};
+    const summary = payload.summary ?? {};
+    return [
+      `Project report for ${project.name ?? "project"} over ${rangeText}.`,
+      `Progress is ${summary.progress ?? 0}% with ${summary.completedIssues ?? 0} completed and ${summary.openIssues ?? 0} open issues.`,
+      `Timeline health is ${summary.timelineHealth ?? "unknown"}.`,
+      notes,
+    ].filter(Boolean).join(" ");
+  }
+
+  if (scope === "team") {
+    const team = payload.team ?? {};
+    const summary = payload.summary ?? {};
+    return [
+      `Team report for ${team.name ?? "team"} over ${rangeText}.`,
+      `Velocity is ${summary.velocity?.value ?? 0} completed issues with trend ${summary.velocity?.direction ?? "flat"}.`,
+      `Average resolution time is ${summary.avgResolutionTime?.value ?? 0} ${summary.avgResolutionTime?.unit ?? "hours"}.`,
+      notes,
+    ].filter(Boolean).join(" ");
+  }
+
+  if (scope === "member") {
+    const member = payload.member ?? {};
+    const summary = payload.summary ?? {};
+    return [
+      `Member report for ${member.name ?? "member"} over ${rangeText}.`,
+      `Assigned ${summary.assigned ?? 0}, completed ${summary.completed ?? 0}, overdue ${summary.overdue ?? 0}.`,
+      `Completion rate is ${summary.completionRate?.value ?? 0}% with trend ${summary.completionRate?.direction ?? "flat"}.`,
+      notes,
+    ].filter(Boolean).join(" ");
+  }
+
+  const cycle = payload.cycle ?? {};
+  const summary = payload.summary ?? {};
+  return [
+    `Cycle report for ${cycle.name ?? "cycle"} over ${rangeText}.`,
+    `Progress is ${summary.progress ?? 0}% with ${summary.completedIssues ?? 0} completed and ${summary.openIssues ?? 0} open issues.`,
+    `Average resolution time is ${summary.avgResolutionTime?.value ?? 0} ${summary.avgResolutionTime?.unit ?? "hours"}.`,
+    notes,
+  ].filter(Boolean).join(" ");
+}
+
 async function assertProjectAnalyticsAccess(workspaceId: string, role: WorkspaceRole, userId: string, projectId: string) {
   const project = await prisma.project.findFirst({
     where: {
@@ -132,7 +237,16 @@ async function assertTeamAnalyticsAccess(workspaceId: string, role: WorkspaceRol
 async function assertCycleAnalyticsAccess(workspaceId: string, role: WorkspaceRole, userId: string, cycleId: string) {
   const cycle = await (prisma as any).cycle.findFirst({
     where: { id: cycleId, workspaceId },
-    select: { id: true, name: true, teamId: true, startsAt: true, endsAt: true, status: true, completedAt: true },
+    select: {
+      id: true,
+      name: true,
+      teamId: true,
+      startsAt: true,
+      endsAt: true,
+      status: true,
+      completedAt: true,
+      team: { select: { leadId: true } },
+    },
   });
 
   if (!cycle) {
@@ -146,7 +260,7 @@ async function assertCycleAnalyticsAccess(workspaceId: string, role: WorkspaceRo
     select: { userId: true },
   });
 
-  if (!membership) {
+  if (!membership && cycle.team?.leadId !== userId) {
     throw new AppError(403, ERROR_CODES.FORBIDDEN, "You can view analytics only for cycles tied to your teams");
   }
 
@@ -251,6 +365,10 @@ function memberWorkloadRows(issues: IssueRecord[], users: Array<{ id: string; na
   });
 }
 
+function workloadPressureScore(row: { assigned: number; open: number; overdue: number }) {
+  return (row.overdue * 6) + (row.open * 2) + row.assigned;
+}
+
 export async function getWorkspaceAnalytics(workspaceId: string, query: AnalyticsQuery) {
   const range = resolveDateRange(query.period, query.from, query.to);
   const now = new Date();
@@ -299,10 +417,14 @@ export async function getWorkspaceAnalytics(workspaceId: string, query: Analytic
     };
   }).sort((a, b) => b.completed - a.completed);
 
-  const topContributors = memberWorkloadRows(
+  const workspaceMemberWorkload = memberWorkloadRows(
     issues,
     memberships.map((membership) => membership.user),
-  ).sort((a, b) => b.completed - a.completed).slice(0, 10);
+  );
+  const topContributors = [...workspaceMemberWorkload].sort((a, b) => b.completed - a.completed).slice(0, 10);
+  const memberWorkload = [...workspaceMemberWorkload]
+    .sort((a, b) => workloadPressureScore(b) - workloadPressureScore(a))
+    .slice(0, 10);
 
   const bottlenecks = issues
     .filter((issue) => issue.status === "IN_PROGRESS" || issue.status === "REVIEW")
@@ -320,7 +442,7 @@ export async function getWorkspaceAnalytics(workspaceId: string, query: Analytic
   const resolutionCurrent = msToReadableUnit(currentCompletedAvg);
   const resolutionTrend = calculateTrend(currentCompletedAvg, previousCompletedAvg);
 
-  return {
+  return withAnalyticsProvenance({
     period: {
       period: query.period,
       from: range.from.toISOString(),
@@ -350,11 +472,17 @@ export async function getWorkspaceAnalytics(workspaceId: string, query: Analytic
       issuesByType: groupCount(issues, (issue) => issue.type, "type"),
     },
     tables: {
+      memberWorkload,
       teamPerformance,
       topContributors,
       bottlenecks,
     },
-  };
+  }, "workspace", query, range, {
+    partialDataNotes: [
+      "Workspace analytics exclude guest memberships from workload percentages.",
+      "Contributor and bottleneck tables are capped to the top 10 rows.",
+    ],
+  });
 }
 
 export async function getProjectAnalytics(workspaceId: string, role: WorkspaceRole, userId: string, projectId: string, query: AnalyticsQuery) {
@@ -395,7 +523,7 @@ export async function getProjectAnalytics(workspaceId: string, role: WorkspaceRo
         ? "at-risk"
         : "behind";
 
-  return {
+  return withAnalyticsProvenance({
     project: {
       id: project.id,
       name: project.name,
@@ -420,7 +548,12 @@ export async function getProjectAnalytics(workspaceId: string, role: WorkspaceRo
     tables: {
       memberWorkload: memberRows,
     },
-  };
+  }, "project", query, range, {
+    scopeId: projectId,
+    partialDataNotes: [
+      "Burndown and scope-change calculations use issues currently attached to this project.",
+    ],
+  });
 }
 
 export async function getTeamAnalytics(workspaceId: string, role: WorkspaceRole, userId: string, teamId: string, query: AnalyticsQuery) {
@@ -449,7 +582,7 @@ export async function getTeamAnalytics(workspaceId: string, role: WorkspaceRole,
     };
   }).sort((a: { cycleNumber: number }, b: { cycleNumber: number }) => b.cycleNumber - a.cycleNumber).slice(0, 6);
 
-  return {
+  return withAnalyticsProvenance({
     team: {
       id: team.id,
       name: team.name,
@@ -468,7 +601,12 @@ export async function getTeamAnalytics(workspaceId: string, role: WorkspaceRole,
     tables: {
       memberPerformance,
     },
-  };
+  }, "team", query, range, {
+    scopeId: teamId,
+    partialDataNotes: [
+      "Cycle comparison is limited to the 6 most recent cycles.",
+    ],
+  });
 }
 
 export async function getMemberAnalytics(workspaceId: string, role: WorkspaceRole, userId: string, memberId: string, query: AnalyticsQuery) {
@@ -529,7 +667,7 @@ export async function getMemberAnalytics(workspaceId: string, role: WorkspaceRol
 
   const completionTrend = calculateTrend(completedCurrent, completedPrevious);
 
-  return {
+  return withAnalyticsProvenance({
     member,
     summary: {
       assigned: assignedIssues.length,
@@ -555,7 +693,12 @@ export async function getMemberAnalytics(workspaceId: string, role: WorkspaceRol
       teams: teamMemberships.map((membership: any) => membership.team),
       recentActivity: activities,
     },
-  };
+  }, "member", query, range, {
+    scopeId: memberId,
+    partialDataNotes: [
+      "Recent activity is capped to the latest 20 records in the selected range.",
+    ],
+  });
 }
 
 export async function getCycleAnalytics(workspaceId: string, role: WorkspaceRole, userId: string, cycleId: string, query: AnalyticsQuery) {
@@ -574,7 +717,7 @@ export async function getCycleAnalytics(workspaceId: string, role: WorkspaceRole
     remaining: issues.filter((issue) => issue.createdAt <= day && (!(issue.completedAt as Date | null) || (issue.completedAt as Date).getTime() > day.getTime())).length,
   }));
 
-  return {
+  return withAnalyticsProvenance({
     cycle,
     summary: {
       totalIssues: total,
@@ -590,7 +733,12 @@ export async function getCycleAnalytics(workspaceId: string, role: WorkspaceRole
       priorityBreakdown: scopeByPriority,
       typeBreakdown: scopeByType,
     },
-  };
+  }, "cycle", query, range, {
+    scopeId: cycleId,
+    partialDataNotes: [
+      "Cycle analytics reflect issues currently linked to the cycle.",
+    ],
+  });
 }
 
 export async function exportAnalytics(workspaceId: string, role: WorkspaceRole, userId: string, query: ExportQuery) {

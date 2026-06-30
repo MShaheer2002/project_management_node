@@ -9,6 +9,23 @@ export const analyticsQuerySchema = {
     period: analyticsPeriodSchema.default("30d"),
     from: z.string().date().optional(),
     to: z.string().date().optional(),
+  }).superRefine((value, ctx) => {
+    if (value.period === "custom") {
+      if (!value.from) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["from"],
+          message: "from is required for custom period",
+        });
+      }
+      if (!value.to) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["to"],
+          message: "to is required for custom period",
+        });
+      }
+    }
   }),
 };
 
@@ -37,6 +54,22 @@ export const exportQuerySchema = {
     scopeId: z.string().optional(),
     format: exportFormatSchema.default("json"),
   }).superRefine((value, ctx) => {
+    if (value.period === "custom") {
+      if (!value.from) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["from"],
+          message: "from is required for custom period",
+        });
+      }
+      if (!value.to) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["to"],
+          message: "to is required for custom period",
+        });
+      }
+    }
     if (value.scope !== "workspace" && !value.scopeId) {
       ctx.addIssue({
         code: "custom",

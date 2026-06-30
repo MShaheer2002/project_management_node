@@ -4,6 +4,120 @@
 
 ---
 
+## 0. Phase Completion Snapshot
+
+### 0.1 Status
+
+Phase 20F is now effectively complete for implementation and hardening.
+
+- `20f.1` implemented
+- `20f.2` implemented
+- `20f.3` implemented
+- `20f.4` implemented
+- `20f.5` implemented
+- `20f.6` started with deterministic scenario coverage and hardening
+
+The remaining work is now mostly:
+
+- broader automated scenario coverage expansion
+- manual QA execution
+- product polish iterations
+
+### 0.2 Before vs After
+
+Before phase 20F:
+
+- Trussen AI was strongest only at issue-centric flows
+- analytics support was generic and under-scoped
+- clarification behavior depended too much on model phrasing
+- background AI and side-panel AI were not operating from the same expanded capability surface
+- mutation dedupe, confirmation safety, and auditability were partial
+
+After phase 20F:
+
+- Trussen AI covers the major non-destructive CRUD and operational flows across issues, teams, departments, cycles, workspace membership, templates, documents, roadmap, analytics, notifications, multi-workspace visibility, and API key creation
+- analytics are scope-aware with explicit tools for workspace, project, team, member, and cycle reporting plus exports
+- clarification and pending-action handling are deterministic for invites, issue creation, document creation, analytics, high-impact actions, delete boundaries, and follow-up turns
+- background AI now expands alongside Trussen AI with anchored, expiring, superseding suggestions and shared analytics/reporting primitives
+- high-impact actions require explicit confirmation and are server-side bound to the exact approved tool call
+- mutation replay, duplicate protection, and AI activity audit trails are materially stronger than the pre-20F implementation
+
+### 0.3 What Was Implemented In 20F
+
+`20f.1` reliability foundation:
+
+- deterministic `PendingAction` state
+- clarification vs confirmation split
+- delete-boundary state machine
+- cross-turn slot filling for key workflows
+- mutation idempotency/replay foundation
+
+`20f.2` CRUD and non-destructive expansion:
+
+- issue status, subtasks, watchers, dependencies, integration refs
+- team CRUD and membership management
+- department CRUD and membership management
+- cycle CRUD, complete/reopen/carry-over
+- workspace member and status operations
+- project membership operations
+- template CRUD and lifecycle operations
+- document and folder operations
+- roadmap schedule, milestone, and dependency operations
+- notifications
+- multi-workspace listing and invite acceptance
+- API key listing/get and integration status reads
+- workspace access summary
+- API key creation with secret-safe replay behavior
+
+`20f.3` analytics expansion:
+
+- explicit scoped analytics tools
+- export workflow
+- period-aware and comparison-aware parsing
+- analytics provenance metadata in tool responses
+- report formatting reused by chat and background systems
+
+`20f.4` background AI expansion:
+
+- project health summaries
+- team health summaries
+- cycle health summaries
+- shared analytics/reporting primitives
+- suggestion anchoring, superseding, and expiry lifecycle
+
+`20f.5` auditability and execution safety:
+
+- AI actor metadata on mutations
+- persisted confirmation state
+- exact confirmed tool binding on the backend
+- partial-failure handling guidance
+- stronger replay protection for create/update flows
+- secret-safe idempotency persistence for API key creation
+
+### 0.4 Intentional Exclusions After 20F
+
+These are intentionally not exposed through Trussen AI even after 20F:
+
+- all delete operations
+- API key revoke
+- API key rotate if implemented as revoke + recreate
+- integration disconnect through AI
+
+These remain excluded because the product policy is:
+
+```text
+AI is never allowed to delete anything.
+```
+
+These are also not implemented yet because the backend does not currently provide safe underlying primitives for them:
+
+- `trigger_integration_sync`
+- `get_import_run_status`
+
+If those are needed later, they should be implemented as new audited backend capabilities first, then exposed to AI in a separate phase.
+
+---
+
 ## 1. Why This Phase Exists
 
 The current Trussen AI panel is useful, but its real capability surface is narrower than the product surface.
@@ -35,6 +149,8 @@ It also defines a dedicated analytics/reporting expansion because analytics is a
 ---
 
 ## 2. Current State Summary
+
+This section records the original baseline that phase 20F started from. The completion snapshot above reflects the current implemented state.
 
 ### 2.1 What the AI tool layer supports today
 
@@ -246,10 +362,10 @@ This is the core gap matrix.
 | Issues | create, update, assign, comment, label, search, summarize | Mostly yes | Full |
 | Issue status | move issue, start work, mark done, ready for review | Partial via `update_issue` | Full with dedicated phrasing support |
 | Subtasks | create, update, reorder | No | Full |
-| Watchers | add/remove/list watchers | No | Full |
-| Dependencies | add/remove dependencies | No | Full |
-| Attachments | attach/remove issue files | No | Full |
-| Integration refs | link/unlink external refs | No | Full |
+| Watchers | add/list watchers | No | Full non-destructive support |
+| Dependencies | add/list dependencies | No | Full non-destructive support |
+| Attachments | attach/list issue files | No | Full non-destructive support |
+| Integration refs | link/update external refs | No | Full non-destructive support |
 | Delete issue | No AI delete | Permanently unsupported by AI |
 
 ### 4.2 Projects
@@ -382,11 +498,11 @@ Issue operations:
 - `update_subtask`
 - `reorder_subtasks`
 - `add_issue_watchers`
-- `remove_issue_watcher`
+- `list_issue_watchers`
 - `add_issue_dependency`
-- `remove_issue_dependency`
+- dependency removal remains unsupported by AI unless implemented as a non-destructive state transition
 - `add_issue_attachment`
-- `remove_issue_attachment`
+- attachment removal remains unsupported by AI unless implemented as a non-destructive state transition
 
 Team operations:
 

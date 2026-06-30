@@ -13,6 +13,7 @@ export interface DateRange {
 }
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_ANALYTICS_RANGE_DAYS = 180;
 
 function startOfDay(date: Date) {
   const copy = new Date(date);
@@ -55,6 +56,15 @@ export function resolveDateRange(period: string, from?: string, to?: string): Da
     }
 
     const durationMs = customTo.getTime() - customFrom.getTime() + 1;
+    const durationDays = Math.ceil(durationMs / ONE_DAY_MS);
+    if (durationDays > MAX_ANALYTICS_RANGE_DAYS) {
+      throw new AppError(
+        422,
+        ERROR_CODES.VALIDATION_ERROR,
+        `Custom analytics ranges cannot exceed ${MAX_ANALYTICS_RANGE_DAYS} days`,
+      );
+    }
+
     return {
       from: customFrom,
       to: customTo,

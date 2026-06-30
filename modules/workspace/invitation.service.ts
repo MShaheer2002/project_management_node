@@ -290,8 +290,6 @@ export async function resolveInvitation(rawToken: string) {
  */
 export async function acceptInvitation(rawToken: string, userId: string, userEmail: string) {
   const tokenHash = hashToken(rawToken);
-  const normalizedUserEmail = normalizeEmail(userEmail);
-
   const invitation = await prisma.workspaceInvitation.findUnique({
     where: { tokenHash },
     include: {
@@ -304,6 +302,32 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
   if (!invitation) {
     throw new AppError(404, ERROR_CODES.INVITATION_NOT_FOUND, "Invitation not found or has been revoked");
   }
+
+  return acceptInvitationRecord(invitation, userId, userEmail);
+}
+
+async function acceptInvitationRecord(
+  invitation: {
+    id: string;
+    workspaceId: string;
+    email: string;
+    role: any;
+    status: any;
+    expiresAt: Date;
+    invitedById: string;
+    teamId: string;
+    departmentId: string | null;
+    workspace: {
+      id: string;
+      name: string;
+      slug: string;
+      logo: string | null;
+    };
+  },
+  userId: string,
+  userEmail: string,
+) {
+  const normalizedUserEmail = normalizeEmail(userEmail);
 
   // ─── Email ownership verification ──────────────────────────────────────
   // The authenticated user's email MUST match the invitation email.
@@ -441,6 +465,32 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
   };
 }
 
+export async function acceptInvitationById(invitationId: string, userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true },
+  });
+
+  if (!user?.email) {
+    throw new AppError(404, ERROR_CODES.NOT_FOUND, "Authenticated user was not found");
+  }
+
+  const invitation = await prisma.workspaceInvitation.findUnique({
+    where: { id: invitationId },
+    include: {
+      workspace: {
+        select: { id: true, name: true, slug: true, logo: true },
+      },
+    },
+  });
+
+  if (!invitation) {
+    throw new AppError(404, ERROR_CODES.INVITATION_NOT_FOUND, "Invitation not found or has been revoked");
+  }
+
+  return acceptInvitationRecord(invitation, userId, user.email);
+}
+
 /**
  * Revoke a pending invitation.
  * Called by workspace admins to cancel an invite before it's accepted.
@@ -491,6 +541,62 @@ export async function listInvitations(workspaceId: string) {
     invitedBy: inv.invitedBy,
     expiresAt: inv.expiresAt,
     acceptedAt: inv.acceptedAt,
+    createdAt: inv.createdAt,
+  }));
+}
+
+export async function listPendingInvitationsForUser(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true },
+  });
+
+  if (!user?.email) {
+    throw new AppError(404, ERROR_CODES.NOT_FOUND, "Authenticated user was not found");
+  }
+
+  const email = normalizeEmail(user.email);
+  await prisma.workspaceInvitation.updateMany({
+    where: {
+      email,
+      status: "PENDING",
+      expiresAt: { lt: new Date() },
+    },
+    data: { status: "EXPIRED" },
+  });
+
+  const invitations = await prisma.workspaceInvitation.findMany({
+    where: {
+      email,
+      status: "PENDING",
+      expiresAt: { gte: new Date() },
+    },
+    include: {
+      workspace: {
+        select: { id: true, name: true, slug: true, logo: true },
+      },
+      invitedBy: {
+        select: { id: true, name: true, email: true },
+      },
+      team: {
+        select: { id: true, name: true },
+      },
+      department: {
+        select: { id: true, name: true },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return invitations.map((inv) => ({
+    id: inv.id,
+    workspace: inv.workspace,
+    email: inv.email,
+    role: inv.role,
+    team: inv.team,
+    department: inv.department,
+    invitedBy: inv.invitedBy,
+    expiresAt: inv.expiresAt,
     createdAt: inv.createdAt,
   }));
 }

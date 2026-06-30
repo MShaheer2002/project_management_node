@@ -7,6 +7,7 @@ export const AI_QUEUE_NAMES = {
   staleScan: "ai.stale-scan",
   weeklyDigest: "ai.weekly-digest",
   sprintPlanning: "ai.sprint-planning",
+  proactiveSummary: "ai.proactive-summary",
 } as const;
 
 export type IssueIntelligenceJob = {
@@ -18,7 +19,7 @@ export type IssueIntelligenceJob = {
 
 export type EmbeddingJob = {
   workspaceId: string;
-  entityType: "ISSUE";
+  entityType: "ISSUE" | "PROJECT" | "TEAM" | "DEPARTMENT" | "MEMBER" | "CYCLE";
   entityId: string;
   triggeredByUserId?: string | undefined;
   reason: "created" | "updated" | "manual";
@@ -41,6 +42,14 @@ export type SprintPlanningJob = {
   cycleId: string;
   triggeredByUserId?: string | undefined;
   reason: "created" | "manual";
+};
+
+export type ProactiveSummaryJob = {
+  workspaceId: string;
+  scope: "project" | "team" | "cycle";
+  scopeId: string;
+  triggeredByUserId?: string | undefined;
+  reason: "created" | "updated" | "manual";
 };
 
 async function enqueue<T>(queueName: string, name: string, payload: T) {
@@ -86,4 +95,8 @@ export async function enqueueWeeklyDigest(payload: WeeklyDigestJob) {
 
 export async function enqueueSprintPlanning(payload: SprintPlanningJob) {
   return enqueue(AI_QUEUE_NAMES.sprintPlanning, "sprint-planning", payload);
+}
+
+export async function enqueueProactiveSummary(payload: ProactiveSummaryJob) {
+  return enqueue(AI_QUEUE_NAMES.proactiveSummary, "proactive-summary", payload);
 }

@@ -111,6 +111,21 @@ export const AI_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "update_issue_status",
+      description: "Move an issue to another workflow status, for example todo, in-progress, review, or done.",
+      parameters: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "Issue ID" },
+          status: { type: "string", description: "New status", enum: ["backlog", "todo", "in-progress", "review", "done"] },
+        },
+        required: ["issueId", "status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "assign_issue",
       description: "Assign or reassign an issue to a member.",
       parameters: {
@@ -150,6 +165,118 @@ export const AI_TOOLS: ToolDefinition[] = [
           labelName: { type: "string", description: "Label name (must exist in workspace)" },
         },
         required: ["issueId", "labelName"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_subtask",
+      description: "Create a subtask/checklist item on an issue. No delete operations are available through AI.",
+      parameters: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "Issue ID" },
+          title: { type: "string", description: "Subtask title" },
+          order: { type: "string", description: "Optional sort order" },
+        },
+        required: ["issueId", "title"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_subtask",
+      description: "Update a subtask title, completed state, or order. Does not delete subtasks.",
+      parameters: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "Issue ID" },
+          subtaskId: { type: "string", description: "Subtask ID" },
+          title: { type: "string", description: "New title" },
+          completed: { type: "string", description: "true or false" },
+          order: { type: "string", description: "New order" },
+        },
+        required: ["issueId", "subtaskId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reorder_subtasks",
+      description: "Reorder subtasks on an issue by subtask ID and order.",
+      parameters: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "Issue ID" },
+          itemsJson: { type: "string", description: "JSON array of {id, order} objects" },
+        },
+        required: ["issueId", "itemsJson"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_issue_watchers",
+      description: "Add watchers to an issue. Does not remove watchers.",
+      parameters: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "Issue ID" },
+          userIdsJson: { type: "string", description: "JSON array of user IDs to add as watchers" },
+        },
+        required: ["issueId", "userIdsJson"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_issue_watchers",
+      description: "List watchers on an issue.",
+      parameters: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "Issue ID" },
+        },
+        required: ["issueId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_issue_dependency",
+      description: "Add an issue dependency/relation. Does not remove dependencies.",
+      parameters: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "Source issue ID" },
+          relatedIssueId: { type: "string", description: "Related issue ID" },
+          relation: { type: "string", description: "Relation type", enum: ["blocks", "blocked-by", "related"] },
+        },
+        required: ["issueId", "relatedIssueId", "relation"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_issue_integration_ref",
+      description: "Link or update an external integration reference on an issue. Does not unlink or delete references.",
+      parameters: {
+        type: "object",
+        properties: {
+          issueId: { type: "string", description: "Issue ID" },
+          provider: { type: "string", description: "Provider", enum: ["github", "jira", "slack", "notion", "figma", "custom"] },
+          label: { type: "string", description: "Display label" },
+          externalId: { type: "string", description: "External object ID" },
+          url: { type: "string", description: "External URL" },
+        },
+        required: ["issueId", "provider"],
       },
     },
   },
@@ -207,6 +334,50 @@ export const AI_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "list_project_members",
+      description: "List members of a project.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Project ID" },
+        },
+        required: ["projectId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_project_members",
+      description: "Add members to a project. Requires project-management permission.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Project ID" },
+          userIdsJson: { type: "string", description: "JSON array of user IDs to add" },
+        },
+        required: ["projectId", "userIdsJson"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_project_member",
+      description: "Remove a member from a project. Requires explicit confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Project ID" },
+          userId: { type: "string", description: "User ID to remove" },
+        },
+        required: ["projectId", "userId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "update_project",
       description: "Update project details. Requires ADMIN/OWNER or project lead.",
       parameters: {
@@ -236,6 +407,88 @@ export const AI_TOOLS: ToolDefinition[] = [
         properties: {
           q: { type: "string", description: "Search by name" },
         },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_team",
+      description: "Get full details for a specific team by ID.",
+      parameters: {
+        type: "object",
+        properties: {
+          teamId: { type: "string", description: "Team ID" },
+        },
+        required: ["teamId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_team",
+      description: "Create a new team. Requires member or above. AI does not support initial document uploads here.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Team name" },
+          leadId: { type: "string", description: "Lead user ID" },
+          departmentId: { type: "string", description: "Optional department ID" },
+          description: { type: "string", description: "Optional description" },
+          visibility: { type: "string", description: "Team visibility", enum: ["PUBLIC", "PRIVATE"] },
+          memberIdsJson: { type: "string", description: "Optional JSON array of user IDs to add initially" },
+        },
+        required: ["name", "leadId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_team",
+      description: "Update an existing team. Requires ownership-based permission.",
+      parameters: {
+        type: "object",
+        properties: {
+          teamId: { type: "string", description: "Team ID" },
+          name: { type: "string", description: "New team name" },
+          leadId: { type: "string", description: "New lead user ID" },
+          departmentId: { type: "string", description: "New department ID or empty to clear" },
+          description: { type: "string", description: "New description or empty to clear" },
+          visibility: { type: "string", description: "Team visibility", enum: ["PUBLIC", "PRIVATE"] },
+        },
+        required: ["teamId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_team_members",
+      description: "Add members to a team. Requires team-management permission.",
+      parameters: {
+        type: "object",
+        properties: {
+          teamId: { type: "string", description: "Team ID" },
+          userIdsJson: { type: "string", description: "JSON array of user IDs to add" },
+        },
+        required: ["teamId", "userIdsJson"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_team_member",
+      description: "Remove a member from a team. Requires team-management permission and explicit confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          teamId: { type: "string", description: "Team ID" },
+          userId: { type: "string", description: "User ID to remove" },
+        },
+        required: ["teamId", "userId"],
       },
     },
   },
@@ -282,6 +535,257 @@ export const AI_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "list_departments",
+      description: "List departments in the workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          q: { type: "string", description: "Search by name" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_department",
+      description: "Get full details for a specific department by ID.",
+      parameters: {
+        type: "object",
+        properties: {
+          departmentId: { type: "string", description: "Department ID" },
+        },
+        required: ["departmentId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_department",
+      description: "Create a department. Requires admin or owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Department name" },
+          headId: { type: "string", description: "Optional department head user ID" },
+          description: { type: "string", description: "Optional description" },
+          color: { type: "string", description: "Optional hex color such as #5f72ea" },
+          visibility: { type: "string", description: "Department visibility", enum: ["PUBLIC", "PRIVATE"] },
+          isDefault: { type: "string", description: "true or false" },
+          memberIdsJson: { type: "string", description: "Optional JSON array of user IDs to add initially" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_department",
+      description: "Update a department. Requires ownership-based permission.",
+      parameters: {
+        type: "object",
+        properties: {
+          departmentId: { type: "string", description: "Department ID" },
+          name: { type: "string", description: "New department name" },
+          headId: { type: "string", description: "New head user ID or empty to clear" },
+          description: { type: "string", description: "New description or empty to clear" },
+          color: { type: "string", description: "Hex color or empty to clear" },
+          visibility: { type: "string", description: "Department visibility", enum: ["PUBLIC", "PRIVATE"] },
+          isDefault: { type: "string", description: "true or false" },
+        },
+        required: ["departmentId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_department_members",
+      description: "Add members to a department. Requires department-management permission.",
+      parameters: {
+        type: "object",
+        properties: {
+          departmentId: { type: "string", description: "Department ID" },
+          userIdsJson: { type: "string", description: "JSON array of user IDs to add" },
+        },
+        required: ["departmentId", "userIdsJson"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_department_member",
+      description: "Remove a member from a department. Requires department-management permission and explicit confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          departmentId: { type: "string", description: "Department ID" },
+          userId: { type: "string", description: "User ID to remove" },
+        },
+        required: ["departmentId", "userId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_workspace",
+      description: "Get current workspace details and counts.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_workspace",
+      description: "Update current workspace settings. Requires admin or owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Workspace name" },
+          logo: { type: "string", description: "Workspace logo URL" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_workspace_members",
+      description: "List members in the current workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          q: { type: "string", description: "Search by name or email" },
+          role: { type: "string", description: "Filter by role", enum: ["OWNER", "ADMIN", "MEMBER", "GUEST"] },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "change_workspace_member_role",
+      description: "Change a workspace member role. Requires explicit confirmation and admin or owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          userId: { type: "string", description: "User ID to update" },
+          role: { type: "string", description: "New role", enum: ["ADMIN", "MEMBER", "GUEST"] },
+        },
+        required: ["userId", "role"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_workspace_member",
+      description: "Remove a member from the current workspace. Requires explicit confirmation and admin or owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          userId: { type: "string", description: "User ID to remove" },
+        },
+        required: ["userId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_workspace_statuses",
+      description: "Replace the workspace custom statuses array. Requires explicit confirmation and admin or owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          statusesJson: { type: "string", description: "JSON array of status objects with key, label, color, and isFinal" },
+        },
+        required: ["statusesJson"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_user_workspaces",
+      description: "List all workspaces accessible to the current user.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_workspace_access_summary",
+      description: "Summarize the current workspace, all accessible workspaces, and any pending invites for the authenticated user. Use for workspace switching, confirming the active workspace, or cross-workspace access questions.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_pending_workspace_invites",
+      description: "List pending invitations sent to the current authenticated user across workspaces.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "accept_workspace_invite",
+      description: "Accept a pending workspace invitation sent to the current authenticated user.",
+      parameters: {
+        type: "object",
+        properties: {
+          invitationId: { type: "string", description: "Invitation ID from list_pending_workspace_invites" },
+        },
+        required: ["invitationId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_workspace_invitations",
+      description: "List invitations for the current workspace. Admins and owners only.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_department_members",
+      description: "List members of a department.",
+      parameters: {
+        type: "object",
+        properties: {
+          departmentId: { type: "string", description: "Department ID" },
+        },
+        required: ["departmentId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "invite_member",
       description: "Send a workspace invitation. Requires ADMIN or OWNER role.",
       parameters: {
@@ -300,6 +804,235 @@ export const AI_TOOLS: ToolDefinition[] = [
   // CYCLES / SPRINTS
   // ═══════════════════════════════════════════════════════════════
 
+  {
+    type: "function",
+    function: {
+      name: "get_cycle",
+      description: "Get full cycle details by ID.",
+      parameters: {
+        type: "object",
+        properties: {
+          cycleId: { type: "string", description: "Cycle ID" },
+        },
+        required: ["cycleId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_cycle",
+      description: "Create a new cycle for a team. Requires member or above.",
+      parameters: {
+        type: "object",
+        properties: {
+          teamId: { type: "string", description: "Team ID" },
+          name: { type: "string", description: "Cycle name" },
+          description: { type: "string", description: "Optional description" },
+          goal: { type: "string", description: "Optional goal" },
+          startsAt: { type: "string", description: "Start timestamp in ISO format" },
+          endsAt: { type: "string", description: "End timestamp in ISO format" },
+          status: { type: "string", description: "Initial cycle status", enum: ["UPCOMING", "CURRENT", "COMPLETED"] },
+        },
+        required: ["teamId", "name", "startsAt", "endsAt"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_cycle",
+      description: "Update a cycle. Requires cycle-management permission.",
+      parameters: {
+        type: "object",
+        properties: {
+          cycleId: { type: "string", description: "Cycle ID" },
+          name: { type: "string", description: "New cycle name" },
+          description: { type: "string", description: "New description or empty to clear" },
+          goal: { type: "string", description: "New goal or empty to clear" },
+          startsAt: { type: "string", description: "Start timestamp in ISO format" },
+          endsAt: { type: "string", description: "End timestamp in ISO format" },
+          status: { type: "string", description: "Cycle status", enum: ["UPCOMING", "CURRENT", "COMPLETED"] },
+        },
+        required: ["cycleId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "complete_cycle",
+      description: "Complete a cycle. Requires member or above and explicit confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          cycleId: { type: "string", description: "Cycle ID" },
+        },
+        required: ["cycleId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reopen_cycle",
+      description: "Reopen a completed cycle. Requires admin or owner and explicit confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          cycleId: { type: "string", description: "Cycle ID" },
+        },
+        required: ["cycleId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "carry_over_cycle",
+      description: "Carry unfinished issues from a completed cycle to another cycle or backlog. Requires explicit confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          cycleId: { type: "string", description: "Source cycle ID" },
+          mode: { type: "string", description: "Carry-over mode", enum: ["nextCycle", "backlog"] },
+          targetCycleId: { type: "string", description: "Required when mode is nextCycle" },
+        },
+        required: ["cycleId", "mode"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_active_templates",
+      description: "List active templates, optionally filtered by issue type.",
+      parameters: {
+        type: "object",
+        properties: {
+          issueType: { type: "string", description: "Issue type", enum: ["task", "bug", "issue"] },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_templates",
+      description: "List issue templates in the workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          q: { type: "string", description: "Search by name or description" },
+          issueType: { type: "string", description: "Issue type", enum: ["task", "bug", "issue"] },
+          lifecycle: { type: "string", description: "Lifecycle filter", enum: ["ACTIVE", "INACTIVE", "ARCHIVED"] },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_template",
+      description: "Get a template by ID.",
+      parameters: {
+        type: "object",
+        properties: {
+          templateId: { type: "string", description: "Template ID" },
+        },
+        required: ["templateId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_template",
+      description: "Create a template. Requires admin or owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Template name" },
+          description: { type: "string", description: "Template description" },
+          issueType: { type: "string", description: "Issue type", enum: ["task", "bug", "issue"] },
+          category: { type: "string", description: "Template category" },
+          titleTemplate: { type: "string", description: "Issue title template" },
+          contentTemplate: { type: "string", description: "Issue content template" },
+          defaultPriority: { type: "string", description: "Default priority" },
+          defaultStatus: { type: "string", description: "Default status" },
+          defaultAssigneeType: { type: "string", description: "Default assignee type", enum: ["UNASSIGNED", "CREATOR", "SPECIFIC_USER"] },
+          defaultAssigneeId: { type: "string", description: "Specific default assignee ID" },
+          acceptanceCriteriaTemplate: { type: "string", description: "Required for issue-type templates" },
+        },
+        required: ["name", "description", "issueType", "category", "titleTemplate", "contentTemplate", "defaultPriority", "defaultStatus", "defaultAssigneeType"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_template",
+      description: "Update a template. Requires admin or owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          templateId: { type: "string", description: "Template ID" },
+          name: { type: "string", description: "Template name" },
+          description: { type: "string", description: "Template description" },
+          titleTemplate: { type: "string", description: "Issue title template" },
+          contentTemplate: { type: "string", description: "Issue content template" },
+          defaultPriority: { type: "string", description: "Default priority" },
+          defaultStatus: { type: "string", description: "Default status" },
+          defaultAssigneeType: { type: "string", description: "Default assignee type", enum: ["UNASSIGNED", "CREATOR", "SPECIFIC_USER"] },
+          defaultAssigneeId: { type: "string", description: "Specific default assignee ID" },
+          acceptanceCriteriaTemplate: { type: "string", description: "Acceptance criteria template" },
+        },
+        required: ["templateId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "duplicate_template",
+      description: "Duplicate a template. Requires admin or owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          templateId: { type: "string", description: "Template ID" },
+        },
+        required: ["templateId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "activate_template",
+      description: "Activate a template. Requires explicit confirmation and admin or owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          templateId: { type: "string", description: "Template ID" },
+        },
+        required: ["templateId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "deactivate_template",
+      description: "Deactivate a template. Requires explicit confirmation and admin or owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          templateId: { type: "string", description: "Template ID" },
+        },
+        required: ["templateId"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -352,15 +1085,517 @@ export const AI_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "get_analytics",
-      description: "Get workspace analytics: issue counts by status, priority, type. Completion rate. Use for 'how are we doing', 'velocity', 'stats'.",
+      name: "list_notifications",
+      description: "List notifications for the current user in the current workspace.",
       parameters: {
         type: "object",
         properties: {
-          teamId: { type: "string", description: "Scope to team (optional)" },
-          projectId: { type: "string", description: "Scope to project (optional)" },
-          days: { type: "string", description: "Lookback period in days (default 30)" },
+          unreadOnly: { type: "string", description: "true or false" },
+          category: { type: "string", description: "Notification category", enum: ["mention", "assignment", "update", "membership", "comment"] },
         },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mark_notification_read",
+      description: "Mark a notification as read.",
+      parameters: {
+        type: "object",
+        properties: {
+          notificationId: { type: "string", description: "Notification ID" },
+        },
+        required: ["notificationId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mark_all_notifications_read",
+      description: "Mark all current-workspace notifications as read.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_document",
+      description: "Create a document from an already-uploaded file reference for a workspace, team, or project scope.",
+      parameters: {
+        type: "object",
+        properties: {
+          scopeType: { type: "string", description: "Scope type", enum: ["WORKSPACE", "TEAM", "PROJECT"] },
+          teamId: { type: "string", description: "Required for TEAM scope" },
+          projectId: { type: "string", description: "Required for PROJECT scope" },
+          name: { type: "string", description: "Document name" },
+          description: { type: "string", description: "Optional description" },
+          folderId: { type: "string", description: "Optional folder ID" },
+          fileKey: { type: "string", description: "Uploaded file storage key" },
+          fileName: { type: "string", description: "Original file name" },
+          contentType: { type: "string", description: "File MIME type" },
+          sizeBytes: { type: "string", description: "File size in bytes" },
+          assetUrl: { type: "string", description: "Optional public asset URL for the uploaded file" },
+        },
+        required: ["scopeType", "name", "fileKey", "fileName", "contentType", "sizeBytes"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_documents",
+      description: "List documents for a workspace, team, or project scope.",
+      parameters: {
+        type: "object",
+        properties: {
+          scopeType: { type: "string", description: "Scope type", enum: ["WORKSPACE", "TEAM", "PROJECT"] },
+          teamId: { type: "string", description: "Required for TEAM scope" },
+          projectId: { type: "string", description: "Required for PROJECT scope" },
+          folderId: { type: "string", description: "Optional folder ID filter" },
+        },
+        required: ["scopeType"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_document_folders",
+      description: "List document folders for a workspace, team, or project scope.",
+      parameters: {
+        type: "object",
+        properties: {
+          scopeType: { type: "string", description: "Scope type", enum: ["WORKSPACE", "TEAM", "PROJECT"] },
+          teamId: { type: "string", description: "Required for TEAM scope" },
+          projectId: { type: "string", description: "Required for PROJECT scope" },
+          parentId: { type: "string", description: "Optional parent folder ID" },
+        },
+        required: ["scopeType"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_document_folder",
+      description: "Create a document folder. Requires the same permission as the underlying scope.",
+      parameters: {
+        type: "object",
+        properties: {
+          scopeType: { type: "string", description: "Scope type", enum: ["WORKSPACE", "TEAM", "PROJECT"] },
+          teamId: { type: "string", description: "Required for TEAM scope" },
+          projectId: { type: "string", description: "Required for PROJECT scope" },
+          name: { type: "string", description: "Folder name" },
+          parentId: { type: "string", description: "Optional parent folder ID" },
+        },
+        required: ["scopeType", "name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "rename_document_folder",
+      description: "Rename a document folder.",
+      parameters: {
+        type: "object",
+        properties: {
+          scopeType: { type: "string", description: "Scope type", enum: ["WORKSPACE", "TEAM", "PROJECT"] },
+          teamId: { type: "string", description: "Required for TEAM scope" },
+          projectId: { type: "string", description: "Required for PROJECT scope" },
+          folderId: { type: "string", description: "Folder ID" },
+          name: { type: "string", description: "New folder name" },
+        },
+        required: ["scopeType", "folderId", "name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "move_document_folder",
+      description: "Move a document folder to a new parent folder.",
+      parameters: {
+        type: "object",
+        properties: {
+          scopeType: { type: "string", description: "Scope type", enum: ["WORKSPACE", "TEAM", "PROJECT"] },
+          teamId: { type: "string", description: "Required for TEAM scope" },
+          projectId: { type: "string", description: "Required for PROJECT scope" },
+          folderId: { type: "string", description: "Folder ID" },
+          parentId: { type: "string", description: "New parent folder ID or empty for root" },
+        },
+        required: ["scopeType", "folderId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "move_document",
+      description: "Move a document to another folder.",
+      parameters: {
+        type: "object",
+        properties: {
+          scopeType: { type: "string", description: "Scope type", enum: ["WORKSPACE", "TEAM", "PROJECT"] },
+          teamId: { type: "string", description: "Required for TEAM scope" },
+          projectId: { type: "string", description: "Required for PROJECT scope" },
+          documentId: { type: "string", description: "Document ID" },
+          folderId: { type: "string", description: "Destination folder ID or empty for root" },
+        },
+        required: ["scopeType", "documentId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_document",
+      description: "Update document metadata such as name or description.",
+      parameters: {
+        type: "object",
+        properties: {
+          scopeType: { type: "string", description: "Scope type", enum: ["WORKSPACE", "TEAM", "PROJECT"] },
+          teamId: { type: "string", description: "Required for TEAM scope" },
+          projectId: { type: "string", description: "Required for PROJECT scope" },
+          documentId: { type: "string", description: "Document ID" },
+          name: { type: "string", description: "New document name" },
+          description: { type: "string", description: "New description or empty to clear" },
+        },
+        required: ["scopeType", "documentId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_roadmap",
+      description: "List roadmap items across the workspace or scoped by team, department, or project.",
+      parameters: {
+        type: "object",
+        properties: {
+          teamId: { type: "string", description: "Optional team filter" },
+          departmentId: { type: "string", description: "Optional department filter" },
+          projectId: { type: "string", description: "Optional project filter" },
+          health: { type: "string", description: "Health filter", enum: ["ON_TRACK", "AT_RISK", "OFF_TRACK", "BLOCKED", "NO_SIGNAL"] },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_project_roadmap",
+      description: "Get detailed roadmap information for a single project.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Project ID" },
+        },
+        required: ["projectId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_project_schedule",
+      description: "Update project roadmap schedule. Requires explicit confirmation when conflicts or force changes apply.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Project ID" },
+          startDate: { type: "string", description: "Start date in YYYY-MM-DD" },
+          targetDate: { type: "string", description: "Target date in YYYY-MM-DD" },
+          reason: { type: "string", description: "Reason for the schedule change" },
+          force: { type: "string", description: "true or false" },
+        },
+        required: ["projectId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_milestone",
+      description: "Create a roadmap milestone for a project.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Project ID" },
+          name: { type: "string", description: "Milestone name" },
+          dueDate: { type: "string", description: "Due timestamp in ISO format" },
+          ownerId: { type: "string", description: "Optional milestone owner user ID" },
+          description: { type: "string", description: "Optional description" },
+          status: { type: "string", description: "Milestone status", enum: ["PLANNED", "IN_PROGRESS", "COMPLETED", "MISSED"] },
+        },
+        required: ["projectId", "name", "dueDate"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_milestone",
+      description: "Update a roadmap milestone.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Project ID" },
+          milestoneId: { type: "string", description: "Milestone ID" },
+          name: { type: "string", description: "Milestone name" },
+          dueDate: { type: "string", description: "Due timestamp in ISO format" },
+          ownerId: { type: "string", description: "Milestone owner user ID or empty to clear" },
+          description: { type: "string", description: "Description or empty to clear" },
+          status: { type: "string", description: "Milestone status", enum: ["PLANNED", "IN_PROGRESS", "COMPLETED", "MISSED"] },
+        },
+        required: ["projectId", "milestoneId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_roadmap_dependency",
+      description: "Create a roadmap dependency between two projects.",
+      parameters: {
+        type: "object",
+        properties: {
+          blockingProjectId: { type: "string", description: "Blocking project ID" },
+          blockedProjectId: { type: "string", description: "Blocked project ID" },
+          note: { type: "string", description: "Optional dependency note" },
+        },
+        required: ["blockingProjectId", "blockedProjectId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reorder_milestones",
+      description: "Reorder roadmap milestones for a project.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Project ID" },
+          orderedIdsJson: { type: "string", description: "JSON array of milestone IDs in order" },
+        },
+        required: ["projectId", "orderedIdsJson"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "resolve_roadmap_dependency",
+      description: "Resolve a roadmap dependency without deleting it.",
+      parameters: {
+        type: "object",
+        properties: {
+          dependencyId: { type: "string", description: "Dependency ID" },
+          note: { type: "string", description: "Optional resolution note" },
+        },
+        required: ["dependencyId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancel_roadmap_dependency",
+      description: "Cancel a roadmap dependency without deleting it.",
+      parameters: {
+        type: "object",
+        properties: {
+          dependencyId: { type: "string", description: "Dependency ID" },
+          note: { type: "string", description: "Optional cancellation note" },
+        },
+        required: ["dependencyId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_api_keys",
+      description: "List API keys for the current workspace. Returns masked prefixes only.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_api_key",
+      description: "Create a new API key for the current workspace. Admins and owners only. The raw key is shown once and is not available again on replay.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Human-readable API key name" },
+          expiresAt: { type: "string", description: "Optional future ISO-8601 expiry timestamp" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_api_key",
+      description: "Get a single API key by ID. Returns masked prefix only.",
+      parameters: {
+        type: "object",
+        properties: {
+          keyId: { type: "string", description: "API key ID" },
+        },
+        required: ["keyId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_integrations",
+      description: "List integration connection status for the current workspace.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_integration_status",
+      description: "Get integration status and settings for a single provider.",
+      parameters: {
+        type: "object",
+        properties: {
+          provider: { type: "string", description: "Provider name", enum: ["github", "slack", "discord", "figma"] },
+        },
+        required: ["provider"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_workspace_analytics",
+      description: "Get workspace-level analytics. Requires admin or owner. Use for workspace health, top blockers, urgent open work, and workspace trends.",
+      parameters: {
+        type: "object",
+        properties: {
+          period: { type: "string", description: "Reporting period", enum: ["7d", "30d", "90d", "custom"] },
+          from: { type: "string", description: "Custom range start date in YYYY-MM-DD" },
+          to: { type: "string", description: "Custom range end date in YYYY-MM-DD" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_project_analytics",
+      description: "Get project analytics: progress, timeline health, burndown, scope growth, priority/status breakdown, and project workload.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectId: { type: "string", description: "Project ID" },
+          period: { type: "string", description: "Reporting period", enum: ["7d", "30d", "90d", "custom"] },
+          from: { type: "string", description: "Custom range start date in YYYY-MM-DD" },
+          to: { type: "string", description: "Custom range end date in YYYY-MM-DD" },
+        },
+        required: ["projectId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_team_analytics",
+      description: "Get team analytics: velocity, workload distribution, overdue work, member performance, and recent cycle comparison.",
+      parameters: {
+        type: "object",
+        properties: {
+          teamId: { type: "string", description: "Team ID" },
+          period: { type: "string", description: "Reporting period", enum: ["7d", "30d", "90d", "custom"] },
+          from: { type: "string", description: "Custom range start date in YYYY-MM-DD" },
+          to: { type: "string", description: "Custom range end date in YYYY-MM-DD" },
+        },
+        required: ["teamId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_member_analytics",
+      description: "Get member analytics: assigned, completed, overdue, project/team breakdown, and recent activity. Members can view only their own analytics unless admin/owner.",
+      parameters: {
+        type: "object",
+        properties: {
+          memberId: { type: "string", description: "Member user ID. Use 'me' for current user." },
+          period: { type: "string", description: "Reporting period", enum: ["7d", "30d", "90d", "custom"] },
+          from: { type: "string", description: "Custom range start date in YYYY-MM-DD" },
+          to: { type: "string", description: "Custom range end date in YYYY-MM-DD" },
+        },
+        required: ["memberId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_cycle_analytics",
+      description: "Get cycle analytics: current progress, remaining work, burndown, overdue/blocked work, and sprint health.",
+      parameters: {
+        type: "object",
+        properties: {
+          cycleId: { type: "string", description: "Cycle ID" },
+          period: { type: "string", description: "Reporting period", enum: ["7d", "30d", "90d", "custom"] },
+          from: { type: "string", description: "Custom range start date in YYYY-MM-DD" },
+          to: { type: "string", description: "Custom range end date in YYYY-MM-DD" },
+        },
+        required: ["cycleId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_current_cycle_for_team",
+      description: "Resolve the current cycle for a team before getting cycle analytics or sprint progress.",
+      parameters: {
+        type: "object",
+        properties: {
+          teamId: { type: "string", description: "Team ID" },
+        },
+        required: ["teamId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "export_analytics_report",
+      description: "Export analytics for a workspace, project, team, member, or cycle as json, csv, or pdf. Use when the user explicitly asks to export or download a report.",
+      parameters: {
+        type: "object",
+        properties: {
+          scope: { type: "string", description: "Analytics scope", enum: ["workspace", "project", "team", "member", "cycle"] },
+          scopeId: { type: "string", description: "Required for non-workspace exports" },
+          period: { type: "string", description: "Reporting period", enum: ["7d", "30d", "90d", "custom"] },
+          from: { type: "string", description: "Custom range start date in YYYY-MM-DD" },
+          to: { type: "string", description: "Custom range end date in YYYY-MM-DD" },
+          format: { type: "string", description: "Export format", enum: ["json", "csv", "pdf"] },
+        },
+        required: ["scope", "format"],
       },
     },
   },
