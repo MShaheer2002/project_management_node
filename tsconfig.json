@@ -31,6 +31,7 @@
     "config/**/*.ts",
     "shared/**/*.ts",
     "modules/**/*.ts",
+    "mcp/**/*.ts",
     "infra/**/*.ts",
     "workers/**/*.ts",
     "docs/api/**/*.ts",

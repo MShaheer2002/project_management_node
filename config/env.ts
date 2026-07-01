@@ -117,6 +117,18 @@ const envSchema = z.object({
   AI_EMBEDDING_MODEL: z.preprocess(emptyStringToUndefined, z.string().optional()),
   AI_STALE_ISSUE_DAYS: z.coerce.number().int().min(1).max(180).default(7),
   AI_BACKGROUND_ASSIGNEE_CANDIDATE_LIMIT: z.coerce.number().int().min(1).max(10).default(3),
+
+  // MCP Server — external AI transport (Phase 20E)
+  TRUSSEN_MCP_API_KEY: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  MCP_API_KEY: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  TRUSSEN_MCP_SERVER_NAME: z.preprocess(
+    emptyStringToUndefined,
+    z.string().trim().min(1).default("Trussen MCP"),
+  ),
+  TRUSSEN_MCP_SERVER_VERSION: z.preprocess(
+    emptyStringToUndefined,
+    z.string().trim().min(1).default("1.0.0"),
+  ),
 });
 
 // Validate environment variables — crashes if invalid

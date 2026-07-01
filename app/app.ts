@@ -53,10 +53,12 @@ import analyticsRoutes from "../modules/analytics/analytics.routes.js";
 import roadmapRoutes from "../modules/roadmap/roadmap.routes.js";
 import documentsRoutes from "../modules/documents/documents.routes.js";
 import apiKeyRoutes from "../modules/api-key/api-key.routes.js";
+import aiConnectionRoutes from "../modules/ai-connection/ai-connection.routes.js";
 import integrationRoutes from "../modules/integration/integration\.routes\.js";
 import webhookRoutes from "../modules/integration/webhooks/webhook.routes.js";
 import driveRoutes from "../modules/drive/drive.routes.js";
 import aiRoutes from "../modules/ai/ai.routes.js";
+import mcpHttpRoutes from "../mcp/mcp.http.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
 
@@ -178,6 +180,8 @@ app.use(analyticsRoutes);
 app.use(roadmapRoutes);
 app.use(documentsRoutes);
 app.use("/api-keys", apiKeyRoutes);
+app.use("/ai-connections", aiConnectionRoutes);
+app.use("/mcp", mcpHttpRoutes);
 app.use("/integrations", integrationRoutes);
 app.use("/webhooks", webhookRoutes);
 app.use("/me/drive", driveRoutes);

@@ -16,6 +16,20 @@
 import type { RequestHandler } from "express";
 import { env } from "../../config/env.js";
 
+function sanitizeUrl(rawUrl: string) {
+  try {
+    const parsed = new URL(rawUrl, "http://localhost");
+    for (const key of ["api_key", "token", "access_token"]) {
+      if (parsed.searchParams.has(key)) {
+        parsed.searchParams.set(key, "[REDACTED]");
+      }
+    }
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return rawUrl;
+  }
+}
+
 export const requestLogger: RequestHandler = (req, res, next) => {
   const start = Date.now();
 
@@ -38,7 +52,7 @@ export const requestLogger: RequestHandler = (req, res, next) => {
         JSON.stringify({
           timestamp,
           method: req.method,
-          path: req.originalUrl,
+          path: sanitizeUrl(req.originalUrl),
           status,
           duration,
           userId: req.user?.id,
@@ -64,7 +78,7 @@ export const requestLogger: RequestHandler = (req, res, next) => {
     else if (status >= 400) statusColor = yellow;
 
     // Main log line
-    let line = `${dim}${timestamp}${reset} ${bold}${req.method}${reset} ${req.originalUrl} ${statusColor}${status}${reset} ${dim}${duration}ms${reset}`;
+    let line = `${dim}${timestamp}${reset} ${bold}${req.method}${reset} ${sanitizeUrl(req.originalUrl)} ${statusColor}${status}${reset} ${dim}${duration}ms${reset}`;
 
     // User context
     if (req.user?.id) {
