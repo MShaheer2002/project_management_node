@@ -300,6 +300,22 @@ enum DocumentScope {
   PROJECT
 }
 
+enum AiConnectionClient {
+  CODEX
+  CLAUDE_DESKTOP
+  CURSOR
+  GENERIC_MCP
+}
+
+enum AiConnectionAuthType {
+  PAT
+}
+
+enum AiConnectionStatus {
+  ACTIVE
+  REVOKED
+}
+
 // ============================================================================
 // CORE IDENTITY
 // ============================================================================
@@ -358,6 +374,7 @@ model User {
   cancelledProjectDependencies ProjectDependency[] @relation("RoadmapDependencyCanceller")
   createdApiKeys        ApiKey[] // API keys created by this user
   connectedIntegrations Integration[] // Integrations connected by this user
+  aiConnections        AiConnection[] // External AI client connections owned by this user
   createdIssueAttachments IssueAttachment[]
   createdCommentAttachments CommentAttachment[]
   uploadedDocuments     EntityDocument[] @relation("EntityDocumentUploader")
@@ -422,6 +439,7 @@ model Workspace {
   templateApplications TemplateApplication[]
   integrations   Integration[]
   apiKeys        ApiKey[]
+  aiConnections  AiConnection[]
   subscriptions  Subscription[]
   invoices       Invoice[]
   paymentMethods PaymentMethod[]
@@ -1340,8 +1358,30 @@ model ApiKey {
   // -- Relations --
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy User      @relation(fields: [createdById], references: [id])
+  aiConnection AiConnection?
 
   @@index([workspaceId])
+}
+
+model AiConnection {
+  id          String               @id @default(uuid())
+  workspaceId String
+  userId      String
+  apiKeyId    String?              @unique
+  label       String
+  client      AiConnectionClient
+  authType    AiConnectionAuthType @default(PAT)
+  status      AiConnectionStatus   @default(ACTIVE)
+  scopes      Json?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKey    ApiKey?   @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, userId, createdAt])
+  @@index([workspaceId, client, status])
 }
 
 // ============================================================================

@@ -29,6 +29,19 @@ type McpToolSpec = {
   readOnly?: boolean | undefined;
 };
 
+export const V1_MCP_TOOL_NAMES = [
+  "list_issues",
+  "get_issue",
+  "create_issue",
+  "update_issue_status",
+  "assign_issue",
+  "add_comment",
+  "list_projects",
+  "list_cycles",
+  "list_members",
+  "search_issues",
+] as const;
+
 const MCP_TOOL_SPECS: McpToolSpec[] = [
   {
     name: "list_issues",
@@ -271,6 +284,10 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
 ];
 
+const ALLOWED_MCP_TOOL_NAME_SET = new Set<string>(V1_MCP_TOOL_NAMES);
+
+export const V1_MCP_TOOL_SPECS = MCP_TOOL_SPECS.filter((spec) => ALLOWED_MCP_TOOL_NAME_SET.has(spec.name));
+
 function summarizeResult(toolName: string, result: ExecutorResult) {
   return JSON.stringify(
     {
@@ -305,7 +322,7 @@ function toStructuredContent(result: ExecutorResult) {
 }
 
 export function registerMcpTools(server: McpServer, session: McpSessionContext) {
-  for (const spec of MCP_TOOL_SPECS) {
+  for (const spec of V1_MCP_TOOL_SPECS) {
     const config = {
       description: toolDescriptions.get(spec.name) ?? `${spec.name} via Trussen`,
       inputSchema: spec.inputSchema,
@@ -337,6 +354,12 @@ export function registerMcpTools(server: McpServer, session: McpSessionContext) 
             metadata: {
               apiKeyId: session.apiKeyId,
               apiKeyName: session.apiKeyName,
+              actorType: session.actorType,
+              client: session.client,
+              authMethod: session.authMethod,
+              scopes: session.scopes,
+              connectionId: session.connectionId,
+              connectionLabel: session.connectionLabel,
             },
           });
 
@@ -356,6 +379,12 @@ export function registerMcpTools(server: McpServer, session: McpSessionContext) 
           metadata: {
             apiKeyId: session.apiKeyId,
             apiKeyName: session.apiKeyName,
+            actorType: session.actorType,
+            client: session.client,
+            authMethod: session.authMethod,
+            scopes: session.scopes,
+            connectionId: session.connectionId,
+            connectionLabel: session.connectionLabel,
           },
         });
 

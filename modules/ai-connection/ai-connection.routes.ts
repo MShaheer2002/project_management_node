@@ -13,6 +13,14 @@ import {
 const router = Router();
 
 router.get(
+  "/catalog",
+  authenticate,
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  controller.catalog,
+);
+
+router.get(
   "/",
   authenticate,
   requireWorkspace,

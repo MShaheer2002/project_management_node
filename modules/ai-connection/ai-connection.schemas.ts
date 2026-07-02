@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 
-const clientSchema = z.enum(["codex", "claude_desktop", "cursor", "generic_mcp"]);
+export const aiConnectionClientSchema = z.enum(["codex", "claude_desktop", "cursor", "generic_mcp"]);
+export const aiConnectionAuthTypeSchema = z.enum(["pat", "oauth"]);
 
 export const createAiConnectionSchema = {
   body: z.object({
@@ -14,7 +15,8 @@ export const createAiConnectionSchema = {
       .datetime("Invalid date format — use ISO 8601")
       .refine((date) => new Date(date) > new Date(), "Expiration date must be in the future")
       .optional(),
-    primaryClient: clientSchema.optional(),
+    primaryClient: aiConnectionClientSchema.optional(),
+    authType: aiConnectionAuthTypeSchema.optional(),
   }),
 };
 
@@ -25,3 +27,5 @@ export const aiConnectionIdParamSchema = {
 };
 
 export type CreateAiConnectionInput = z.infer<typeof createAiConnectionSchema.body>;
+export type AiConnectionClientInput = z.infer<typeof aiConnectionClientSchema>;
+export type AiConnectionAuthTypeInput = z.infer<typeof aiConnectionAuthTypeSchema>;

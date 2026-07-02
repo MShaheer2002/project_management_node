@@ -1,5 +1,7 @@
 import { env } from "../config/env.js";
 import { authenticateWithApiKey } from "../modules/api-key/api-key.service.js";
+import { getAiConnectionByApiKeyId } from "../modules/ai-connection/ai-connection.service.js";
+import { AiConnectionStatus } from "../app/generated/prisma/client.js";
 
 export type McpSessionContext = {
   workspaceId: string;
@@ -7,15 +9,46 @@ export type McpSessionContext = {
   userRole: string;
   apiKeyId: string;
   apiKeyName: string;
+  actorType: "USER";
+  client: "codex" | "claude_desktop" | "cursor" | "generic_mcp";
+  authMethod: "pat";
+  scopes: string[];
+  connectionId?: string | null;
+  connectionLabel?: string | null;
 };
 
-function toSessionContext(auth: Awaited<ReturnType<typeof authenticateWithApiKey>>): McpSessionContext {
+function toClientValue(input?: string | null): McpSessionContext["client"] {
+  switch (input) {
+    case "CODEX":
+      return "codex";
+    case "CLAUDE_DESKTOP":
+      return "claude_desktop";
+    case "CURSOR":
+      return "cursor";
+    case "GENERIC_MCP":
+    default:
+      return "generic_mcp";
+  }
+}
+
+async function toSessionContext(auth: Awaited<ReturnType<typeof authenticateWithApiKey>>): Promise<McpSessionContext> {
+  const connection = await getAiConnectionByApiKeyId(auth.apiKey.id);
+  if (connection && connection.status === AiConnectionStatus.REVOKED) {
+    throw new Error("This Trussen AI connection has been revoked.");
+  }
+
   return {
     workspaceId: auth.workspace.id,
     userId: auth.user.id,
     userRole: auth.workspace.role,
     apiKeyId: auth.apiKey.id,
     apiKeyName: auth.apiKey.name,
+    actorType: "USER",
+    client: toClientValue(connection?.client),
+    authMethod: "pat",
+    scopes: Array.isArray(connection?.scopes) ? connection.scopes.filter((value): value is string => typeof value === "string") : ["mcp:v1"],
+    connectionId: connection?.id ?? null,
+    connectionLabel: connection?.label ?? null,
   };
 }
 
@@ -32,12 +65,12 @@ function resolveMcpApiKey() {
 
 export async function authenticateMcpSession(): Promise<McpSessionContext> {
   const auth = await authenticateWithApiKey(resolveMcpApiKey());
-  return toSessionContext(auth);
+  return await toSessionContext(auth);
 }
 
 export async function authenticateMcpBearerToken(rawKey: string): Promise<McpSessionContext> {
   const auth = await authenticateWithApiKey(rawKey);
-  return toSessionContext(auth);
+  return await toSessionContext(auth);
 }
 
 export function extractBearerToken(authorizationHeader?: string | null) {

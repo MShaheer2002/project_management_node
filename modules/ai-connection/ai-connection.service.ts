@@ -1,62 +1,123 @@
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { env } from "../../config/env.js";
+import { prisma } from "../../shared/utils/prisma.js";
 import {
   createApiKey,
   getApiKeyById,
-  listApiKeys,
   revokeApiKey,
 } from "../api-key/api-key.service.js";
-import type { CreateAiConnectionInput } from "./ai-connection.schemas.js";
+import {
+  assertAiConnectionAuthMethodSupported,
+  listAiConnectionCatalog,
+} from "./ai-connection.catalog.js";
+import type { AiConnectionClientInput, CreateAiConnectionInput } from "./ai-connection.schemas.js";
+import {
+  AiConnectionAuthType,
+  AiConnectionClient,
+  AiConnectionStatus,
+} from "../../app/generated/prisma/client.js";
 
-const AI_CONNECTION_PREFIX = "AI Connection — ";
+const AI_CONNECTION_SCOPES = ["mcp:v1"];
 
-type ApiKeyListItem = Awaited<ReturnType<typeof listApiKeys>>[number];
-
-function toStoredName(label: string) {
-  return `${AI_CONNECTION_PREFIX}${label}`;
+function toClientEnum(client?: AiConnectionClientInput | null) {
+  switch (client) {
+    case "codex":
+      return AiConnectionClient.CODEX;
+    case "claude_desktop":
+      return AiConnectionClient.CLAUDE_DESKTOP;
+    case "cursor":
+      return AiConnectionClient.CURSOR;
+    case "generic_mcp":
+    case undefined:
+    case null:
+      return AiConnectionClient.GENERIC_MCP;
+  }
 }
 
-function isAiConnectionKey(name: string) {
-  return name.startsWith(AI_CONNECTION_PREFIX);
+function toClientValue(client: AiConnectionClient): AiConnectionClientInput {
+  switch (client) {
+    case AiConnectionClient.CODEX:
+      return "codex";
+    case AiConnectionClient.CLAUDE_DESKTOP:
+      return "claude_desktop";
+    case AiConnectionClient.CURSOR:
+      return "cursor";
+    case AiConnectionClient.GENERIC_MCP:
+      return "generic_mcp";
+  }
 }
 
-function toDisplayName(name: string) {
-  return isAiConnectionKey(name) ? name.slice(AI_CONNECTION_PREFIX.length) : name;
+export function toConnectionStatus(input: {
+  status: AiConnectionStatus;
+  apiKeyExpiresAt?: Date | null;
+  apiKeyId?: string | null;
+}) {
+  if (input.status === AiConnectionStatus.REVOKED || !input.apiKeyId) {
+    return "revoked" as const;
+  }
+  if (input.apiKeyExpiresAt && input.apiKeyExpiresAt < new Date()) {
+    return "expired" as const;
+  }
+  return "active" as const;
 }
 
-function toSummary(key: ApiKeyListItem | Awaited<ReturnType<typeof createApiKey>>) {
+function toSummary(connection: {
+  id: string;
+  label: string;
+  client: AiConnectionClient;
+  authType: AiConnectionAuthType;
+  status: AiConnectionStatus;
+  createdAt: Date;
+  scopes: unknown;
+  apiKey: {
+    id: string;
+    keyPrefix: string;
+    lastUsedAt: Date | null;
+    expiresAt: Date | null;
+    createdBy: { id: string; name: string; email: string };
+  } | null;
+}) {
+  const status = toConnectionStatus({
+    status: connection.status,
+    apiKeyExpiresAt: connection.apiKey?.expiresAt ?? null,
+    apiKeyId: connection.apiKey?.id ?? null,
+  });
   return {
-    id: key.id,
-    name: toDisplayName(key.name),
-    keyPrefix: key.keyPrefix,
-    createdAt: key.createdAt,
-    lastUsedAt: "lastUsedAt" in key ? key.lastUsedAt : null,
-    expiresAt: key.expiresAt,
-    isExpired: "isExpired" in key ? key.isExpired : (key.expiresAt ? key.expiresAt < new Date() : false),
-    createdBy: key.createdBy,
+    id: connection.id,
+    name: connection.label,
+    client: toClientValue(connection.client),
+    authType: connection.authType.toLowerCase(),
+    status,
+    scopes: Array.isArray(connection.scopes) ? connection.scopes : AI_CONNECTION_SCOPES,
+    keyPrefix: connection.apiKey?.keyPrefix ?? null,
+    createdAt: connection.createdAt,
+    lastUsedAt: connection.apiKey?.lastUsedAt ?? null,
+    expiresAt: connection.apiKey?.expiresAt ?? null,
+    isExpired: status === "expired",
+    createdBy: connection.apiKey?.createdBy ?? null,
   };
 }
 
-function resolveMcpBaseUrl() {
+export function resolveMcpBaseUrl() {
   const baseUrl = env.BACKEND_URL ?? `http://localhost:${env.PORT}`;
   return new URL("/mcp", baseUrl).toString();
 }
 
-function resolveCodexMcpUrl(token: string) {
+export function resolveCodexMcpUrl(token: string) {
   const url = new URL(resolveMcpBaseUrl());
   url.searchParams.set("api_key", token);
   return url.toString();
 }
 
-function buildCodexConfig(token: string) {
+export function buildCodexConfig(token: string) {
   return [
     '[mcp_servers.trussen]',
     `url = "${resolveCodexMcpUrl(token)}"`,
   ].join("\n");
 }
 
-function buildClaudeDesktopConfig(token: string) {
+export function buildClaudeDesktopConfig(token: string) {
   return JSON.stringify(
     {
       mcpServers: {
@@ -74,7 +135,7 @@ function buildClaudeDesktopConfig(token: string) {
   );
 }
 
-function buildCursorConfig(token: string) {
+export function buildCursorConfig(token: string) {
   return JSON.stringify(
     {
       mcpServers: {
@@ -91,7 +152,7 @@ function buildCursorConfig(token: string) {
   );
 }
 
-function buildGenericSetup(token: string) {
+export function buildGenericSetup(token: string) {
   return {
     endpoint: resolveMcpBaseUrl(),
     authHeaderName: "Authorization",
@@ -104,7 +165,7 @@ function buildGenericSetup(token: string) {
   };
 }
 
-function buildSetupArtifacts(token: string) {
+export function buildSetupArtifacts(token: string) {
   return {
     codex: {
       client: "codex",
@@ -133,9 +194,33 @@ function buildSetupArtifacts(token: string) {
   };
 }
 
+export async function getAiConnectionCatalog() {
+  return listAiConnectionCatalog();
+}
+
 export async function listAiConnections(workspaceId: string) {
-  const keys = await listApiKeys(workspaceId);
-  return keys.filter((key) => isAiConnectionKey(key.name)).map((key) => toSummary(key));
+  const connections = await prisma.aiConnection.findMany({
+    where: {
+      workspaceId,
+      status: { not: AiConnectionStatus.REVOKED },
+    },
+    include: {
+      apiKey: {
+        select: {
+          id: true,
+          keyPrefix: true,
+          lastUsedAt: true,
+          expiresAt: true,
+          createdBy: {
+            select: { id: true, name: true, email: true },
+          },
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return connections.map((connection) => toSummary(connection));
 }
 
 export async function createAiConnection(
@@ -143,25 +228,90 @@ export async function createAiConnection(
   userId: string,
   input: CreateAiConnectionInput,
 ) {
+  const primaryClient = input.primaryClient ?? "generic_mcp";
+  const authType = input.authType ?? "pat";
+
+  assertAiConnectionAuthMethodSupported(primaryClient, authType);
+
   const created = await createApiKey(workspaceId, userId, {
-    name: toStoredName(input.name),
+    name: input.name,
     ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
   });
 
-  return {
-    connection: toSummary(created),
-    token: created.key,
-    primaryClient: input.primaryClient ?? null,
-    setup: buildSetupArtifacts(created.key),
-  };
+  try {
+    const connection = await prisma.aiConnection.create({
+      data: {
+        workspaceId,
+        userId,
+        apiKeyId: created.id,
+        label: input.name,
+        client: toClientEnum(primaryClient),
+        authType: AiConnectionAuthType.PAT,
+        scopes: AI_CONNECTION_SCOPES,
+      },
+      include: {
+        apiKey: {
+          select: {
+            id: true,
+            keyPrefix: true,
+            lastUsedAt: true,
+            expiresAt: true,
+            createdBy: {
+              select: { id: true, name: true, email: true },
+            },
+          },
+        },
+      },
+    });
+
+    return {
+      connection: toSummary(connection),
+      token: created.key,
+      primaryClient,
+      setup: buildSetupArtifacts(created.key),
+    };
+  } catch (error) {
+    await prisma.apiKey.delete({ where: { id: created.id } }).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function getAiConnectionByApiKeyId(apiKeyId: string) {
+  return prisma.aiConnection.findFirst({
+    where: { apiKeyId },
+    select: {
+      id: true,
+      workspaceId: true,
+      userId: true,
+      client: true,
+      authType: true,
+      status: true,
+      scopes: true,
+      label: true,
+    },
+  });
 }
 
 export async function revokeAiConnection(workspaceId: string, id: string, actorId: string) {
-  const key = await getApiKeyById(workspaceId, id);
+  const connection = await prisma.aiConnection.findFirst({
+    where: { id, workspaceId },
+    select: { id: true, apiKeyId: true, status: true },
+  });
 
-  if (!isAiConnectionKey(key.name)) {
+  if (!connection) {
     throw new AppError(404, ERROR_CODES.API_KEY_NOT_FOUND, "AI connection not found");
   }
 
-  await revokeApiKey(workspaceId, id, actorId);
+  await prisma.aiConnection.update({
+    where: { id: connection.id },
+    data: {
+      status: AiConnectionStatus.REVOKED,
+      apiKeyId: null,
+    },
+  });
+
+  if (connection.apiKeyId) {
+    const key = await getApiKeyById(workspaceId, connection.apiKeyId);
+    await revokeApiKey(workspaceId, key.id, actorId);
+  }
 }
