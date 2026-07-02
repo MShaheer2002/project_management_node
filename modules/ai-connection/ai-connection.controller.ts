@@ -20,6 +20,33 @@ export const list: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const getHealth: RequestHandler = async (req, res, next) => {
+  try {
+    const health = await aiConnectionService.getAiConnectionHealth(
+      req.workspace!.id,
+      req.params.id as string,
+    );
+    sendSuccess(res, 200, health);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const listSessions: RequestHandler = async (req, res, next) => {
+  try {
+    const sessions = await aiConnectionService.listAiConnectionSessions(
+      req.workspace!.id,
+      req.params.id as string,
+      req.validated?.query && typeof req.validated.query === "object" && "limit" in req.validated.query
+        ? (req.validated.query.limit as number | undefined)
+        : undefined,
+    );
+    sendSuccess(res, 200, sessions);
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const create: RequestHandler = async (req, res, next) => {
   try {
     const result = await aiConnectionService.createAiConnection(
@@ -28,6 +55,19 @@ export const create: RequestHandler = async (req, res, next) => {
       req.body,
     );
     sendSuccess(res, 201, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const rotate: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await aiConnectionService.rotateAiConnection(
+      req.workspace!.id,
+      req.params.id as string,
+      req.user!.id,
+    );
+    sendSuccess(res, 200, result);
   } catch (error) {
     next(error);
   }

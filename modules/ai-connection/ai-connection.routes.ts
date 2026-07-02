@@ -7,6 +7,7 @@ import { strictRateLimiter } from "../../shared/middleware/rate-limiter.js";
 import * as controller from "./ai-connection.controller.js";
 import {
   aiConnectionIdParamSchema,
+  aiConnectionSessionListQuerySchema,
   createAiConnectionSchema,
 } from "./ai-connection.schemas.js";
 
@@ -28,6 +29,25 @@ router.get(
   controller.list,
 );
 
+router.get(
+  "/:id/health",
+  authenticate,
+  validate(aiConnectionIdParamSchema),
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  controller.getHealth,
+);
+
+router.get(
+  "/:id/sessions",
+  authenticate,
+  validate(aiConnectionIdParamSchema),
+  validate(aiConnectionSessionListQuerySchema),
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  controller.listSessions,
+);
+
 router.post(
   "/",
   authenticate,
@@ -36,6 +56,16 @@ router.post(
   strictRateLimiter,
   validate(createAiConnectionSchema),
   controller.create,
+);
+
+router.post(
+  "/:id/rotate",
+  authenticate,
+  validate(aiConnectionIdParamSchema),
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  strictRateLimiter,
+  controller.rotate,
 );
 
 router.delete(

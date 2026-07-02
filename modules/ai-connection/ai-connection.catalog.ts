@@ -8,6 +8,8 @@ type ClientCapabilityRecord = {
   id: AiConnectionClientInput;
   label: string;
   availableAuthMethods: AiConnectionRequestedAuthType[];
+  supportsPAT: boolean;
+  supportsOAuth: boolean;
   supportsStreaming: boolean;
   supportsResources: boolean;
   supportsPrompts: boolean;
@@ -21,6 +23,8 @@ const CLIENT_CAPABILITIES: ClientCapabilityRecord[] = [
     id: "codex",
     label: "Codex",
     availableAuthMethods: ["pat"],
+    supportsPAT: true,
+    supportsOAuth: false,
     supportsStreaming: false,
     supportsResources: false,
     supportsPrompts: false,
@@ -32,6 +36,8 @@ const CLIENT_CAPABILITIES: ClientCapabilityRecord[] = [
     id: "claude_desktop",
     label: "Claude Desktop",
     availableAuthMethods: ["pat"],
+    supportsPAT: true,
+    supportsOAuth: false,
     supportsStreaming: false,
     supportsResources: false,
     supportsPrompts: false,
@@ -43,6 +49,8 @@ const CLIENT_CAPABILITIES: ClientCapabilityRecord[] = [
     id: "cursor",
     label: "Cursor",
     availableAuthMethods: ["pat"],
+    supportsPAT: true,
+    supportsOAuth: false,
     supportsStreaming: false,
     supportsResources: false,
     supportsPrompts: false,
@@ -54,6 +62,8 @@ const CLIENT_CAPABILITIES: ClientCapabilityRecord[] = [
     id: "generic_mcp",
     label: "Generic MCP",
     availableAuthMethods: ["pat"],
+    supportsPAT: true,
+    supportsOAuth: false,
     supportsStreaming: false,
     supportsResources: false,
     supportsPrompts: false,

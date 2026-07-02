@@ -26,6 +26,12 @@ export const aiConnectionIdParamSchema = {
   }),
 };
 
+export const aiConnectionSessionListQuerySchema = {
+  query: z.object({
+    limit: z.coerce.number().int().min(1).max(50).optional(),
+  }),
+};
+
 export type CreateAiConnectionInput = z.infer<typeof createAiConnectionSchema.body>;
 export type AiConnectionClientInput = z.infer<typeof aiConnectionClientSchema>;
 export type AiConnectionAuthTypeInput = z.infer<typeof aiConnectionAuthTypeSchema>;

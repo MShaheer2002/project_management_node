@@ -316,6 +316,19 @@ enum AiConnectionStatus {
   REVOKED
 }
 
+enum AiConnectionVerificationStatus {
+  READY
+  WARNING
+  ERROR
+}
+
+enum AiConnectionSessionStatus {
+  ACTIVE
+  SUCCEEDED
+  FAILED
+  REJECTED
+}
+
 // ============================================================================
 // CORE IDENTITY
 // ============================================================================
@@ -375,6 +388,7 @@ model User {
   createdApiKeys        ApiKey[] // API keys created by this user
   connectedIntegrations Integration[] // Integrations connected by this user
   aiConnections        AiConnection[] // External AI client connections owned by this user
+  aiConnectionSessions AiConnectionSession[]
   createdIssueAttachments IssueAttachment[]
   createdCommentAttachments CommentAttachment[]
   uploadedDocuments     EntityDocument[] @relation("EntityDocumentUploader")
@@ -440,6 +454,7 @@ model Workspace {
   integrations   Integration[]
   apiKeys        ApiKey[]
   aiConnections  AiConnection[]
+  aiConnectionSessions AiConnectionSession[]
   subscriptions  Subscription[]
   invoices       Invoice[]
   paymentMethods PaymentMethod[]
@@ -1359,6 +1374,7 @@ model ApiKey {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy User      @relation(fields: [createdById], references: [id])
   aiConnection AiConnection?
+  aiConnectionSessions AiConnectionSession[]
 
   @@index([workspaceId])
 }
@@ -1373,15 +1389,75 @@ model AiConnection {
   authType    AiConnectionAuthType @default(PAT)
   status      AiConnectionStatus   @default(ACTIVE)
   scopes      Json?
+  lastUsedAt  DateTime?
+  lastVerifiedAt DateTime?
+  lastVerificationStatus AiConnectionVerificationStatus?
+  lastVerificationMessage String?
+  lastVerificationChecks Json?
+  rotatedAt   DateTime?
+  requestCount Int                 @default(0)
+  toolCallCount Int                @default(0)
   createdAt   DateTime             @default(now())
   updatedAt   DateTime             @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   apiKey    ApiKey?   @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  sessions  AiConnectionSession[]
 
   @@index([workspaceId, userId, createdAt])
   @@index([workspaceId, client, status])
+}
+
+model AiConnectionSession {
+  id            String                   @id @default(uuid())
+  aiConnectionId String
+  workspaceId   String
+  userId        String
+  apiKeyId      String?
+  client        AiConnectionClient
+  sessionKey    String?
+  providerSessionId String?
+  clientName    String?
+  clientVersion String?
+  authType      AiConnectionAuthType
+  transport     String
+  status        AiConnectionSessionStatus @default(ACTIVE)
+  scopeSnapshot Json?
+  requestCount  Int                      @default(1)
+  toolCallCount Int                      @default(0)
+  lastErrorCode String?
+  lastErrorMessage String?
+  startedAt     DateTime                 @default(now())
+  lastActivityAt DateTime                @default(now())
+  completedAt   DateTime?
+
+  aiConnection AiConnection @relation(fields: [aiConnectionId], references: [id], onDelete: Cascade)
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKey       ApiKey?      @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  steps        AiConnectionSessionStep[]
+
+  @@index([workspaceId, startedAt])
+  @@index([aiConnectionId, startedAt])
+  @@index([userId, startedAt])
+  @@index([status, startedAt])
+  @@index([aiConnectionId, sessionKey, status, lastActivityAt])
+  @@index([aiConnectionId, transport, client, lastActivityAt])
+}
+
+model AiConnectionSessionStep {
+  id          String   @id @default(uuid())
+  sessionId   String
+  toolName    String
+  status      String
+  errorMessage String?
+  startedAt   DateTime @default(now())
+  completedAt DateTime?
+
+  session AiConnectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, startedAt])
 }
 
 // ============================================================================

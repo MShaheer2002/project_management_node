@@ -1,6 +1,7 @@
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { executeTool } from "../modules/ai/tools/tool-executor.js";
 import { logAiError, logAiInfo } from "../modules/ai/ai.observability.js";
+import { recordAiConnectionSessionStep } from "../modules/ai-connection/ai-connection.service.js";
 import type { McpSessionContext } from "./mcp.auth.js";
 
 function stringifyResource(payload: unknown) {
@@ -27,6 +28,15 @@ async function readResourceThroughTool(input: {
   });
 
   if (!result.success) {
+    if (input.session.sessionId) {
+      await recordAiConnectionSessionStep({
+        sessionId: input.session.sessionId,
+        toolName: input.toolName,
+        success: false,
+        errorMessage: result.error ?? "Resource resolution failed",
+      });
+    }
+
     logAiError("mcp_resource_failed", {
       workspaceId: input.session.workspaceId,
       userId: input.session.userId,
@@ -50,6 +60,14 @@ async function readResourceThroughTool(input: {
         },
       ],
     };
+  }
+
+  if (input.session.sessionId) {
+    await recordAiConnectionSessionStep({
+      sessionId: input.session.sessionId,
+      toolName: input.toolName,
+      success: true,
+    });
   }
 
   logAiInfo("mcp_resource_read", {

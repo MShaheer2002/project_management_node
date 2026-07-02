@@ -4,6 +4,7 @@ import {
   buildClaudeDesktopConfig,
   buildCodexConfig,
   buildCursorConfig,
+  evaluateAiConnectionHealth,
   buildGenericSetup,
   resolveCodexMcpUrl,
   resolveMcpBaseUrl,
@@ -72,4 +73,48 @@ test("connection status resolves active, expired, and revoked correctly", () => 
     }),
     "revoked",
   );
+});
+
+test("connection health reports ready for active HTTPS PAT connections", () => {
+  const health = evaluateAiConnectionHealth({
+    endpointUrl: "https://example.ngrok-free.dev/mcp",
+    lifecycleStatus: "active",
+    authType: "pat",
+    availableAuthMethods: ["pat"],
+  });
+
+  assert.equal(health.status, "ready");
+  assert.equal(health.canConnect, true);
+});
+
+test("connection health warns when the endpoint is local-only", () => {
+  const health = evaluateAiConnectionHealth({
+    endpointUrl: "https://localhost:8000/mcp",
+    lifecycleStatus: "active",
+    authType: "pat",
+    availableAuthMethods: ["pat"],
+  });
+
+  assert.equal(health.status, "warning");
+  assert.equal(health.canConnect, true);
+});
+
+test("connection health fails for expired or incompatible connections", () => {
+  const expired = evaluateAiConnectionHealth({
+    endpointUrl: "https://example.ngrok-free.dev/mcp",
+    lifecycleStatus: "expired",
+    authType: "pat",
+    availableAuthMethods: ["pat"],
+  });
+  const incompatible = evaluateAiConnectionHealth({
+    endpointUrl: "https://example.ngrok-free.dev/mcp",
+    lifecycleStatus: "active",
+    authType: "pat",
+    availableAuthMethods: ["oauth"],
+  });
+
+  assert.equal(expired.status, "error");
+  assert.equal(expired.canConnect, false);
+  assert.equal(incompatible.status, "error");
+  assert.equal(incompatible.canConnect, false);
 });

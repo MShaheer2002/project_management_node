@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { authenticateMcpSession } from "./mcp.auth.js";
+import { authenticateMcpSession, completeMcpSession, failMcpSession } from "./mcp.auth.js";
 import { createMcpServerForSession } from "./mcp.server-factory.js";
 
 async function main() {
@@ -15,6 +15,7 @@ async function main() {
   );
 
   const shutdown = async () => {
+    await completeMcpSession(session);
     await server.close();
     process.exit(0);
   };
@@ -28,6 +29,9 @@ async function main() {
 }
 
 main().catch((error) => {
+  void failMcpSession(null, {
+    errorMessage: error instanceof Error ? error.message : "MCP server startup failed",
+  });
   console.error("[Trussen MCP] Failed to start:", error);
   process.exit(1);
 });

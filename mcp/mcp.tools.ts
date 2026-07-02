@@ -4,6 +4,7 @@ import { getToolDefinitions } from "../modules/ai/tools/tool-definitions.js";
 import { executeTool } from "../modules/ai/tools/tool-executor.js";
 import type { ExecutorResult } from "../modules/ai/ai.planner.js";
 import { logAiError, logAiInfo } from "../modules/ai/ai.observability.js";
+import { recordAiConnectionSessionStep } from "../modules/ai-connection/ai-connection.service.js";
 import type { McpSessionContext } from "./mcp.auth.js";
 
 const issueStatusSchema = z.enum(["backlog", "todo", "in-progress", "review", "done"]);
@@ -106,14 +107,6 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
     },
   },
   {
-    name: "search_issues",
-    inputSchema: {
-      query: z.string().trim().min(1),
-      limit: limitSchema,
-    },
-    readOnly: true,
-  },
-  {
     name: "list_projects",
     inputSchema: {
       status: projectStatusSchema.optional(),
@@ -170,7 +163,6 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
       visibility: visibilitySchema.optional(),
     },
   },
-  { name: "list_members", inputSchema: { q: optionalString() }, readOnly: true },
   {
     name: "get_team_workload",
     inputSchema: { teamId: optionalString() },
@@ -206,6 +198,15 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
     inputSchema: {
       teamId: optionalString(),
       status: cycleStatusSchema.optional(),
+    },
+    readOnly: true,
+  },
+  { name: "list_members", inputSchema: { q: optionalString() }, readOnly: true },
+  {
+    name: "search_issues",
+    inputSchema: {
+      query: z.string().trim().min(1),
+      limit: limitSchema,
     },
     readOnly: true,
   },
@@ -344,6 +345,15 @@ export function registerMcpTools(server: McpServer, session: McpSessionContext) 
         );
 
         if (!result.success) {
+          if (session.sessionId) {
+            await recordAiConnectionSessionStep({
+              sessionId: session.sessionId,
+              toolName: spec.name,
+              success: false,
+              errorMessage: result.error ?? "Tool execution failed",
+            });
+          }
+
           logAiError("mcp_tool_failed", {
             workspaceId: session.workspaceId,
             userId: session.userId,
@@ -368,6 +378,14 @@ export function registerMcpTools(server: McpServer, session: McpSessionContext) 
             isError: true,
             structuredContent: toStructuredContent(result),
           };
+        }
+
+        if (session.sessionId) {
+          await recordAiConnectionSessionStep({
+            sessionId: session.sessionId,
+            toolName: spec.name,
+            success: true,
+          });
         }
 
         logAiInfo("mcp_tool_executed", {

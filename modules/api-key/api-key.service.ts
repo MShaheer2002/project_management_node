@@ -88,8 +88,11 @@ export async function createApiKey(
   workspaceId: string,
   userId: string,
   input: CreateApiKeyInput,
+  options?: { skipLimitCheck?: boolean },
 ) {
-  await enforceApiKeyLimit(workspaceId);
+  if (!options?.skipLimitCheck) {
+    await enforceApiKeyLimit(workspaceId);
+  }
 
   const { rawKey, keyHash, keyPrefix } = generateApiKey();
 
