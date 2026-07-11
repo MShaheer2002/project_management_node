@@ -52,15 +52,13 @@ This means:
 - Cursor/Codex can interact with workspace data through MCP
 - internal bots can automate issue/project workflows using the same backend rules
 
-The product expectation is not just “basic MCP support”. The AI Gateway must eventually be strong enough for:
+The AI Gateway must eventually be strong enough for:
 
 - high-quality analytics at every scope
 - high-quality search
 - high-quality creation and updating workflows
 - high-quality member/user resolution through embeddings and semantic matching
 - strict no-delete behavior across the entire exposed AI surface
-
-This is strategically valuable because it turns Trussen from “an app with an AI panel” into “a system AI can operate through a typed protocol”.
 
 The long-term product framing is:
 
@@ -70,15 +68,11 @@ The long-term product framing is:
 
 ## 3. User Experience Goal
 
-The product goal is not “make the user understand MCP”.
+The goal is not “make the user understand MCP”.
 
-The product goal is:
+The goal is:
 
 > A Trussen owner or employee can connect a supported AI client in under one minute using a Trussen-generated connection method and no knowledge of Trussen internals.
-
-This is a user-experience requirement, not a transport guarantee.
-
-Generic MCP clients still need to know where the Trussen MCP server lives, because they do not have built-in knowledge of Trussen.
 
 That means:
 
@@ -88,7 +82,7 @@ That means:
 The user should ideally only see:
 
 - one AI connection token or one connect button
-- one “copy config” button for their chosen client
+- one copy-config button for their chosen client
 - one short setup checklist
 - one clear connection test step
 
@@ -105,8 +99,6 @@ They should not have to know:
 ## 4. AI Connections Platform
 
 Phase 20E should evolve into an AI Connections Platform.
-
-This sits above raw API keys and MCP details.
 
 Recommended owner/user experience:
 
@@ -127,11 +119,6 @@ Supported connection methods should be modeled as:
 3. `Service Account`
 
 Do not tie auth type to a specific client.
-
-Wrong model:
-
-- ChatGPT = OAuth
-- Codex = PAT
 
 Correct model:
 
@@ -173,24 +160,12 @@ AIConnection
 - updatedAt
 ```
 
-This enables a much cleaner product experience:
-
-```txt
-Settings
-→ AI Connections
-→ Connected Clients
-   - Codex (active)
-   - Claude Desktop (expired)
-   - Cursor (active)
-   - ChatGPT (connected)
-```
-
-It also enables:
+This enables:
 
 - per-client revocation
 - per-client expiry
 - connection auditability
-- “test connection” status
+- test-connection status
 - future reconnect / rotate UX
 
 ---
@@ -211,8 +186,6 @@ The current product behavior should be:
 - otherwise fall back to the local backend URL in development
 - generate client configs that point directly at Trussen’s remote MCP endpoint
 
-That means the user should not have to run a local MCP process manually just to connect Codex, Claude Desktop, or Cursor.
-
 ### 5.2 Future
 
 For clients with native Trussen support, the user should only need:
@@ -221,9 +194,7 @@ For clients with native Trussen support, the user should only need:
 - login / authorize
 - done
 
-This is how GitHub, Slack, and Google integrations feel when the client already knows the provider.
-
-The desired production example is:
+Desired production examples:
 
 ```toml
 [mcp_servers.trussen]
@@ -231,7 +202,7 @@ url = "https://mcp.trussen.app"
 auth_token = "trsk_live_xxxxxxxxx"
 ```
 
-Or for clients with OAuth:
+Or:
 
 ```txt
 Connect Trussen
@@ -241,7 +212,7 @@ Connect Trussen
 → done
 ```
 
-So the architecture must explicitly separate:
+The architecture must explicitly separate:
 
 - protocol setup requirements
 - final user experience
@@ -249,8 +220,6 @@ So the architecture must explicitly separate:
 ---
 
 ## 6. AI Gateway Requirement
-
-The long-term production architecture should not expose raw internal MCP mechanics directly.
 
 Preferred topology:
 
@@ -290,7 +259,7 @@ Recommended normalized shape:
 
 ```ts
 type AiActorContext = {
-  actorType: "USER" | "SERVICE_ACCOUNT" | "AUTOMATION";
+  actorType: "USER" | "DELEGATED" | "SERVICE_ACCOUNT" | "AUTOMATION";
   actorId: string;
   workspaceId: string;
   client:
@@ -309,32 +278,19 @@ type AiActorContext = {
 };
 ```
 
-This is critical because downstream layers should not care whether the request came from:
+Downstream layers should not care whether the request came from:
 
 - ChatGPT
 - Claude Enterprise
 - Codex
-- a bot
+- a delegated bot-like connection
 - a service account
 
 They should only care about the resolved actor and its scopes.
 
 ### 7.1 AI Session Model
 
-Over time, Trussen AI interactions will stop being “one request, one tool call”.
-
-They will increasingly look like:
-
-1. resolve project
-2. search issues
-3. read issue details
-4. update issue
-5. add comment
-6. return summary
-
-That is one AI workflow, not 5 unrelated actions.
-
-So the platform should support an `AISession` model.
+AI interactions increasingly look like a workflow, not one isolated request.
 
 Recommended shape:
 
@@ -350,7 +306,7 @@ AISession
 - startedAt
 - completedAt nullable
 - status
-- promptCount
+- requestCount
 - toolCallCount
 - totalInputTokens nullable
 - totalOutputTokens nullable
@@ -385,16 +341,13 @@ This gives Trussen:
 Trussen must explicitly separate these 3 concepts:
 
 1. `Install`
-   - makes Trussen available inside an organization or client
 2. `Connect`
-   - identifies the actual Trussen user or bot
 3. `Authorize`
-   - decides what that actor can read or mutate
 
-This is the key enterprise rule:
+Enterprise rule:
 
 - installation can be organization-wide
-- identity must remain personal unless intentionally using a bot or service account
+- identity must remain personal unless intentionally using a delegated or bot identity
 
 That means:
 
@@ -408,10 +361,7 @@ That means:
 
 ### 9.1 Shared Tool Layer Only
 
-MCP / AI Gateway must reuse:
-
-- `modules/ai/tools/tool-definitions.ts`
-- `modules/ai/tools/tool-executor.ts`
+MCP / AI Gateway must reuse shared AI tools and executor logic.
 
 No separate protocol-only business logic.
 
@@ -427,13 +377,7 @@ Every external AI call must execute with:
 - `scopes`
 - `workspaceRole` where relevant
 
-And the result must be exactly what that actor could do in the UI or through approved automation.
-
-Authorization must always belong to the shared permission engine and business services.
-
 ### 9.2.1 Policy Engine vs Permission Engine
-
-The platform should explicitly separate `permission` from `policy`.
 
 Permission engine answers:
 
@@ -461,11 +405,6 @@ AI Client
 → Business Service
 ```
 
-This keeps concerns clean:
-
-- RBAC stays in permissions
-- operational product rules stay in policy
-
 ### 9.3 Workspace Isolation is Mandatory
 
 Every operation must remain workspace-scoped.
@@ -482,12 +421,8 @@ The gateway must respect the same AI safety policy:
 - no delete team
 - no delete department
 - no delete cycle
-- no delete member or membership through destructive delete semantics
 - no delete workspace
 - no destructive billing changes
-- no destructive credential destruction unless explicitly allowed for a service account lifecycle action
-
-Blocked actions should remain blocked at the shared executor / policy layer.
 
 ### 9.5 Thin Protocol Wrapper
 
@@ -500,22 +435,18 @@ The protocol layer should do only:
 - pass into shared executor
 - format client-safe result payloads
 
-Nothing more.
-
 ### 9.6 Analytics Must Scale From Broad to Micro
 
-The AI Gateway must be designed so analytics can operate at all meaningful scopes:
+The AI Gateway must be designed so analytics can operate at:
 
 - workspace-wide
 - department-wide
 - team-wide
 - project-wide
 - sprint/cycle-wide
-- individual employee/member-wide
+- individual member-wide
 
 ### 9.7 Search Must Be Strong
-
-Search quality is a first-class requirement.
 
 The exposed surface should eventually support:
 
@@ -528,7 +459,7 @@ The exposed surface should eventually support:
 
 ### 9.8 Creation and Updating Must Be Strong
 
-The exposed AI surface must be optimized for the highest-value write operations:
+The exposed AI surface must be optimized for:
 
 - issue creation
 - issue updating
@@ -536,13 +467,10 @@ The exposed AI surface must be optimized for the highest-value write operations:
 - comments
 - project updates
 - workflow/status changes
-- safe team/project/cycle CRUD allowed by policy
 
 ### 9.9 User/Member Resolution Must Be Strong
 
-Member resolution is a major product requirement.
-
-The system should support strong member understanding using:
+The system should support:
 
 - aliases
 - fuzzy matching
@@ -617,882 +545,592 @@ Important execution note:
 - development can continue using `ngrok` for the remote MCP endpoint
 - `ngrok` is acceptable for development and validation, but it is not itself the production hosting model
 
-This keeps delivery realistic while preserving the long-term architecture.
+### 11.1 V2 Scope
+
+This level is the current application-delivery target while Trussen still runs the remote MCP endpoint through `ngrok`.
+
+It should cover:
+
+- AI Connections as first-class objects
+- PAT-based remote MCP access
+- connection creation, revoke, rotate, verify, and health checks
+- logical MCP session tracking and tool-call auditability
+- client-specific setup instructions for Codex, Cursor, Claude Desktop, and generic MCP clients
+- connection catalog and supported-auth-method discovery
+- strict no-delete AI policy enforcement
+- shared permission and policy execution through the existing backend
+- connection status lifecycle: `active`, `revoked`, `expired`
+- session status lifecycle: `active`, `succeeded`, `failed`, `rejected`
+- stable MCP over HTTP for remote clients
+- strong backend validation, typed schemas, and migration-backed persistence
+
+V2 does NOT require final hosting or final OAuth provider rollout.
+
+### 11.2 Must-Have For Production Beta
+
+This level is the minimum acceptable scope before calling the AI Gateway production-beta ready.
+
+It must cover:
+
+- PAT connections with rotation, revocation, expiry, usage history, and production-safe secret handling
+- OAuth connection architecture implemented end-to-end at the application layer
+- access-aware response rules for `401`, `403`, and `404`
+- connection scopes with deny-by-default execution checks
+- delegated identity support for user-owned delegated connections and service accounts
+- stable tool exposure rules with execution-time permission enforcement
+- connection/session/tool-call observability
+- security event logging for failed auth, revoked token usage, unusual usage patterns, and repeated refresh failures
+- rate limiting and AI-specific quotas at the gateway layer
+- plan-aware feature/policy controls
+- operational runbooks for migrations, rollback, and token incident response
+
+Production beta can still run on `ngrok` for development or internal validation, but that is not the final external production posture.
+
+### 11.3 True GA / Production-Grade Backlog
+
+This level closes the gap from production beta to full GA.
+
+It should cover:
+
+- final hosted MCP gateway domain and load-balanced deployment
+- secret-manager-backed production secrets
+- high availability and horizontal scaling
+- backup and disaster recovery for AI connections, sessions, audit, and token metadata
+- full OAuth discovery documents and provider metadata on the production domain
+- enterprise SSO extensions such as OIDC/SAML/SCIM where product strategy requires them
+- advanced anomaly detection such as impossible-travel and client-fingerprint risk scoring
+- API versioning, deprecation policy, and compatibility guarantees
+- formal penetration testing and abuse-path validation
+- cross-region or multi-instance deployment strategy if Trussen scale requires it
+
+GA is where the platform becomes operationally production-grade, not just application-feature complete.
 
 ---
 
-## 12. V2 Scope
+## 12. Production-Beta Contract
 
-### 12.1 Objective
+If this cycle is described as “must cover everything” at the product/application level, that should mean:
 
-Deliver the next real AI Connections platform slice that:
+- the auth model is complete
+- the permission and policy model is complete
+- the connection lifecycle is complete
+- the audit and observability model is complete
+- the security response contract is complete
+- the system is deployable later behind a production host without redesigning the application layer
 
-- keeps the current MCP surface working
-- hardens the PAT-based connection flow
-- improves client usability and connection setup
-- formalizes auth modes and client capabilities
-- establishes the production-ready platform shape before final hosting cutover
+In other words:
 
-V2 should be treated as:
+- application architecture should be production-complete in this cycle
+- final infrastructure cutover can remain future work
 
-- product architecture complete enough for serious development use
-- not yet final production hosting
-- the foundation for production beta
+What may remain after this cycle:
 
-### 12.2 Development Transport Strategy
+- replacing `ngrok` with the final production host/domain
+- production secret-store wiring
+- HA/load-balancer rollout
+- enterprise identity-provider onboarding
+- formal security/compliance rollout tasks
 
-During V2, remote MCP can continue using:
+What should NOT remain:
 
-- `ngrok`-exposed backend/MCP endpoints
-
-This is acceptable for now because the current goal is:
-
-- complete the connection model
-- complete auth and policy behavior
-- complete client setup UX
-- validate external AI client behavior end-to-end
-
-Do NOT confuse this with final production hosting.
-
-The V2 rule is:
-
-- implement the system as if it were production-grade
-- keep the transport endpoint on `ngrok` during development
-- defer the hosting cutover until the app/platform layer is ready
-
-### 12.3 V2 Functional Scope
-
-V2 should include:
-
-- AI connection registry improvements
-  - explicit client
-  - explicit auth method
-  - label
-  - status
-  - expiry
-  - revoke
-  - last used
-  - test connection
-- client capability modeling
-  - `supportsPAT`
-  - `supportsOAuth`
-  - setup mode expectations
-  - remote/local connection assumptions where relevant
-- hardened PAT lifecycle
-  - create
-  - list
-  - revoke
-  - expiry handling
-  - ownership visibility
-- setup UX improvements
-  - exact client-specific steps
-  - copy config
-  - connection verification
-  - troubleshooting guidance
-- auth-mode groundwork
-  - PAT fully usable and hardened
-  - OAuth modeled in domain/API/UI even if not fully implemented yet
-- stronger AI connection auditing and usage recording
-- consistent client-safe error handling
-- no-delete policy preserved across all external AI clients
-
-### 12.4 V2 Transport Expectations
-
-V2 should support:
-
-- `stdio` where useful for local clients
-- remote HTTP MCP through the current development tunnel
-
-Important:
-
-- V2 should not require the final hosted gateway to validate the product model
-- V2 should keep the same shared execution layer for local and remote paths
-
-### 12.5 V2 Tool and Resource Expectations
-
-V2 should continue using the safe shared executor surface and should not fork protocol-specific business logic.
-
-At minimum, the existing safe MCP tool set should remain working and attributable:
-
-- `list_issues`
-- `get_issue`
-- `create_issue`
-- `update_issue_status`
-- `assign_issue`
-- `add_comment`
-- `list_projects`
-- `list_cycles`
-- `list_members`
-- `search_issues`
-
-V2 should also preserve read-only resource behavior where already exposed.
-
-### 12.6 V2 Module Expectations
-
-The platform should continue to center around:
-
-```txt
-mcp/
-├── server.ts
-├── mcp.http.routes.ts
-├── mcp.auth.ts
-├── mcp.server-factory.ts
-├── mcp.tools.ts
-├── mcp.resources.ts
-└── types.ts
-```
-
-And the AI Connections product layer should evolve around:
-
-- connection registry
-- auth-mode modeling
-- capability registry
-- connection setup UX
-- connection verification
-- usage and audit hooks
-
-### 12.7 V2 Done Criteria
-
-V2 is done when:
-
-- MCP server boots successfully
-- auth resolves actor + workspace context
-- remote MCP works through the current `ngrok` endpoint
-- Codex, Cursor, Claude Desktop, and Generic MCP can connect through the supported PAT flow
-- client-specific setup guidance is good enough for a normal user to follow
-- AI connections have explicit client/auth/status/lifecycle metadata
-- PAT flows return clear errors for revoked, expired, invalid, or unsupported states
-- OAuth is represented as a planned auth mode without pretending it is fully live
-- blocked operations remain blocked
-- workspace scoping is preserved
-- audit trails remain attributable to the authenticated actor
+- undefined access behavior
+- missing scope model
+- missing OAuth lifecycle design
+- unclear token lifecycle rules
+- unclear actor/delegation model
+- ambiguous session/accounting semantics
 
 ---
 
-## 13. Must-Have For Production Beta
+## 13. Access-Aware Response Contract
 
-### 13.1 Beta Objective
+This must be explicit because it is a security boundary, not only an API detail.
 
-Production beta means:
+Recommended rules:
 
-- the product behavior is strong enough for serious external use
-- the auth, identity, policy, and lifecycle layers are reliable
-- the main remaining gap is final hosting and infrastructure hardening
+- `401 Unauthorized`
+  - no valid auth token
+  - expired or malformed token
+  - failed OAuth bearer validation
+- `403 Forbidden`
+  - actor is authenticated
+  - actor may know the resource exists
+  - actor lacks permission for the requested action
+  - action is blocked by policy even if the resource is visible
+- `404 Not Found`
+  - resource truly does not exist
+  - or Trussen intentionally hides existence because exposing it would leak sensitive information
 
-This is the minimum bar before Trussen should market the AI gateway as a serious external integration surface.
+Examples:
 
-### 13.2 Auth and Identity Requirements
+- authenticated user cannot edit a visible project
+  - return `403`
+- authenticated user requests a private issue they should not know exists
+  - return `404`
+- AI action is blocked by no-delete or business policy
+  - return `403` with a policy-specific error code
 
-Production beta must have:
+Recommended implementation rule:
 
-- PAT lifecycle complete
-  - create
-  - list
-  - revoke
-  - expiry
-  - clear creator ownership
-- actor normalization for every AI request
-  - user
-  - workspace
-  - client
-  - auth method
-  - scopes
-- capability registry enforced server-side
-- no silent permission escalation through client context
-
-If OAuth is started during beta, it must follow the correct rule:
-
-- each human user acts as themselves
-- no shared owner connection may silently represent all employees
-
-### 13.3 Policy and Safety Requirements
-
-Production beta must have:
-
-- read/write policy separation
-- tool allowlist / mutation safety enforcement
-- no-delete boundary preserved across all supported clients
-- token scope enforcement
-- rate limiting / abuse controls
-- clear blocked-action behavior and auditability
-
-### 13.4 Connection Lifecycle Requirements
-
-Production beta must have:
-
-- connection create/list/revoke flows
-- status and expiry visibility
-- last-used tracking
-- connection test flow
-- setup/troubleshooting flow for supported clients
-- strong error handling for:
-  - invalid token
-  - expired token
-  - revoked token
-  - unsupported client/auth combination
-  - permission denied
-  - blocked by policy
-
-### 13.5 Observability and Audit Requirements
-
-Production beta must have:
-
-- per-connection usage visibility
-- auth failure visibility
-- blocked-action visibility
-- actor/client/auth attribution for requests
-- connection auditability for support and security review
-
-Recommended observability metrics:
-
-- tool call volume
-- top tools used
-- failure rate
-- auth failure rate
-- blocked action rate
-- actor type distribution
-- client distribution
-- per-connection usage
-- per-policy-block rate
-
-### 13.6 Beta Runbook
-
-Production beta must document:
-
-- how to generate a connection token / PAT
-- how to connect Codex
-- how to connect Claude Desktop
-- how to connect Cursor
-- how to connect a generic MCP client
-- how to verify a connection
-- how to troubleshoot auth and tool failures
-- how to revoke a broken or leaked connection
-
-### 13.7 Beta Hosting Reality
-
-During development and validation, `ngrok` is acceptable.
-
-But the production beta standard should assume:
-
-- the product logic is production-structured
-- the transport will later move to a real hosted gateway
-
-So beta should avoid coupling core product behavior to `ngrok` specifics.
+- resource existence disclosure must be decided intentionally per resource type
+- private-resource lookups must support hide-existence behavior
+- the gateway must never leak existence accidentally through inconsistent codes
 
 ---
 
-## 14. True GA / Production-Grade Backlog
+## 14. Tool Exposure vs Tool Execution
 
-### 14.1 Multiple Auth Modes
+The default production recommendation is:
 
-Support:
+- keep the exposed tool catalog stable for most business tools
+- enforce permissions and scopes at execution time
 
-1. OAuth for human users
-2. Personal access tokens
-3. Service accounts
-4. internal Clerk-backed sessions where relevant
+This improves AI planning because the client can reason over a consistent capability surface.
 
-### 14.2 Transport Expansion
+Default rule:
 
-After V2 and beta logic are stable, support final hosted remote transports where needed:
+- Owner sees `update_issue`
+- Member sees `update_issue`
+- Guest sees `update_issue`
+- execution result differs based on permissions, scopes, and policy
 
-- streamable HTTP
-- remote MCP
-- future gateway protocol variants
+Exception rule:
 
-### 14.2.1 Hosting Cutover From ngrok To Production Host
+- truly sensitive or administrative tools may be hidden entirely from lower-trust actors
 
-The switch from development tunneling to the real hosted AI Gateway should be treated as an infrastructure cutover, not a product redesign.
+Trussen should model:
 
-Before cutover, development may continue using:
+- tool visibility
+- tool executability
+- tool policy availability
 
-- `ngrok`
-- `BACKEND_URL`
-- current remote MCP endpoint generation
+as separate concepts, even if most tools use stable visibility plus execution-time checks.
 
-At cutover time, Trussen should replace the temporary tunnel with:
+---
 
-- a stable production host
-- stable TLS
-- production DNS and routing
-- production secrets/config management
-- production monitoring and alerting
+## 15. Connection Scopes
 
-What should change at cutover:
+Production beta must support scope-aware AI connections.
 
-- endpoint base URL
-- deployment topology
-- operational controls
-- production security hardening
+Recommended examples:
 
-What should NOT need redesign at cutover:
+- `issues.read`
+- `issues.write`
+- `projects.read`
+- `projects.write`
+- `comments.write`
+- `analytics.read`
+- `members.read`
+- `documents.read`
+- `documents.write`
+- `admin.ai_connections`
 
-- AI connection registry
-- actor normalization
-- auth-mode modeling
-- capability registry
-- PAT lifecycle
-- OAuth domain model
-- policy enforcement
-- audit and usage contracts
-- client setup product model
+Scope rules:
 
-The goal is:
-
-- complete product and platform behavior first
-- swap the transport host later with minimal application-layer changes
-
-Long-term the AI Gateway may expose:
-
-- MCP
-- REST for AI-style tool integrations
-- OAuth endpoints
-- webhooks
-- SSE/streaming where needed
-
-### 14.3 Expanded Tool Surface
-
-Expose more safe tools from the shared executor:
-
-- project summary/status tools
-- member workload tools
-- team analytics tools
-- cycle analytics tools
-- department analytics tools
-- workspace analytics tools
-- individual member analytics/report tools
-- document read/write tools where safe
-
-### 14.4 Analytics Surface
-
-Production analytics should support:
-
-- workspace-wide analytics
-- department-wide analytics
-- team-wide analytics
-- project-wide analytics
-- sprint/cycle-wide analytics
-- individual employee/member analytics
-
-### 14.5 Search Surface
-
-Production search should support:
-
-- issues
-- projects
-- teams
-- departments
-- members
-- cycles
-- comments
-- documents where safe
-
-Backed by:
-
-- deterministic filters
-- fuzzy ranking
-- embedding-assisted retrieval where appropriate
-
-### 14.6 Create / Update Surface
-
-Production-grade AI access should be strongest in:
-
-- creation
-- updates
-- assignment
-- commenting
-- prioritization
-- scheduling
-
-### 14.7 Plan and Permission Gating
-
-The gateway must respect:
-
-- workspace role permissions
-- product plan/feature gates
-- AI safety restrictions
-- token scopes
-- actor type restrictions
-
-It should also support workspace-level feature flags for AI capabilities.
+- scopes narrow permissions; they never expand them beyond the actor’s real Trussen permissions
+- effective access is the intersection of:
+  - actor permissions
+  - workspace membership
+  - connection scopes
+  - product policy
+- missing scope should fail closed
+- scopes must be auditable on every connection and every tool execution
 
 Examples:
 
-- disable issue creation through AI
-- disable project mutations through AI
-- allow analytics but block mutations
-- allow only read tools for a restricted workspace
+- workspace owner with a read-only PAT cannot execute write tools
+- service account with `issues.write` but no `analytics.read` cannot access analytics tools
 
-These are policy-layer controls, not replacements for RBAC.
+---
 
-### 14.8 Session and Identity Safety
+## 16. Delegated Identity and Service Accounts
 
-Production-grade AI access should:
+Production architecture should not treat every AI connection as the full user.
 
-- validate auth at startup when session-based
-- validate auth per request when protocol requires it
-- refuse invalid or expired credentials
-- keep actor identity explicit
-- never silently upgrade user permissions because of client context
+Trussen should support:
 
-For OAuth-based enterprise flows:
+1. `USER`
+2. `DELEGATED`
+3. `SERVICE_ACCOUNT`
+4. `AUTOMATION`
 
-- org install and user connect must stay separate concepts
-- company-wide installation must not turn every employee into the owner
-- each human user must act as themselves unless the integration is intentionally bot-based
+Recommended delegated behavior:
 
-### 14.9 Read / Write Policy Separation
+- an owner can create a connection for a bot-like workflow
+- that connection inherits only approved scopes
+- it does not act as unrestricted owner access
 
-Keep clean internal allowlists:
+Service-account requirements:
 
-- read tools
-- safe mutation tools
-- blocked tools
+- workspace ownership is explicit
+- naming rules are enforced
+- disable/revoke behavior is clear
+- deletion of the parent workspace removes or disables the service account predictably
+- audit trails identify the service account separately from the human creator
 
-This should be driven by a capability registry, not scattered hardcoded checks.
+---
 
-Recommended capability metadata:
+## 17. OAuth Architecture
 
-```txt
-ToolCapability
-- name
-- description
-- requiredScopes
-- readOrWrite
-- confirmationRequired
-- aiSafe
-- experimental
-- policyCategory
-```
+OAuth should be covered in this plan as an implementation target, not left vague.
 
-This lets the platform reason about tools consistently across:
+### 17.1 What This Cycle Should Cover
 
-- MCP
-- REST AI endpoints
-- future protocols
+At the application layer, this cycle should cover:
 
-### 14.10 Service Accounts
+- OAuth connection model
+- OAuth connection lifecycle
+- OAuth identity mapping into Trussen actors
+- OAuth session persistence
+- refresh/reconnect/revoke handling
+- per-client OAuth connection records
+- audit and observability for OAuth events
+- support for multiple client connections per user
 
-Service accounts are an enterprise feature and should be strictly scoped.
+### 17.2 OAuth Lifecycle
 
-Examples:
+Recommended lifecycle:
 
-- `Analytics Bot`
-- `Release Bot`
-- `Planning Bot`
+1. client starts connect flow
+2. Trussen redirects to auth provider
+3. Trussen receives callback
+4. Trussen maps external identity to Trussen identity
+5. Trussen stores connection/session metadata securely
+6. Trussen issues or records usable session credentials
+7. Trussen refreshes when allowed
+8. Trussen marks connection `needs_refresh`, `expired`, `revoked`, or `invalid_credentials` as needed
 
-Rules:
+### 17.3 OAuth Connection States
 
-- never default to unlimited access
-- always use explicit scopes
-- always support revoke/rotate
-- always audit as bot identity
+Recommended states:
 
-### 14.11 Personal Access Tokens
+- `connected`
+- `needs_refresh`
+- `expired`
+- `revoked`
+- `disabled`
+- `invalid_credentials`
 
-Users should be able to create multiple PATs for different environments.
+### 17.4 Install vs Connect
 
-Examples:
+For enterprise behavior:
 
-- `MacBook Codex`
-- `Cursor on Work Laptop`
-- `GitHub Action`
-- `Local MCP Testing`
+- install can be organization-wide
+- connect remains per user or per delegated/service identity
 
-Every PAT should support:
+### 17.5 Multi-Workspace Behavior
+
+The plan should explicitly support:
+
+- actor identity mapped once
+- workspace membership resolved per request
+- workspace selection validated per action/session
+
+No OAuth flow should bypass workspace membership checks.
+
+### 17.6 Provider Extensibility
+
+The architecture should not block:
+
+- Trussen-native OAuth
+- OpenAI/ChatGPT-compatible OAuth patterns
+- Google
+- Microsoft Entra ID
+- Okta
+- enterprise OIDC/SAML extensions later
+
+Important boundary:
+
+- full app-layer OAuth support should be implemented in this cycle
+- final hosted discovery endpoints and provider-domain hardening can remain part of the production-host rollout
+
+---
+
+## 18. PAT and Token Lifecycle
+
+PAT support should behave like a real production system.
+
+Recommended requirements:
+
+- token is shown only once
+- raw token is never recoverable after creation
+- token secret is hashed or otherwise stored with production-safe handling
+- token metadata is auditable
+- token can expire
+- rotation creates a new usable token and invalidates or rejects old active usage appropriately
+- revocation is immediate
+- usage history captures at least last used time, recent sessions, and tool activity
+
+Recommended metadata:
 
 - label
-- createdAt
-- expiresAt
-- lastUsedAt
+- owner
+- delegated/service-account binding if present
 - scopes
-- revoke
-- rotate
+- client type
+- created at
+- last used at
+- expires at
+- rotated at
+- revoked at
+- created by
 
-### 14.12 OAuth Architecture
+Recommended policy decisions:
 
-Production-grade remote AI integrations should support OAuth-based user connections where the client supports it.
-
-Recommended behavior:
-
-1. an org/admin installs Trussen in the AI client or approves it for the company
-2. the client makes Trussen available to employees
-3. each employee connects their own Trussen account once
-4. Trussen issues user-bound access
-5. every request runs as that real employee
-
-Wrong behavior:
-
-- owner connects once
-- every employee silently uses owner permissions
-
-That is not acceptable.
-
-### 14.13 No-Delete Policy
-
-The AI Gateway must preserve the same no-delete stance across all external AI surfaces.
-
-Blocked operations include:
-
-- delete workspace
-- delete project
-- delete issue
-- delete team
-- delete department
-- delete cycle
-- destructive billing changes
-
-If a client asks for these:
-
-- the gateway must refuse
-- the executor must refuse
-- audit should record the blocked attempt
-
-### 14.14 Client Capability Model
-
-Do not assume every client supports the same protocol features.
-
-Instead of only storing client name, the platform should model client capabilities such as:
-
-- supportsOAuth
-- supportsPAT
-- supportsStreaming
-- supportsResources
-- supportsPrompts
-- supportsSampling
-- supportsNotifications
-
-This avoids coupling behavior to assumptions like:
-
-- “all Claude clients behave the same”
-- “all MCP clients support the same config shape”
-
-It also gives Trussen a cleaner path to support future AI clients without redesign.
+- maximum token count per actor or workspace
+- default expiry behavior
+- whether no-expiry is restricted by plan or admin policy
 
 ---
 
-## 15. Production Architecture Summary
+## 19. Session and Usage Accounting
 
-```txt
-AI Clients
-────────────────────────────────────────
-ChatGPT
-ChatGPT Enterprise
-Claude
-Claude Enterprise
-Claude Desktop
-Codex
-Cursor
-VS Code AI tools
-Future MCP clients
-────────────────────────────────────────
-                │
-                ▼
-          Trussen AI Gateway
-────────────────────────────────────────
-MCP
-REST
-OAuth
-PAT
-Service Accounts
-Rate Limits
-Tool Registry
-Audit
-Observability
-Protocol Adapters
-────────────────────────────────────────
-                │
-                ▼
-          AI Connection Registry
-────────────────────────────────────────
-Connected Clients
-PAT-backed Connections
-OAuth-backed Connections
-Service Account Links
-Status / Expiry / Last Used
-────────────────────────────────────────
-                │
-                ▼
-         Identity Resolution Layer
-────────────────────────────────────────
-Human User
-Service Account
-Automation
-Workspace
-Client
-Auth Method
-Scopes
-────────────────────────────────────────
-                │
-                ▼
-             Policy Engine
-────────────────────────────────────────
-No Delete
-Approval Rules
-Bulk Limits
-Plan Limits
-Workspace Feature Flags
-Operational Constraints
-────────────────────────────────────────
-                │
-                ▼
-          Permission Engine
-────────────────────────────────────────
-Workspace RBAC
-Project Scope
-Team Scope
-Department Scope
-Policy Rules
-Approval Rules
-Plan Gating
-────────────────────────────────────────
-                │
-                ▼
-          Shared Business Services
-────────────────────────────────────────
-Issues
-Projects
-Teams
-Departments
-Cycles
-Members
-Analytics
-Search
-Comments
-Documents
-────────────────────────────────────────
-                │
-                ▼
-              Database
-```
+Session accounting must be precise enough for audit, support, and billing.
 
-This architecture should also support session-level execution and audit:
+Recommended rules:
 
-```txt
-AI Session
-→ multiple tool calls
-→ one grouped audit trail
-→ one observability unit
-```
+- one logical AI conversation/workflow should map to one logical session where the client exposes a reusable session identifier
+- repeated MCP HTTP requests inside that same conversation should not create fake extra sessions
+- two simultaneous conversations from the same client should count as two sessions
+- one session can contain many MCP requests and many tool calls
+
+Trussen should track at least:
+
+- connection count
+- logical session count
+- raw request count
+- tool call count
+- per-session status and timestamps
+
+This distinction is important for:
+
+- debugging
+- customer support
+- pricing/quotas
+- anomaly detection
+- product analytics
 
 ---
 
-## 16. Plain-English Flows
+## 20. Resource-Level Permission Coverage
 
-This section explains how each integration should work in simple English.
+The plan should allow resource-aware authorization for:
 
-### 16.1 Codex Flow
+- workspace
+- project
+- issue
+- comment
+- document
+- attachment
+- member
+- analytics view
+- custom field
+- cycle/sprint
+- team/department
 
-Best for:
+This means the architecture must support resource-level checks without later redesign.
 
-- developers
-- power users
-- local terminal workflows
+---
 
-Flow:
+## 21. AI-Specific Quotas and Limits
 
-1. user goes to Trussen `AI Connections` or `PATs`
-2. user creates a personal token
-3. Trussen shows ready-to-copy Codex config
-4. user pastes config into Codex
-5. Codex connects to Trussen
-6. every request runs as that exact Trussen user
-7. permissions are enforced based on that user’s real role
+AI usage limits belong at the gateway/policy layer, not inside tool implementations.
 
-Simple rule:
+Examples:
 
-- Codex is connected as the person who created the token
+- tool calls per day
+- sessions per hour
+- write actions per minute
+- analytics-heavy queries per window
+- connection count per workspace
 
-### 16.2 Claude Desktop Flow
+These limits should support:
 
-Best for:
+- workspace plan limits
+- actor-type-specific limits
+- abuse prevention
+- graceful error codes and retry guidance
 
-- individual users
-- local MCP workflows
+---
 
-Flow:
+## 22. Security and Anomaly Detection
 
-1. user creates a Trussen token or PAT
-2. Trussen shows Claude Desktop config
-3. user pastes config into Claude Desktop
-4. Claude Desktop connects to Trussen
-5. every request runs as that Trussen user
+Production-beta readiness should include baseline security-event support.
 
-Simple rule:
+Recommended events:
 
-- Claude Desktop sees what that connected user is allowed to see
+- invalid token usage
+- revoked token reuse
+- repeated failed OAuth refresh
+- access from unusual country or client fingerprint
+- suspicious rapid token failures
+- scope violation attempts
+- policy-blocked destructive attempts
 
-### 16.3 Cursor Flow
+Recommended response capabilities:
 
-Best for:
+- log and surface events
+- optionally disable or challenge risky connections
+- support later step-up auth or manual review flows
 
-- developers
-- IDE workflows
+Advanced impossible-travel and stronger device fingerprinting may remain GA/enterprise hardening, but the event model should be designed now.
 
-Flow:
+---
 
-1. user creates a Trussen token
-2. user pastes Cursor config from Trussen
-3. Cursor connects to Trussen
-4. the user asks for tasks, creates issues, updates work, or reads analytics
-5. Trussen enforces the same permissions the user has in the Trussen app
+## 23. Operational Readiness
 
-### 16.4 Generic MCP Client Flow
+Hosting is not the only remaining production concern.
 
-Best for:
+Before calling the system truly production-grade, Trussen also needs:
 
-- future MCP-compatible tools
-- Windsurf
-- VS Code MCP clients
-- any custom MCP consumer
+- secret management
+- migration deployment strategy
+- rollback strategy
+- backup and restore plan
+- HA/load-balancer plan
+- monitoring and alerting
+- API versioning/deprecation policy
+- incident response for token compromise
+- security testing for replay, abuse, privilege escalation, and injection paths
 
-Flow:
+This document should treat those as required operational work, even if some of them are completed during the later hosting rollout.
 
-1. user chooses `Generic MCP` in Trussen AI Connections
-2. Trussen shows endpoint + auth format + ready config where possible
-3. user pastes config into the MCP client
-4. the MCP client connects
-5. Trussen resolves the actor from token or OAuth
-6. requests run through the shared executor and permission engine
+---
 
-### 16.5 ChatGPT Flow
+## 24. Environment Variables and External Keys
 
-Best for:
+### 24.1 Needed Now
 
-- hosted remote AI usage
-- business users
-- managers and owners
+For the current development/internal validation cycle, the system should only require the existing backend/application variables plus MCP endpoint configuration, such as:
 
-Recommended production flow:
+- `DATABASE_URL`
+- `PORT`
+- `NODE_ENV`
+- `FRONTEND_URL`
+- `BACKEND_URL`
+- `CLERK_PUBLISHABLE_KEY`
+- `CLERK_SECRET_KEY`
+- `CLERK_WEBHOOK_SECRET`
+- `RESEND_API_KEY`
+- `RESEND_FROM_ADDRESS`
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_STANDARD_MONTHLY_PRICE_ID`
+- `STRIPE_PREMIUM_MONTHLY_PRICE_ID`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN` if temporary AWS credentials are used
+- `AWS_REGION`
+- `AWS_S3_BUCKET`
+- `AWS_S3_URL_TTL_SECONDS`
+- `AWS_S3_UPLOAD_PREFIX`
+- `AWS_S3_PUBLIC_BASE_URL` if public asset URLs are used
+- `UPLOAD_IMAGE_MAX_BYTES`
+- `UPLOAD_VIDEO_MAX_BYTES`
+- `OPENROUTER_API_KEY` if AI features are enabled
+- `AI_ISSUE_MODEL_DEFAULT`
+- `AI_ISSUE_MODEL_FALLBACK_1`
+- `AI_ISSUE_MODEL_FALLBACK_2`
+- `AI_ISSUE_MODEL_FALLBACK_3`
+- `AI_CHAT_MODEL_DEFAULT`
+- `AI_CHAT_MODEL_FALLBACK_1`
+- `AI_CHAT_MODEL_FALLBACK_2`
+- `AI_CHAT_MODEL_FALLBACK_3`
+- `AI_ENFORCE_BILLING`
+- `AI_FREE_DAILY_REQUEST_LIMIT`
+- `AI_STANDARD_DAILY_REQUEST_LIMIT`
+- `AI_PREMIUM_DAILY_REQUEST_LIMIT`
+- `AI_FREE_DAILY_TOKEN_LIMIT`
+- `AI_STANDARD_DAILY_TOKEN_LIMIT`
+- `AI_PREMIUM_DAILY_TOKEN_LIMIT`
+- `REDIS_URL` if background AI infrastructure is enabled
+- `REDIS_QUEUE_PREFIX`
+- `AI_BACKGROUND_WORKERS_ENABLED`
+- `AI_BACKGROUND_SCHEDULER_ENABLED`
+- `AI_EMBEDDING_MODEL`
+- `AI_STALE_ISSUE_DAYS`
+- `AI_BACKGROUND_ASSIGNEE_CANDIDATE_LIMIT`
+- `TRUSSEN_MCP_SERVER_NAME`
+- `TRUSSEN_MCP_SERVER_VERSION`
 
-1. ChatGPT supports connecting Trussen as a remote integration
-2. user clicks `Connect Trussen`
-3. ChatGPT redirects the user to Trussen login / OAuth consent
-4. user signs into Trussen
-5. Trussen issues user-bound access
-6. ChatGPT calls Trussen on behalf of that user
-7. Trussen sees the real user identity and role
+If `ngrok` remains the remote endpoint for now, you also need:
 
-Simple rule:
-
-- ChatGPT should act as the actual Trussen employee, not as a shared workspace token
-
-### 16.6 ChatGPT Enterprise Flow
-
-Best for:
-
-- companies using ChatGPT at org scale
-
-Correct enterprise behavior:
-
-1. company admin approves or installs Trussen once
-2. Trussen becomes available to employees in ChatGPT Enterprise
-3. each employee connects their own Trussen account once
-4. each employee gets their own Trussen identity inside ChatGPT
-5. Trussen permissions are enforced per employee
+- the `ngrok` public base URL used in generated client config
+- `BACKEND_URL` set to that public base URL so generated MCP config is correct
 
 Important:
 
-- admin install is shared
-- employee identity is personal
+- `TRUSSEN_MCP_API_KEY` or `MCP_API_KEY` is only needed for local stdio / legacy MCP startup flows
+- the remote production-style HTTP MCP path now authenticates with Trussen AI connection tokens, not a single shared server token
 
-### 16.7 Claude Flow
+### 24.2 Needed When OAuth Is Implemented
 
-Best for:
+Application-layer OAuth implementation will typically need provider-specific variables, such as:
 
-- hosted AI usage when Claude supports the needed remote integration flow
+- `ENCRYPTION_KEY` for encrypted token storage
+- one or more OAuth client IDs
+- one or more OAuth client secrets
+- OAuth redirect URI base or per-provider callback URLs
+- OAuth issuer / authorization / token endpoint settings if not fully discovered
+- optional OAuth scopes/audience defaults where provider integration requires explicit configuration
 
-Recommended behavior:
+Exact names should be defined when the provider implementation lands, but expect at least:
 
-1. user chooses Connect Trussen in Claude
-2. Claude redirects the user to Trussen OAuth
-3. user signs in
-4. Trussen returns user-bound access
-5. Claude uses that user identity for future requests
+- `ENCRYPTION_KEY`
+- one client ID
+- one client secret
+- one callback base URL
+- one encryption/secret key strategy for stored OAuth credentials
 
-### 16.8 Claude Enterprise Flow
+If Trussen implements its own first-class MCP OAuth provider endpoints, production rollout will also require final callback and issuer values to match the production public domain exactly.
 
-Best for:
+### 24.3 Needed Later For Final Production Hosting
 
-- companies using Claude across teams
+When switching from `ngrok` to the final production host, expect additional infrastructure configuration:
 
-Correct behavior:
+- final public MCP base URL
+- final OAuth callback URLs
+- production secret-manager wiring
+- production TLS/domain configuration
+- load balancer / gateway routing config
+- monitoring/alerting integrations
+- any reverse-proxy or gateway trusted-origin configuration if introduced during hosting hardening
 
-1. company admin enables or installs Trussen once
-2. employees see Trussen as an available integration
-3. each employee connects their own Trussen account once
-4. Claude uses each employee’s own Trussen identity
+### 24.4 What May Be Needed From Your Side
 
-Important:
+Potential inputs from the product owner/admin side:
 
-- the owner’s connection must not automatically give all employees owner access
+- final decision on OAuth provider(s) to support first
+- final production domain for MCP hosting
+- any enterprise SSO roadmap decisions
+- quota/plan policy decisions
+- token expiry defaults and security policy preferences
+- whether delegated connections and service accounts should be exposed in UI immediately or backend-first
 
-### 16.9 Service Account / Bot Flow
+If those decisions are not finalized yet, the architecture can still be implemented now with sensible defaults and extension points.
 
-Best for:
+### 24.5 Current Gap Between `.env.example` and Production-Grade Runtime
 
-- analytics bots
-- release automation
-- CI/CD
-- scheduled reporting
+The current backend runtime schema expects some variables that are not fully represented in `project_management_node/.env.example`.
 
-Flow:
+To bring the template up to production-documentation quality, `.env.example` should explicitly include at least:
 
-1. admin creates a service account in Trussen
-2. admin gives it narrow scopes
-3. the bot/client uses that token
-4. Trussen executes requests as the bot
-5. audit logs show the bot identity, not a human user
+- `BACKEND_URL`
+- `RESEND_FROM_ADDRESS`
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_STANDARD_MONTHLY_PRICE_ID`
+- `STRIPE_PREMIUM_MONTHLY_PRICE_ID`
+- `AI_ENFORCE_BILLING`
+- `AI_FREE_DAILY_REQUEST_LIMIT`
+- `AI_STANDARD_DAILY_REQUEST_LIMIT`
+- `AI_PREMIUM_DAILY_REQUEST_LIMIT`
+- `AI_FREE_DAILY_TOKEN_LIMIT`
+- `AI_STANDARD_DAILY_TOKEN_LIMIT`
+- `AI_PREMIUM_DAILY_TOKEN_LIMIT`
+- `TRUSSEN_MCP_API_KEY`
+- `MCP_API_KEY`
+- `TRUSSEN_MCP_SERVER_NAME`
+- `TRUSSEN_MCP_SERVER_VERSION`
 
-### 16.10 Organization Install vs User Connect Flow
-
-This is the most important plain-English rule.
-
-`Install` means:
-
-- Trussen is available inside the AI product for the company
-
-`Connect` means:
-
-- this exact employee is now linked to their own Trussen identity
-
-`Authorize` means:
-
-- Trussen checks what that employee is allowed to do
-
-Example:
-
-1. company owner installs Trussen in Claude Enterprise
-2. Bob opens Claude
-3. Bob clicks `Connect Trussen`
-4. Bob signs into Trussen
-5. Bob asks `show my issues`
-6. Trussen returns Bob’s issues, not the owner’s issues
-
-### 16.11 PAT vs OAuth vs Service Account in Simple English
-
-Use `OAuth` when:
-
-- a human user is connecting an AI app and should act as themselves
-
-Use `PAT` when:
-
-- a developer or power user is connecting a local tool like Codex or Cursor
-
-Use `Service Account` when:
-
-- automation or bots need limited, non-human access
-
-### 16.12 Final Plain-English Summary
-
-The intended production model is:
-
-- one company can install Trussen once
-- many employees can use it
-- every human employee acts as themselves
-- every bot acts as a bot
-- every request is permission-checked
-- no delete behavior is exposed through AI
-- all actions are audited
-
-This gives Trussen a secure, enterprise-safe, multi-client AI architecture without coupling the product to one AI provider.
+The backend also currently references `SLACK_BOT_TOKEN` in `.env.example`, but the main env schema does not validate it. That mismatch should be resolved separately so the template and schema stay authoritative.
