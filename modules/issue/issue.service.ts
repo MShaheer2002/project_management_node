@@ -91,6 +91,22 @@ function parseDueTime(value: string | null | undefined) {
   return date;
 }
 
+function formatDueTime(value: Date | string | null | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value.slice(0, 5);
+  }
+
+  const hours = String(value.getUTCHours()).padStart(2, "0");
+  const minutes = String(value.getUTCMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
 function getCompletedAtForStatusTransition(
   isFinalOld: boolean,
   isFinalNew: boolean,
@@ -143,7 +159,7 @@ function mapIssue(record: any, includeRelations = true) {
     labels,
     labelObjects,
     dueDate: record.dueDate,
-    dueTime: record.dueTime,
+    dueTime: formatDueTime(record.dueTime),
     estimate: record.estimate ?? null,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,

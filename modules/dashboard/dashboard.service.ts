@@ -7,6 +7,16 @@
 
 import { prisma } from "../../shared/utils/prisma.js";
 
+function formatDueTime(value: Date | string | null | undefined) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === "string") return value.slice(0, 5);
+
+  const hours = String(value.getUTCHours()).padStart(2, "0");
+  const minutes = String(value.getUTCMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
 const DASHBOARD_DAYS = 7;
 const LIST_LIMIT = 5;
 const ACTIVITY_LIMIT = 10;
@@ -240,7 +250,7 @@ export async function getDashboardData(workspaceId: string, userId: string) {
         status: issue.status,
         priority: issue.priority,
         dueDate: issue.dueDate,
-        dueTime: issue.dueTime,
+        dueTime: formatDueTime(issue.dueTime),
         updatedAt: issue.updatedAt,
         project: issue.project,
         team: issue.team,
