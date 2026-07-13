@@ -69,6 +69,37 @@ const severityFromDb: Record<string, string> = {
   HIGH: "high",
 };
 
+function normalizeStoredIntegrationRefs(value: any) {
+  if (!value) return [];
+
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => item && typeof item === "object")
+      .map((item: any) => ({
+        id: String(item.id ?? ""),
+        provider: item.provider,
+        label: item.label ?? null,
+        externalId: item.externalId ?? null,
+        url: item.url ?? null,
+      }))
+      .filter((item: any) => item.id && item.provider);
+  }
+
+  if (typeof value === "object" && value.provider) {
+    return [
+      {
+        id: String(value.id ?? "legacy-ref"),
+        provider: value.provider,
+        label: value.label ?? null,
+        externalId: value.externalId ?? null,
+        url: value.url ?? null,
+      },
+    ];
+  }
+
+  return [];
+}
+
 function normalizeLabelName(value: string) {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -201,17 +232,34 @@ export function mapIssue(record: any, includeRelations = true) {
           status: record.parent.status ?? "backlog",
         }
       : null,
-    dependencies: (record.relationsFrom ?? []).map((relation: any) => ({
-      issueId: relation.relatedId,
-      relation: relation.type === "BLOCKS" ? "blocks" : relation.type === "BLOCKED_BY" ? "blocked-by" : "related",
-      issue: relation.related
-        ? {
-            id: relation.related.id,
-            title: relation.related.title,
-            status: relation.related.status ?? "backlog",
-          }
-        : null,
-    })),
+    dependencies: Array.from(
+      new Map(
+        [
+          ...(record.relationsFrom ?? []).map((relation: any) => ({
+            issueId: relation.related?.id ?? relation.relatedId,
+            relation: relation.type === "BLOCKS" ? "blocks" : relation.type === "BLOCKED_BY" ? "blocked-by" : "related",
+            issue: relation.related
+              ? {
+                  id: relation.related.id,
+                  title: relation.related.title,
+                  status: relation.related.status ?? "backlog",
+                }
+              : null,
+          })),
+          ...(record.relationsTo ?? []).map((relation: any) => ({
+            issueId: relation.issue?.id ?? relation.issueId,
+            relation: relation.type === "BLOCKS" ? "blocked-by" : relation.type === "BLOCKED_BY" ? "blocks" : "related",
+            issue: relation.issue
+              ? {
+                  id: relation.issue.id,
+                  title: relation.issue.title,
+                  status: relation.issue.status ?? "backlog",
+                }
+              : null,
+          })),
+        ].map((dependency: any) => [`${dependency.relation}:${dependency.issueId}`, dependency]),
+      ).values(),
+    ),
     watchers: (record.watchers ?? []).map((watcher: any) => ({
       id: watcher.user.id,
       name: watcher.user.name,
@@ -220,6 +268,7 @@ export function mapIssue(record: any, includeRelations = true) {
       role: watcher.user.workspaceMemberships?.[0]?.role ?? "MEMBER",
     })),
     integrationRef: record.integrationRef ?? null,
+    integrationRefs: normalizeStoredIntegrationRefs(record.integrationRef),
     stepsToReproduce: record.stepsToReproduce,
     expectedBehavior: record.expectedBehavior,
     actualBehavior: record.actualBehavior,
@@ -673,6 +722,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         attachments: { orderBy: [{ createdAt: "desc" }] },
         parent: { select: { id: true, title: true, status: true } },
         relationsFrom: { include: { related: { select: { id: true, title: true, status: true } } } },
+        relationsTo: { include: { issue: { select: { id: true, title: true, status: true } } } },
         watchers: {
           include: {
             user: {
@@ -892,6 +942,7 @@ export async function getIssueById(workspaceId: string, workspaceRole: Workspace
       attachments: { orderBy: [{ createdAt: "desc" }] },
       parent: { select: { id: true, title: true, status: true } },
       relationsFrom: { include: { related: { select: { id: true, title: true, status: true } } } },
+      relationsTo: { include: { issue: { select: { id: true, title: true, status: true } } } },
       watchers: {
         include: {
           user: {
@@ -1010,6 +1061,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         attachments: { orderBy: [{ createdAt: "desc" }] },
         parent: { select: { id: true, title: true, status: true } },
         relationsFrom: { include: { related: { select: { id: true, title: true, status: true } } } },
+        relationsTo: { include: { issue: { select: { id: true, title: true, status: true } } } },
         watchers: {
           include: {
             user: {
@@ -1534,7 +1586,7 @@ export async function removeWatcher(workspaceId: string, issueId: string, userId
   });
 }
 
-export async function updateIntegrationRef(workspaceId: string, issueId: string, integrationRef: any) {
+export async function updateIntegrationRefs(workspaceId: string, issueId: string, integrationRefs: any[]) {
   const issue = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
     select: { id: true },
@@ -1545,10 +1597,10 @@ export async function updateIntegrationRef(workspaceId: string, issueId: string,
 
   await prisma.issue.update({
     where: { id: issueId },
-    data: { integrationRef: (integrationRef ?? null) as any },
+    data: { integrationRef: (integrationRefs.length > 0 ? integrationRefs : null) as any },
   });
 
-  return getIssueById(workspaceId, "MEMBER", "", issueId);
+  return integrationRefs;
 }
 
 export async function addAttachments(workspaceId: string, issueId: string, createdById: string, attachments: any[]) {

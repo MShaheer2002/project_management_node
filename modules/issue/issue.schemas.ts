@@ -155,10 +155,20 @@ export const deleteIssueAttachmentParamsSchema = {
 
 export const addDependencySchema = {
   params: z.object({ id: z.string().min(1) }),
-  body: z.object({
-    issueId: z.string().min(1),
-    relation: z.enum(["blocks", "blocked-by", "related"]),
-  }),
+  body: z
+    .object({
+      issueId: z.string().min(1).optional(),
+      relatedId: z.string().min(1).optional(),
+      relation: z.enum(["blocks", "blocked-by", "related"]),
+    })
+    .refine((value) => Boolean(value.issueId || value.relatedId), {
+      message: "Issue is required",
+      path: ["issueId"],
+    })
+    .transform(({ issueId, relatedId, relation }) => ({
+      issueId: issueId ?? relatedId!,
+      relation,
+    })),
 };
 
 export const removeDependencyParamsSchema = {
@@ -182,14 +192,45 @@ export const removeWatcherParamsSchema = {
 
 export const updateIntegrationRefSchema = {
   params: z.object({ id: z.string().min(1) }),
-  body: z.object({
-    integrationRef: z.object({
-      provider: z.enum(["github", "jira", "slack", "notion", "figma", "custom"]),
-      label: z.string().trim().max(100).nullable().optional(),
-      externalId: z.string().trim().max(255).nullable().optional(),
-      url: z.string().url().nullable().optional(),
-    }).nullable(),
-  }),
+  body: z
+    .object({
+      integrationRef: z
+        .object({
+          provider: z.enum(["github", "jira", "slack", "notion", "figma", "custom"]),
+          label: z.string().trim().max(100).nullable().optional(),
+          externalId: z.string().trim().max(255).nullable().optional(),
+          url: z.string().url().nullable().optional(),
+        })
+        .nullable()
+        .optional(),
+      integrationRefs: z
+        .array(
+          z.object({
+            id: z.string().trim().min(1).max(100),
+            provider: z.enum(["github", "jira", "slack", "notion", "figma", "custom"]),
+            label: z.string().trim().max(100).nullable().optional(),
+            externalId: z.string().trim().max(255).nullable().optional(),
+            url: z.string().url().nullable().optional(),
+          }),
+        )
+        .max(25)
+        .optional(),
+    })
+    .transform(({ integrationRef, integrationRefs }) => ({
+      integrationRefs:
+        integrationRefs
+        ?? (integrationRef
+          ? [
+              {
+                id: "legacy-ref",
+                provider: integrationRef.provider,
+                label: integrationRef.label ?? null,
+                externalId: integrationRef.externalId ?? null,
+                url: integrationRef.url ?? null,
+              },
+            ]
+          : []),
+    })),
 };
 
 export type CreateIssueInput = z.infer<typeof createIssueSchema.body>;

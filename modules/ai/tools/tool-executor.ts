@@ -37,7 +37,7 @@ import {
   addDependency,
   addWatchers,
   listWatchers,
-  updateIntegrationRef,
+  updateIntegrationRefs,
 } from "../../issue/issue.service.js";
 import {
   createSubtask,
@@ -1417,7 +1417,15 @@ async function executeToolLegacy(
           { issueId, integrationRef },
           ctx,
           async () => {
-            const issue = await updateIntegrationRef(ctx.workspaceId, issueId, integrationRef) as { integrationRef?: unknown };
+            await updateIntegrationRefs(ctx.workspaceId, issueId, [
+              {
+                id: "ai-ref",
+                provider: integrationRef.provider,
+                label: integrationRef.label ?? null,
+                externalId: integrationRef.externalId ?? null,
+                url: integrationRef.url ?? null,
+              },
+            ]);
 
             await recordAiMutationActivity({
               ctx,
@@ -1439,7 +1447,7 @@ async function executeToolLegacy(
               reason: "updated",
             });
 
-            return { success: true, data: { issueId, integrationRef: issue.integrationRef ?? integrationRef } };
+            return { success: true, data: { issueId, integrationRefs: [integrationRef] } };
           },
         );
       }

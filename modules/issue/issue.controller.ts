@@ -223,8 +223,8 @@ export const removeWatcher: RequestHandler = async (req, res, next) => {
 export const updateIntegrationRef: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    const issue = await issueService.updateIntegrationRef(req.workspace!.id, issueId, req.body.integrationRef);
-    sendSuccess(res, 200, issue);
+    const integrationRefs = await issueService.updateIntegrationRefs(req.workspace!.id, issueId, req.body.integrationRefs);
+    sendSuccess(res, 200, integrationRefs);
   } catch (error) {
     next(error);
   }
