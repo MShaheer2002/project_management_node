@@ -28,6 +28,20 @@ export const list: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const checkAssignmentEligibility: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await issueService.checkAssignmentEligibility(
+      req.workspace!.id,
+      req.workspace!.role,
+      req.user!.id,
+      req.body,
+    );
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getById: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);

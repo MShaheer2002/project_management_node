@@ -109,6 +109,7 @@ export const createInvitation: RequestHandler = async (req, res, next) => {
       workspaceId: req.params.workspaceId as string,
       email: req.body.email,
       role: req.body.role,
+      designation: req.body.designation,
       teamId: req.body.teamId,
       departmentId: req.body.departmentId,
       invitedById: req.user!.id,

@@ -43,6 +43,7 @@ export async function createInvitation(params: {
   workspaceId: string;
   email: string;
   role: "ADMIN" | "MEMBER" | "GUEST";
+  designation: string;
   teamId: string;
   departmentId?: string;
   invitedById: string;
@@ -123,6 +124,7 @@ export async function createInvitation(params: {
       workspaceId: params.workspaceId,
       email,
       role: params.role,
+      designation: params.designation?.trim() || null,
       teamId: params.teamId,
       departmentId: params.departmentId ?? null,
       tokenHash,
@@ -133,6 +135,7 @@ export async function createInvitation(params: {
       id: true,
       email: true,
       role: true,
+      designation: true,
       status: true,
       expiresAt: true,
       createdAt: true,
@@ -269,6 +272,7 @@ export async function resolveInvitation(rawToken: string) {
     workspaceSlug: invitation.workspace.slug,
     workspaceLogo: invitation.workspace.logo,
     role: invitation.role,
+    designation: invitation.designation,
     teamName: invitation.team.name,
     departmentName: invitation.department?.name ?? null,
     invitedEmail: invitation.email,
@@ -312,6 +316,7 @@ async function acceptInvitationRecord(
     workspaceId: string;
     email: string;
     role: any;
+    designation: string | null;
     status: any;
     expiresAt: Date;
     invitedById: string;
@@ -409,6 +414,7 @@ async function acceptInvitationRecord(
         userId,
         workspaceId: invitation.workspaceId,
         role: invitation.role,
+        designation: invitation.designation,
         invitedById: invitation.invitedById,
       },
     }),
@@ -447,8 +453,11 @@ async function acceptInvitationRecord(
     type: "WORKSPACE_MEMBER_JOINED",
     targetType: "MEMBER",
     targetId: userId,
-    message: `${normalizedUserEmail} joined workspace`,
-    metadata: { member: { id: userId, email: normalizedUserEmail }, roleAfter: invitation.role },
+      message: `${normalizedUserEmail} joined workspace`,
+    metadata: {
+      member: { id: userId, email: normalizedUserEmail, designation: invitation.designation },
+      roleAfter: invitation.role,
+    },
   });
 
   await syncPaidSeatQuantityBestEffort(invitation.workspaceId);
@@ -535,6 +544,7 @@ export async function listInvitations(workspaceId: string) {
     id: inv.id,
     email: inv.email,
     role: inv.role,
+    designation: inv.designation,
     status: inv.status,
     team: inv.team,
     department: inv.department,
@@ -593,6 +603,7 @@ export async function listPendingInvitationsForUser(userId: string) {
     workspace: inv.workspace,
     email: inv.email,
     role: inv.role,
+    designation: inv.designation,
     team: inv.team,
     department: inv.department,
     invitedBy: inv.invitedBy,

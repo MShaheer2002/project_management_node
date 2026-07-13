@@ -6,7 +6,9 @@ import type {
   AssignIssueCycleInput,
   CarryOverInput,
   CreateCycleInput,
+  ListCycleIssuesQuery,
   ListCyclesQuery,
+  PlanCycleIssuesInput,
   UpdateCycleInput,
 } from "./cycle.schemas.js";
 
@@ -90,6 +92,51 @@ export const reopen: RequestHandler = async (req, res, next) => {
 export const carryOver: RequestHandler = async (req, res, next) => {
   try {
     const result = await cycleService.carryOverCycle(req.workspace!.id, req.params.id as string, req.user!.id, req.workspace!.role, req.body as CarryOverInput);
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const listIssues: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await cycleService.listCycleIssues(
+      req.workspace!.id,
+      req.params.id as string,
+      req.user!.id,
+      req.workspace!.role,
+      (req.validated?.query ?? req.query) as ListCycleIssuesQuery,
+    );
+    sendList(res, result.items as any[], result.meta);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const planIssues: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await cycleService.planIssuesIntoCycle(
+      req.workspace!.id,
+      req.params.id as string,
+      req.user!.id,
+      req.workspace!.role,
+      req.body as PlanCycleIssuesInput,
+    );
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const removePlannedIssue: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await cycleService.removeIssueFromSpecificCycle(
+      req.workspace!.id,
+      req.params.id as string,
+      req.params.issueId as string,
+      req.user!.id,
+      req.workspace!.role,
+    );
     sendSuccess(res, 200, result);
   } catch (error) {
     next(error);

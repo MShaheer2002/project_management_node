@@ -120,6 +120,11 @@ export const inviteMemberSchema = {
     role: z.enum(["ADMIN", "MEMBER", "GUEST"], {
       message: "Role must be ADMIN, MEMBER, or GUEST. Cannot invite as OWNER.",
     }),
+    designation: z
+      .string()
+      .trim()
+      .min(1, "Designation is required")
+      .max(100, "Designation must be at most 100 characters"),
     teamId: z.string().uuid("Invalid team ID"),
     departmentId: z.string().uuid("Invalid department ID").optional(),
   }),
@@ -189,6 +194,7 @@ const workspaceStatusItemSchema = z.object({
   color: z.string().min(4).max(9),
   order: z.number().int().min(0),
   isFinal: z.boolean(),
+  showOnBoard: z.boolean().default(true),
 });
 
 export const updateWorkspaceStatusesSchema = {

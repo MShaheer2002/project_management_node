@@ -11,6 +11,9 @@ import {
   createCycleSchema,
   cycleIdParamsSchema,
   listCyclesSchema,
+  listCycleIssuesSchema,
+  planCycleIssuesSchema,
+  removeCycleIssueSchema,
   removeIssueCycleSchema,
   updateCycleSchema,
 } from "./cycle.schemas.js";
@@ -26,6 +29,9 @@ router.delete("/cycles/:id", authenticate, validate(cycleIdParamsSchema), requir
 router.post("/cycles/:id/complete", authenticate, validate(cycleIdParamsSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.complete);
 router.post("/cycles/:id/reopen", authenticate, validate(cycleIdParamsSchema), requireWorkspace, requireRole("ADMIN", "OWNER"), controller.reopen);
 router.post("/cycles/:id/carry-over", authenticate, validate(carryOverSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.carryOver);
+router.get("/cycles/:id/issues", authenticate, validate(listCycleIssuesSchema), requireWorkspace, requireRole("GUEST", "MEMBER", "ADMIN", "OWNER"), controller.listIssues);
+router.post("/cycles/:id/issues", authenticate, validate(planCycleIssuesSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.planIssues);
+router.delete("/cycles/:id/issues/:issueId", authenticate, validate(removeCycleIssueSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.removePlannedIssue);
 
 router.post("/issues/:id/cycle", authenticate, validate(assignIssueCycleSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.assignIssue);
 router.delete("/issues/:id/cycle", authenticate, validate(removeIssueCycleSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.removeIssue);

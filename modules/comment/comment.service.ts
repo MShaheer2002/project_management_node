@@ -187,9 +187,9 @@ export async function createComment(workspaceId: string, issueId: string, userId
 
   const issueForNotification = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true, internalId: true, title: true, cycleId: true },
+    select: { id: true, title: true, cycleId: true },
   });
-  const issueRouteId = issueForNotification?.internalId ?? issueId;
+  const issuePublicId = issueForNotification?.id ?? issueId;
 
   if (input.parentId) {
     const parent = await prisma.comment.findFirst({
@@ -204,8 +204,8 @@ export async function createComment(workspaceId: string, issueId: string, userId
         type: "COMMENT_REPLY",
         category: "comment",
         title: "New reply to your comment",
-        message: `Someone replied on issue ${issueRouteId}`,
-        target: { type: "comment", id: created.id, url: `/issues/${issueRouteId}` },
+        message: `Someone replied on issue ${issuePublicId}`,
+        target: { type: "comment", id: created.id, publicId: issuePublicId, url: `/issues/${issuePublicId}` },
         metadata: {
           issueId,
           commentId: created.id,
@@ -214,7 +214,7 @@ export async function createComment(workspaceId: string, issueId: string, userId
           workspaceId,
           entityId: issueId,
           entityTitle: issueForNotification?.title ?? null,
-          url: `/issues/${issueRouteId}`,
+          url: `/issues/${issuePublicId}`,
         },
         eventId: `comment-reply:${created.id}:${parent.authorId}`,
       });
@@ -229,8 +229,8 @@ export async function createComment(workspaceId: string, issueId: string, userId
     type: "MENTION",
     category: "mention",
     title: "You were mentioned in a comment",
-    message: `You were mentioned on issue ${issueRouteId}`,
-    target: { type: "comment", id: created.id, url: `/issues/${issueRouteId}` },
+    message: `You were mentioned on issue ${issuePublicId}`,
+    target: { type: "comment", id: created.id, publicId: issuePublicId, url: `/issues/${issuePublicId}` },
     metadata: {
       issueId,
       commentId: created.id,
@@ -239,7 +239,7 @@ export async function createComment(workspaceId: string, issueId: string, userId
       workspaceId,
       entityId: issueId,
       entityTitle: issueForNotification?.title ?? null,
-      url: `/issues/${issueRouteId}`,
+      url: `/issues/${issuePublicId}`,
     },
     eventId: `comment-mention:${created.id}:${mentionedUserId}`,
   })));

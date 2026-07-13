@@ -66,6 +66,13 @@ export const listIssuesSchema = {
   }),
 };
 
+export const checkAssignmentEligibilitySchema = {
+  body: z.object({
+    projectId: z.string().uuid(),
+    assigneeId: z.string().min(1),
+  }),
+};
+
 export const issueIdParamsSchema = {
   params: z.object({
     id: z.string().min(1),
@@ -186,5 +193,6 @@ export const updateIntegrationRefSchema = {
 };
 
 export type CreateIssueInput = z.infer<typeof createIssueSchema.body>;
+export type CheckAssignmentEligibilityInput = z.infer<typeof checkAssignmentEligibilitySchema.body>;
 export type ListIssuesQuery = z.infer<typeof listIssuesSchema.query>;
 export type UpdateIssueInput = z.infer<typeof updateIssueSchema.body>;

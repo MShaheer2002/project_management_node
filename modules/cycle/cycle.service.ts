@@ -6,7 +6,7 @@ import { AppError } from "../../shared/utils/api-error.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { prisma } from "../../shared/utils/prisma.js";
 import { createNotification } from "../notification/notification.service.js";
-import { resolveIssueRouteId } from "../issue/issue.service.js";
+import { mapIssue, resolveIssueRouteId } from "../issue/issue.service.js";
 import { dispatchIntegrationEvent } from "../integration/dispatcher.js";
 import { triggerCycleBackgroundJobs } from "../ai/ai.background.js";
 import { getSocketServer } from "../../socket/index.js";
@@ -15,7 +15,9 @@ import type {
   AssignIssueCycleInput,
   CarryOverInput,
   CreateCycleInput,
+  ListCycleIssuesQuery,
   ListCyclesQuery,
+  PlanCycleIssuesInput,
   UpdateCycleInput,
 } from "./cycle.schemas.js";
 
@@ -39,6 +41,45 @@ const issueTypeFromDb: Record<string, "task" | "bug" | "issue"> = {
   BUG: "bug",
   ISSUE: "issue",
 };
+
+const issuePriorityToDb: Record<"low" | "medium" | "high" | "urgent", "LOW" | "MEDIUM" | "HIGH" | "URGENT"> = {
+  low: "LOW",
+  medium: "MEDIUM",
+  high: "HIGH",
+  urgent: "URGENT",
+};
+
+const issueTypeToDb: Record<"task" | "bug" | "issue", "TASK" | "BUG" | "ISSUE"> = {
+  task: "TASK",
+  bug: "BUG",
+  issue: "ISSUE",
+};
+
+async function getWorkspaceStatusDefinitions(workspaceId: string) {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { customStatuses: true },
+  });
+
+  return Array.isArray(workspace?.customStatuses) ? (workspace.customStatuses as any[]) : [];
+}
+
+function getFinalStatusKeys(statuses: any[]) {
+  const configuredFinalKeys = statuses
+    .filter((status) => status && status.isFinal === true && typeof status.key === "string")
+    .map((status) => String(status.key));
+
+  return new Set(configuredFinalKeys.length > 0 ? configuredFinalKeys : ["done"]);
+}
+
+function getStatusLabel(statusKey: string) {
+  if (statusKey === "in-progress") return "In Progress";
+
+  return statusKey
+    .split("-")
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
 
 async function assertTeamInWorkspace(workspaceId: string, teamId: string) {
   const team = await prisma.team.findFirst({ where: { id: teamId, workspaceId }, select: { id: true, name: true } });
@@ -132,24 +173,34 @@ function mapIssueSummary(item: any) {
 }
 
 async function computeCycleStats(workspaceId: string, cycleId: string, startsAt: Date, endsAt: Date) {
-  const issues = await prisma.issue.findMany({
-    where: { workspaceId, cycleId },
-    select: {
-      id: true,
-      status: true,
-      priority: true,
-      type: true,
-      projectId: true,
-      project: { select: { name: true } },
-    },
-  });
+  const [issues, workspaceStatuses] = await Promise.all([
+    prisma.issue.findMany({
+      where: { workspaceId, cycleId },
+      select: {
+        id: true,
+        status: true,
+        priority: true,
+        type: true,
+        projectId: true,
+        project: { select: { name: true } },
+      },
+    }),
+    getWorkspaceStatusDefinitions(workspaceId),
+  ]);
+
+  const finalStatusKeys = getFinalStatusKeys(workspaceStatuses);
+  const countByStatus = new Map<string, number>();
+
+  for (const issue of issues) {
+    countByStatus.set(issue.status, (countByStatus.get(issue.status) ?? 0) + 1);
+  }
 
   const totalIssues = issues.length;
-  const completedIssues = issues.filter((i) => i.status === "DONE").length;
-  const inProgressIssues = issues.filter((i) => i.status === "IN_PROGRESS").length;
-  const todoIssues = issues.filter((i) => i.status === "TODO").length;
-  const backlogIssues = issues.filter((i) => i.status === "BACKLOG").length;
-  const reviewIssues = issues.filter((i) => i.status === "REVIEW").length;
+  const completedIssues = issues.filter((issue) => finalStatusKeys.has(issue.status)).length;
+  const inProgressIssues = countByStatus.get("in-progress") ?? 0;
+  const todoIssues = countByStatus.get("todo") ?? 0;
+  const backlogIssues = countByStatus.get("backlog") ?? 0;
+  const reviewIssues = countByStatus.get("review") ?? 0;
   const unfinishedIssues = totalIssues - completedIssues;
   const progress = totalIssues === 0 ? 0 : Math.round((completedIssues / totalIssues) * 100);
 
@@ -160,13 +211,19 @@ async function computeCycleStats(workspaceId: string, cycleId: string, startsAt:
   const daysRemaining = Math.max(0, daysTotal - daysElapsed);
   const timeElapsedPercent = Math.round((daysElapsed / daysTotal) * 100);
 
-  const byStatus = [
-    { status: "backlog", label: "Backlog", count: backlogIssues },
-    { status: "todo", label: "Todo", count: todoIssues },
-    { status: "in-progress", label: "In Progress", count: inProgressIssues },
-    { status: "review", label: "Review", count: reviewIssues },
-    { status: "done", label: "Done", count: completedIssues },
-  ];
+  const byStatus = (workspaceStatuses.length > 0
+    ? workspaceStatuses.map((status) => ({
+        status: String(status.key),
+        label: typeof status.label === "string" ? status.label : getStatusLabel(String(status.key)),
+        count: countByStatus.get(String(status.key)) ?? 0,
+      }))
+    : [
+        { status: "backlog", label: "Backlog", count: backlogIssues },
+        { status: "todo", label: "Todo", count: todoIssues },
+        { status: "in-progress", label: "In Progress", count: inProgressIssues },
+        { status: "review", label: "Review", count: reviewIssues },
+        { status: "done", label: "Done", count: completedIssues },
+      ]);
 
   const byPriority = ["low", "medium", "high", "urgent"].map((priority) => ({
     priority,
@@ -188,7 +245,7 @@ async function computeCycleStats(workspaceId: string, cycleId: string, startsAt:
       completedCount: 0,
     };
     current.count += 1;
-    if (issue.status === "DONE") current.completedCount += 1;
+    if (finalStatusKeys.has(issue.status)) current.completedCount += 1;
     projectAgg.set(key, current);
   }
 
@@ -544,7 +601,15 @@ export async function completeCycle(workspaceId: string, cycleId: string, userId
     include: { team: { select: { id: true, name: true } } },
   });
 
-  const unfinishedCount = await prisma.issue.count({ where: { workspaceId, cycleId, status: { not: "DONE" } } });
+  const [cycleIssues, workspaceStatuses] = await Promise.all([
+    prisma.issue.findMany({
+      where: { workspaceId, cycleId },
+      select: { status: true },
+    }),
+    getWorkspaceStatusDefinitions(workspaceId),
+  ]);
+  const finalStatusKeys = getFinalStatusKeys(workspaceStatuses);
+  const unfinishedCount = cycleIssues.filter((issue) => !finalStatusKeys.has(issue.status)).length;
 
   await logActivity({
     workspaceId,
@@ -628,10 +693,13 @@ export async function carryOverCycle(workspaceId: string, cycleId: string, userI
     throw new AppError(409, ERROR_CODES.CONFLICT, "Only completed cycles can be carried over");
   }
 
-  const unfinished = await prisma.issue.findMany({
-    where: { workspaceId, cycleId, status: { not: "DONE" } },
-    select: { id: true, assigneeId: true, title: true, internalId: true },
+  const workspaceStatuses = await getWorkspaceStatusDefinitions(workspaceId);
+  const finalStatusKeys = getFinalStatusKeys(workspaceStatuses);
+  const cycleIssues = await prisma.issue.findMany({
+    where: { workspaceId, cycleId },
+    select: { id: true, assigneeId: true, title: true, internalId: true, status: true },
   });
+  const unfinished = cycleIssues.filter((issue) => !finalStatusKeys.has(issue.status));
 
   let targetCycleId: string | null = null;
   if (input.mode === "nextCycle") {
@@ -676,8 +744,8 @@ export async function carryOverCycle(workspaceId: string, cycleId: string, userI
     type: "UPDATE",
     category: "update",
     title: "Issue moved between cycles",
-    message: `Issue ${issue.internalId ?? issue.id} was moved during cycle carry-over`,
-    target: { type: "issue", id: issue.id, publicId: issue.internalId ?? issue.id, url: `/issues/${issue.internalId ?? issue.id}` },
+    message: `Issue ${issue.id} was moved during cycle carry-over`,
+    target: { type: "issue", id: issue.id, publicId: issue.id, url: `/issues/${issue.id}` },
     metadata: {
       issueId: issue.id,
       field: "cycleId",
@@ -686,7 +754,7 @@ export async function carryOverCycle(workspaceId: string, cycleId: string, userI
       workspaceId,
       entityId: issue.id,
       entityTitle: issue.title,
-      url: `/issues/${issue.internalId ?? issue.id}`,
+      url: `/issues/${issue.id}`,
     },
     eventId: `cycle-carry-over:${cycleId}:${issue.id}`,
   })));
@@ -702,6 +770,126 @@ export async function carryOverCycle(workspaceId: string, cycleId: string, userI
     movedIssueCount: unfinished.length,
     targetCycleId,
     mode: input.mode,
+  };
+}
+
+function getCycleIssueOrderBy(sort: ListCycleIssuesQuery["sort"]) {
+  switch (sort) {
+    case "priority:desc":
+      return [{ priority: "desc" }, { updatedAt: "desc" }, { id: "desc" }] as any;
+    case "dueDate:asc":
+      return [{ dueDate: "asc" }, { id: "asc" }] as any;
+    case "status:asc":
+      return [{ status: "asc" }, { updatedAt: "desc" }, { id: "desc" }] as any;
+    case "updatedAt:desc":
+    default:
+      return [{ updatedAt: "desc" }, { id: "desc" }] as any;
+  }
+}
+
+export async function listCycleIssues(
+  workspaceId: string,
+  cycleId: string,
+  _userId: string,
+  _role: WorkspaceRole,
+  query: ListCycleIssuesQuery,
+) {
+  await assertCycleInWorkspace(workspaceId, cycleId);
+
+  const limit = clampListLimit(query.limit);
+  const where: any = {
+    workspaceId,
+    cycleId,
+    ...(query.q
+      ? {
+          OR: [
+            { title: { contains: query.q, mode: "insensitive" } },
+            { internalId: { contains: query.q, mode: "insensitive" } },
+          ],
+        }
+      : {}),
+    ...(query.status ? { status: query.status } : {}),
+    ...(query.priority ? { priority: issuePriorityToDb[query.priority] } : {}),
+    ...(query.type ? { type: issueTypeToDb[query.type] } : {}),
+    ...(query.projectId ? { projectId: query.projectId } : {}),
+    ...(query.assigneeId ? { assigneeId: query.assigneeId } : {}),
+    ...(query.departmentId ? { departmentId: query.departmentId } : {}),
+  };
+
+  const [total, records] = await Promise.all([
+    prisma.issue.count({ where }),
+    prisma.issue.findMany({
+      where,
+      orderBy: getCycleIssueOrderBy(query.sort),
+      ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
+      take: limit + 1,
+      include: {
+        creator: { select: { id: true, name: true, email: true, avatar: true } },
+        assignee: { select: { id: true, name: true, email: true, avatar: true } },
+        project: { select: { id: true, name: true } },
+        team: { select: { id: true, name: true } },
+        department: { select: { id: true, name: true, color: true } },
+        labels: { include: { label: { select: { id: true, name: true, color: true } } } },
+        subtasks: { select: { id: true, completed: true, order: true, title: true } },
+        attachments: { select: { id: true, key: true, fileName: true, contentType: true, size: true, kind: true, assetUrl: true, createdAt: true } },
+      },
+    } as any),
+  ]);
+
+  const page = slicePage(records as any[], limit);
+
+  return {
+    items: page.items.map((record: any) => mapIssue(record, true)),
+    meta: {
+      total,
+      cursor: page.hasMore ? page.items[page.items.length - 1]?.id ?? null : null,
+      hasMore: page.hasMore,
+    },
+  };
+}
+
+export async function planIssuesIntoCycle(
+  workspaceId: string,
+  cycleId: string,
+  userId: string,
+  role: WorkspaceRole,
+  input: PlanCycleIssuesInput,
+) {
+  const uniqueIssueIds = [...new Set(input.issueIds)];
+  const added: any[] = [];
+  const skipped: Array<{ issueId: string; reason: string }> = [];
+
+  for (const issueRouteId of uniqueIssueIds) {
+    try {
+      const resolvedId = await resolveIssueRouteId(workspaceId, issueRouteId);
+      const existing = await prisma.issue.findFirst({
+        where: { id: resolvedId, workspaceId },
+        select: { id: true, cycleId: true },
+      });
+
+      if (!existing) {
+        skipped.push({ issueId: issueRouteId, reason: "Issue not found" });
+        continue;
+      }
+
+      if (existing.cycleId === cycleId) {
+        skipped.push({ issueId: issueRouteId, reason: "Issue is already in this cycle" });
+        continue;
+      }
+
+      const planned = await assignIssueToCycle(workspaceId, issueRouteId, userId, role, { cycleId });
+      added.push(mapIssue(planned, true));
+    } catch (error) {
+      skipped.push({
+        issueId: issueRouteId,
+        reason: error instanceof AppError ? error.message : "Failed to plan issue",
+      });
+    }
+  }
+
+  return {
+    added,
+    skipped,
   };
 }
 
@@ -745,8 +933,8 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
     type: "UPDATE",
     category: "update",
     title: "Issue planned into cycle",
-    message: `Issue ${issue.internalId ?? issue.id} was planned into cycle ${cycle.name}`,
-    target: { type: "issue", id: issue.id, publicId: issue.internalId ?? issue.id, url: `/issues/${issue.internalId ?? issue.id}` },
+    message: `Issue ${issue.id} was planned into cycle ${cycle.name}`,
+    target: { type: "issue", id: issue.id, publicId: issue.id, url: `/issues/${issue.id}` },
     metadata: {
       issueId: issue.id,
       field: "cycleId",
@@ -755,7 +943,7 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
       workspaceId,
       entityId: issue.id,
       entityTitle: issue.title,
-      url: `/issues/${issue.internalId ?? issue.id}`,
+      url: `/issues/${issue.id}`,
     },
     eventId: `issue-cycle-assigned:${issue.id}:${cycle.id}:${recipientUserId}`,
   })));
@@ -794,6 +982,36 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
   return updatedIssue;
 }
 
+export async function removeIssueFromSpecificCycle(
+  workspaceId: string,
+  cycleId: string,
+  issueRouteId: string,
+  userId: string,
+  role: WorkspaceRole,
+) {
+  const issueId = await resolveIssueRouteId(workspaceId, issueRouteId);
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { id: true, cycleId: true },
+  });
+
+  if (!issue) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  if (issue.cycleId !== cycleId) {
+    throw new AppError(409, ERROR_CODES.CONFLICT, "Issue does not belong to this cycle");
+  }
+
+  await removeIssueFromCycle(workspaceId, issueRouteId, userId, role);
+
+  return {
+    issueId,
+    cycleId,
+    removed: true,
+  };
+}
+
 export async function removeIssueFromCycle(workspaceId: string, issueRouteId: string, userId: string, role: WorkspaceRole) {
   const issueId = await resolveIssueRouteId(workspaceId, issueRouteId);
   const issue = await prisma.issue.findFirst({
@@ -828,8 +1046,8 @@ export async function removeIssueFromCycle(workspaceId: string, issueRouteId: st
     type: "UPDATE",
     category: "update",
     title: "Issue removed from cycle",
-    message: `Issue ${issue.internalId ?? issue.id} was removed from cycle ${cycle.name}`,
-    target: { type: "issue", id: issue.id, publicId: issue.internalId ?? issue.id, url: `/issues/${issue.internalId ?? issue.id}` },
+    message: `Issue ${issue.id} was removed from cycle ${cycle.name}`,
+    target: { type: "issue", id: issue.id, publicId: issue.id, url: `/issues/${issue.id}` },
     metadata: {
       issueId: issue.id,
       field: "cycleId",
@@ -838,7 +1056,7 @@ export async function removeIssueFromCycle(workspaceId: string, issueRouteId: st
       workspaceId,
       entityId: issue.id,
       entityTitle: issue.title,
-      url: `/issues/${issue.internalId ?? issue.id}`,
+      url: `/issues/${issue.id}`,
     },
     eventId: `issue-cycle-removed:${issue.id}:${recipientUserId}`,
   })));

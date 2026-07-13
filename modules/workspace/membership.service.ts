@@ -31,6 +31,7 @@ export async function inviteMember(
   workspaceId: string,
   email: string,
   role: Exclude<WorkspaceRole, "OWNER">,
+  designation?: string,
 ) {
   // Find the user by email
   const user = await prisma.user.findUnique({
@@ -58,6 +59,7 @@ export async function inviteMember(
       userId: user.id,
       workspaceId,
       role,
+      designation: designation?.trim() || null,
     },
     include: {
       user: {
@@ -79,6 +81,7 @@ export async function inviteMember(
   return {
     ...membership.user,
     role: membership.role,
+    designation: membership.designation,
     joinedAt: membership.joinedAt,
   };
 }
@@ -142,6 +145,7 @@ export async function listMembers(workspaceId: string, query: ListWorkspaceMembe
       select: {
         userId: true,
         role: true,
+        designation: true,
         invitedById: true,
         joinedAt: true,
         user: {
@@ -206,6 +210,7 @@ export async function listMembers(workspaceId: string, query: ListWorkspaceMembe
         name: membership.user.name,
         email: membership.user.email,
         role: membership.role,
+        designation: membership.designation,
       }))
     : page.items.map((membership) => {
         const teams = membership.user.teamMemberships.map((teamMembership) => ({
@@ -223,6 +228,7 @@ export async function listMembers(workspaceId: string, query: ListWorkspaceMembe
           name: membership.user.name,
           avatar: membership.user.avatar,
           role: membership.role,
+          designation: membership.designation,
           invitedById: membership.invitedById,
           joinedAt: membership.joinedAt,
           team: teams[0] ?? null,
@@ -280,6 +286,7 @@ export async function changeMemberRole(
   return {
     ...updated.user,
     role: updated.role,
+    designation: updated.designation,
     joinedAt: updated.joinedAt,
   };
 }

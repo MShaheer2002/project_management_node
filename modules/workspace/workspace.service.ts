@@ -17,6 +17,14 @@ import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { createInitialWorkspaceSubscription } from "../billing/billing.service.js";
 import type { CreateWorkspaceInput, UpdateWorkspaceInput, UpdateWorkspaceStatusesInput } from "./workspace.schemas.js";
 
+function normalizeWorkspaceStatuses(statuses: any[] | null | undefined) {
+  return ((statuses as any[]) ?? []).map((status: any, index: number) => ({
+    ...status,
+    order: typeof status?.order === "number" ? status.order : index,
+    showOnBoard: status?.showOnBoard !== false,
+  }));
+}
+
 /**
  * Create a workspace and set up the initial structure:
  *   1. Create Workspace
@@ -149,6 +157,7 @@ export async function createWorkspace(userId: string, input: CreateWorkspaceInpu
     logo: result.workspace.logo,
     teamSize: result.workspace.teamSize,
     issuePrefix: result.workspace.issuePrefix,
+    customStatuses: normalizeWorkspaceStatuses((result.workspace as any).customStatuses),
     role: "OWNER" as const,
     defaultTeamId: result.defaultTeam.id,
     createdAt: result.workspace.createdAt,
@@ -220,7 +229,7 @@ export async function listWorkspaces(userId: string) {
     logo: m.workspace.logo,
     teamSize: m.workspace.teamSize,
     issuePrefix: m.workspace.issuePrefix,
-    customStatuses: m.workspace.customStatuses,
+    customStatuses: normalizeWorkspaceStatuses(m.workspace.customStatuses as any[]),
     uploadPolicy: m.workspace.uploadPolicy,
     role: m.role,
     defaultTeamId: defaultTeamMap.get(m.workspace.id) ?? null,
@@ -266,7 +275,10 @@ export async function getWorkspaceById(workspaceId: string) {
     throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "Workspace not found");
   }
 
-  return workspace;
+  return {
+    ...workspace,
+    customStatuses: normalizeWorkspaceStatuses(workspace.customStatuses as any[]),
+  };
 }
 
 /**
@@ -287,12 +299,16 @@ export async function updateWorkspace(workspaceId: string, input: UpdateWorkspac
       slug: true,
       logo: true,
       teamSize: true,
+      customStatuses: true,
       uploadPolicy: true,
       updatedAt: true,
     },
   });
 
-  return workspace;
+  return {
+    ...workspace,
+    customStatuses: normalizeWorkspaceStatuses(workspace.customStatuses as any[]),
+  };
 }
 
 /**
@@ -329,7 +345,7 @@ export async function getWorkspaceStatuses(workspaceId: string) {
     throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "Workspace not found");
   }
 
-  return (workspace.customStatuses as any[]) ?? [];
+  return normalizeWorkspaceStatuses(workspace.customStatuses as any[]);
 }
 
 /**
@@ -363,6 +379,11 @@ export async function updateWorkspaceStatuses(workspaceId: string, statuses: Upd
     throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "At least one status must have isFinal: true");
   }
 
+  const hasBoardStatus = statuses.some((s) => s.showOnBoard !== false);
+  if (!hasBoardStatus) {
+    throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "At least one status must be visible on the board");
+  }
+
   const currentStatuses = await getWorkspaceStatuses(workspaceId);
   const currentKeys = new Set(currentStatuses.map((s: any) => s.key));
   const newKeys = new Set(statuses.map((s) => s.key));
@@ -380,7 +401,13 @@ export async function updateWorkspaceStatuses(workspaceId: string, statuses: Upd
 
   const workspace = await prisma.workspace.update({
     where: { id: workspaceId },
-    data: { customStatuses: statuses as any },
+    data: {
+      customStatuses: statuses.map((status, index) => ({
+        ...status,
+        order: typeof status.order === "number" ? status.order : index,
+        showOnBoard: status.showOnBoard !== false,
+      })) as any,
+    },
     select: { customStatuses: true },
   });
 

@@ -8,6 +8,7 @@ import * as controller from "./issue.controller.js";
 import {
   addDependencySchema,
   addWatchersSchema,
+  checkAssignmentEligibilitySchema,
   createIssueAttachmentsSchema,
   createIssueSchema,
   createSubtaskSchema,
@@ -28,6 +29,7 @@ import {
 const router = Router();
 
 router.post("/", authenticate, validate(createIssueSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.create);
+router.post("/assignment-eligibility", authenticate, validate(checkAssignmentEligibilitySchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.checkAssignmentEligibility);
 router.get("/", authenticate, validate(listIssuesSchema), requireWorkspace, controller.list);
 router.get("/:id", authenticate, validate(issueIdParamsSchema), requireWorkspace, controller.getById);
 router.patch("/:id", authenticate, validate(updateIssueSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.update);

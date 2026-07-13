@@ -423,7 +423,7 @@ model Workspace {
   teamSize     TeamSize? // Selected during onboarding (1-5, 6-20, 21-50, 50+)
   issuePrefix  String @unique // Uppercase prefix for issue IDs (e.g., "VAT" → VAT-1, VAT-2)
   issueCounter Int    @default(0) // Atomic counter for human-readable issue IDs per workspace
-  customStatuses Json  @default("[{\"key\":\"backlog\",\"label\":\"Backlog\",\"color\":\"#6b7280\",\"order\":0,\"isFinal\":false},{\"key\":\"todo\",\"label\":\"Todo\",\"color\":\"#3b82f6\",\"order\":1,\"isFinal\":false},{\"key\":\"in-progress\",\"label\":\"In Progress\",\"color\":\"#f59e0b\",\"order\":2,\"isFinal\":false},{\"key\":\"review\",\"label\":\"Review\",\"color\":\"#8b5cf6\",\"order\":3,\"isFinal\":false},{\"key\":\"done\",\"label\":\"Done\",\"color\":\"#22c55e\",\"order\":4,\"isFinal\":true}]")
+  customStatuses Json  @default("[{\"key\":\"backlog\",\"label\":\"Backlog\",\"color\":\"#6b7280\",\"order\":0,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"todo\",\"label\":\"Todo\",\"color\":\"#3b82f6\",\"order\":1,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"in-progress\",\"label\":\"In Progress\",\"color\":\"#f59e0b\",\"order\":2,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"review\",\"label\":\"Review\",\"color\":\"#8b5cf6\",\"order\":3,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"done\",\"label\":\"Done\",\"color\":\"#22c55e\",\"order\":4,\"isFinal\":true,\"showOnBoard\":true}]")
   uploadPolicy UploadPolicy @default(BOTH) // Controls where members can upload: BOTH, SYSTEM_ONLY, DRIVE_ONLY
   createdById  String // FK → User who created this workspace (becomes OWNER)
   createdAt    DateTime @default(now())
@@ -483,6 +483,7 @@ model WorkspaceMembership {
   userId      String
   workspaceId String
   role        WorkspaceRole @default(MEMBER)
+  designation String?
   invitedById String? // FK → User who invited this member (null for workspace creator)
   joinedAt    DateTime      @default(now())
 
@@ -513,6 +514,7 @@ model WorkspaceInvitation {
   workspaceId  String
   email        String // Invitee's email — ALWAYS stored lowercase
   role         WorkspaceRole    @default(MEMBER) // Role assigned on acceptance
+  designation  String?
   teamId       String // FK → Team the invitee will be assigned to on acceptance (required)
   departmentId String? // FK → Department the invitee will be assigned to (optional)
   tokenHash    String           @unique // SHA-256 hash of the raw invite token (never store raw)

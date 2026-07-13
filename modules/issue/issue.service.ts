@@ -13,6 +13,7 @@ import { dispatchIntegrationEvent } from "../integration/dispatcher.js";
 import { decrementStorageUsage } from "../billing/billing.service.js";
 import { triggerIssueBackgroundJobs } from "../ai/ai.background.js";
 import type {
+  CheckAssignmentEligibilityInput,
   CreateIssueInput,
   ListIssuesQuery,
   UpdateIssueInput,
@@ -123,7 +124,7 @@ function getCompletedAtForStatusTransition(
   return currentCompletedAt;
 }
 
-function mapIssue(record: any, includeRelations = true) {
+export function mapIssue(record: any, includeRelations = true) {
   const labelObjects = (record.labels ?? []).map((labelLink: any) => ({
     id: labelLink.label.id,
     name: labelLink.label.name,
@@ -339,6 +340,72 @@ async function assertAssigneeInWorkspace(tx: any, workspaceId: string, assigneeI
   }
 }
 
+async function assertAssigneeInProject(tx: any, projectId: string, assigneeId: string) {
+  const membership = await (tx as any).projectMembership.findUnique({
+    where: {
+      projectId_userId: {
+        projectId,
+        userId: assigneeId,
+      },
+    },
+    select: { userId: true },
+  });
+
+  if (!membership) {
+    throw new AppError(
+      409,
+      ERROR_CODES.ASSIGNEE_NOT_PROJECT_MEMBER,
+      "Assignee must be added to the project before this issue can be assigned",
+    );
+  }
+}
+
+async function getAssignmentEligibility(
+  tx: any,
+  workspaceId: string,
+  workspaceRole: WorkspaceRole,
+  actorUserId: string,
+  projectId: string,
+  assigneeId: string,
+) {
+  const [project, workspaceMembership, projectMembership] = await Promise.all([
+    tx.project.findFirst({
+      where: { id: projectId, workspaceId },
+      select: { id: true, name: true, leadId: true },
+    }),
+    tx.workspaceMembership.findUnique({
+      where: {
+        userId_workspaceId: {
+          userId: assigneeId,
+          workspaceId,
+        },
+      },
+      select: { userId: true },
+    }),
+    (tx as any).projectMembership.findUnique({
+      where: {
+        projectId_userId: {
+          projectId,
+          userId: assigneeId,
+        },
+      },
+      select: { userId: true },
+    }),
+  ]);
+
+  if (!project) {
+    throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
+  }
+
+  return {
+    projectId: project.id,
+    projectName: project.name,
+    workspaceMember: Boolean(workspaceMembership),
+    projectMember: Boolean(projectMembership),
+    canAutoAdd: workspaceRole === "OWNER" || workspaceRole === "ADMIN" || project.leadId === actorUserId,
+  };
+}
+
 async function syncIssueLabels(tx: any, workspaceId: string, issueId: string, labels: string[] | undefined) {
   if (!labels) {
     return;
@@ -511,6 +578,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
     const project = await assertProjectInWorkspace(tx, workspaceId, input.projectId);
     if (normalizedInput.assigneeId) {
       await assertAssigneeInWorkspace(tx, workspaceId, normalizedInput.assigneeId);
+      await assertAssigneeInProject(tx, input.projectId, normalizedInput.assigneeId);
     }
 
     if (input.parentIssueId) {
@@ -646,7 +714,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
 
     // If issue is created with an assignee, emit assignment notification immediately.
     if (created.assigneeId) {
-      const issueRouteId = created.internalId ?? created.id;
+      const issuePublicId = created.id;
       await createNotification({
         workspaceId,
         recipientUserId: created.assigneeId,
@@ -654,12 +722,12 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         type: "ASSIGNMENT",
         category: "assignment",
         title: "New issue assignment",
-        message: `You were assigned issue ${issueRouteId}`,
+        message: `You were assigned issue ${issuePublicId}`,
         target: {
           type: "issue",
           id: created.id,
-          publicId: issueRouteId,
-          url: `/issues/${issueRouteId}`,
+          publicId: issuePublicId,
+          url: `/issues/${issuePublicId}`,
         },
         metadata: {
           issueId: created.id,
@@ -668,7 +736,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
           workspaceId,
           entityId: created.id,
           entityTitle: created.title,
-          url: `/issues/${issueRouteId}`,
+          url: `/issues/${issuePublicId}`,
         },
         eventId: `issue-assignment:create:${created.id}:${created.assigneeId}`,
       });
@@ -678,7 +746,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
     if (io) {
       emitIssueCreated(io, workspaceId, {
         issueId: created.id,
-        publicId: created.internalId ?? created.id,
+        publicId: created.id,
         full: mapped,
       });
     }
@@ -711,6 +779,24 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
   });
 
   return mapped;
+}
+
+export async function checkAssignmentEligibility(
+  workspaceId: string,
+  workspaceRole: WorkspaceRole,
+  actorUserId: string,
+  input: CheckAssignmentEligibilityInput,
+) {
+  return prisma.$transaction(async (tx) =>
+    getAssignmentEligibility(
+      tx,
+      workspaceId,
+      workspaceRole,
+      actorUserId,
+      input.projectId,
+      input.assigneeId,
+    ),
+  );
 }
 
 export async function resolveIssueRouteId(workspaceId: string, issueIdentifier: string) {
@@ -844,6 +930,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
 
     if (input.assigneeId) {
       await assertAssigneeInWorkspace(tx, workspaceId, input.assigneeId);
+      await assertAssigneeInProject(tx, current.projectId, input.assigneeId);
     }
 
     if (input.parentIssueId !== undefined && input.parentIssueId !== null) {
@@ -1011,7 +1098,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
     }
 
     if (updated) {
-      const issueRouteId = updated.internalId ?? updated.id;
+      const issuePublicId = updated.id;
 
       if (input.assigneeId !== undefined && input.assigneeId !== current.assigneeId && input.assigneeId) {
         await createNotification({
@@ -1021,12 +1108,12 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
           type: "ASSIGNMENT",
           category: "assignment",
           title: "New issue assignment",
-          message: `You were assigned issue ${issueRouteId}`,
+          message: `You were assigned issue ${issuePublicId}`,
           target: {
             type: "issue",
             id: issueId,
-            publicId: issueRouteId,
-            url: `/issues/${issueRouteId}`,
+            publicId: issuePublicId,
+            url: `/issues/${issuePublicId}`,
           },
           metadata: {
             issueId,
@@ -1035,7 +1122,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
             workspaceId,
             entityId: issueId,
             entityTitle: updated.title,
-            url: `/issues/${issueRouteId}`,
+            url: `/issues/${issuePublicId}`,
           },
           eventId: `issue-assignment:${issueId}:${input.assigneeId}:${updated.updatedAt.toISOString()}`,
         });
@@ -1096,8 +1183,8 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         target: {
           type: "issue",
           id: issueId,
-          publicId: issueRouteId,
-          url: `/issues/${issueRouteId}`,
+          publicId: issuePublicId,
+          url: `/issues/${issuePublicId}`,
         },
         metadata: {
           issueId,
@@ -1107,7 +1194,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
           workspaceId,
           entityId: issueId,
           entityTitle: updated.title,
-          url: `/issues/${issueRouteId}`,
+          url: `/issues/${issuePublicId}`,
         },
         eventId: `issue-update:${issueId}:${change.field}:${updated.updatedAt.toISOString()}:${recipientUserId}`,
       }))));
@@ -1122,7 +1209,7 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
     if (io) {
       emitIssueUpdated(io, workspaceId, {
         issueId,
-        publicId: updated.internalId ?? updated.id,
+        publicId: updated.id,
         full: mapped,
       });
     }
@@ -1227,7 +1314,7 @@ export async function updateIssueStatus(
     });
 
     if (updated) {
-      const issueRouteId = updated.internalId ?? updated.id;
+      const issuePublicId = updated.id;
       const recipients = new Set<string>();
       if (updated.assigneeId) recipients.add(updated.assigneeId);
       if (updated.creatorId) recipients.add(updated.creatorId);
@@ -1244,8 +1331,8 @@ export async function updateIssueStatus(
         target: {
           type: "issue",
           id: updated.id,
-          publicId: issueRouteId,
-          url: `/issues/${issueRouteId}`,
+          publicId: issuePublicId,
+          url: `/issues/${issuePublicId}`,
         },
         metadata: {
           issueId: updated.id,
@@ -1255,7 +1342,7 @@ export async function updateIssueStatus(
           workspaceId,
           entityId: updated.id,
           entityTitle: updated.title,
-          url: `/issues/${issueRouteId}`,
+          url: `/issues/${issuePublicId}`,
         },
         eventId: `issue-update:${updated.id}:status:${new Date().toISOString()}:${recipientUserId}`,
       })));
