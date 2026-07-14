@@ -123,6 +123,38 @@ function parseDueTime(value: string | null | undefined) {
   return date;
 }
 
+function formatDueTimeForActivity(value: Date | string | null | undefined) {
+  if (!value) return null;
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  const hours = String(value.getUTCHours()).padStart(2, "0");
+  const minutes = String(value.getUTCMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function buildActorSummary(user: { id: string; name: string | null } | null | undefined) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    name: user.name ?? "Unknown",
+  };
+}
+
+function buildIssueActivityMetadata(
+  issuePublicId: string,
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    issueId: issuePublicId,
+    issuePublicId,
+    entityId: issuePublicId,
+    ...extra,
+  };
+}
+
 function formatDueTime(value: Date | string | null | undefined) {
   if (value === undefined) {
     return undefined;
@@ -199,6 +231,7 @@ export function mapIssue(record: any, includeRelations = true) {
     assigneeId: record.assigneeId,
     projectId: record.projectId,
     teamId: record.teamId,
+    cycleId: record.cycleId ?? null,
     departmentId: record.departmentId,
     templateId: record.templateId ?? null,
     templateVersion: record.templateVersion ?? null,
@@ -220,6 +253,7 @@ export function mapIssue(record: any, includeRelations = true) {
     assignee: record.assignee,
     project: record.project ? { id: record.project.id, name: record.project.name } : null,
     team: record.team ? { id: record.team.id, name: record.team.name } : null,
+    cycle: record.cycle ? { id: record.cycle.id, name: record.cycle.name, status: record.cycle.status } : null,
     department: record.department
       ? { id: record.department.id, name: record.department.name, color: record.department.color }
       : null,
@@ -372,6 +406,25 @@ async function assertProjectInWorkspace(tx: any, workspaceId: string, projectId:
     throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
   }
   return project;
+}
+
+async function assertCycleAssignable(tx: any, workspaceId: string, cycleId: string, teamId: string) {
+  const cycle = await (tx as any).cycle.findFirst({
+    where: { id: cycleId, workspaceId },
+    select: { id: true, teamId: true, status: true },
+  });
+
+  if (!cycle) {
+    throw new AppError(404, ERROR_CODES.CYCLE_NOT_FOUND, "Cycle not found");
+  }
+
+  if (cycle.teamId !== teamId) {
+    throw new AppError(409, ERROR_CODES.CYCLE_TEAM_MISMATCH, "Selected cycle does not belong to this project's team");
+  }
+
+  if (cycle.status === "COMPLETED") {
+    throw new AppError(409, ERROR_CODES.CYCLE_ASSIGN_COMPLETED_FORBIDDEN, "Completed cycles cannot accept new issues");
+  }
 }
 
 async function assertAssigneeInWorkspace(tx: any, workspaceId: string, assigneeId: string) {
@@ -625,6 +678,9 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
     const isFinalStatus = isStatusFinal(workspaceStatuses, resolvedStatus);
 
     const project = await assertProjectInWorkspace(tx, workspaceId, input.projectId);
+    if (input.cycleId) {
+      await assertCycleAssignable(tx, workspaceId, input.cycleId, project.teamId);
+    }
     if (normalizedInput.assigneeId) {
       await assertAssigneeInWorkspace(tx, workspaceId, normalizedInput.assigneeId);
       await assertAssigneeInProject(tx, input.projectId, normalizedInput.assigneeId);
@@ -654,6 +710,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         workspaceId,
         projectId: input.projectId,
         teamId: project.teamId,
+        cycleId: input.cycleId ?? null,
         departmentId: project.departmentId ?? null,
         title: normalizedInput.title,
         description: normalizedInput.description ?? null,
@@ -716,6 +773,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         assignee: { select: { id: true, name: true, email: true, avatar: true } },
         project: { select: { id: true, name: true } },
         team: { select: { id: true, name: true } },
+        cycle: { select: { id: true, name: true, status: true } },
         department: { select: { id: true, name: true, color: true } },
         subtasks: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
         labels: { include: { label: { select: { id: true, name: true, color: true } } } },
@@ -890,6 +948,7 @@ export async function listIssues(workspaceId: string, workspaceRole: WorkspaceRo
             assignee: { select: { id: true, name: true, email: true, avatar: true } },
             project: { select: { id: true, name: true } },
             team: { select: { id: true, name: true } },
+            cycle: { select: { id: true, name: true, status: true } },
             department: { select: { id: true, name: true, color: true } },
             labels: { include: { label: { select: { id: true, name: true, color: true } } } },
             subtasks: { select: { id: true, completed: true, order: true, title: true } },
@@ -936,6 +995,7 @@ export async function getIssueById(workspaceId: string, workspaceRole: Workspace
       assignee: { select: { id: true, name: true, email: true, avatar: true } },
       project: { select: { id: true, name: true } },
       team: { select: { id: true, name: true } },
+      cycle: { select: { id: true, name: true, status: true } },
       department: { select: { id: true, name: true, color: true } },
       subtasks: { orderBy: [{ order: "asc" }, { createdAt: "asc" }] },
       labels: { include: { label: { select: { id: true, name: true, color: true } } } },
@@ -970,7 +1030,33 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
   const mapped = await prisma.$transaction(async (tx) => {
     const current = await tx.issue.findFirst({
       where: { id: issueId, workspaceId },
-      select: { id: true, type: true, status: true, priority: true, assigneeId: true, dueDate: true, projectId: true, teamId: true, creatorId: true, cycleId: true, completedAt: true },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        type: true,
+        status: true,
+        priority: true,
+        assigneeId: true,
+        dueDate: true,
+        dueTime: true,
+        estimate: true,
+        parentIssueId: true,
+        projectId: true,
+        teamId: true,
+        creatorId: true,
+        cycleId: true,
+        completedAt: true,
+        assignee: { select: { id: true, name: true } },
+        parent: { select: { id: true, title: true } },
+        project: { select: { id: true, name: true } },
+        team: { select: { id: true, name: true } },
+        labels: {
+          include: {
+            label: { select: { id: true, name: true } },
+          },
+        },
+      },
     });
 
     if (!current) {
@@ -1078,6 +1164,40 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
       },
     });
 
+    const issuePublicId = updated?.id ?? current.id;
+
+    if (input.title !== undefined && input.title !== current.title) {
+      await logActivity({
+        workspaceId,
+        actorId: actorUserId,
+        type: "ISSUE_TITLE_CHANGED",
+        targetType: "ISSUE",
+        targetId: issueId,
+        message: `Issue ${issuePublicId} title changed`,
+        metadata: buildIssueActivityMetadata(issuePublicId, {
+          entityTitle: updated?.title ?? input.title,
+          fromTitle: current.title,
+          toTitle: updated?.title ?? input.title,
+          cycleId: current.cycleId ?? null,
+        }),
+      });
+    }
+
+    if (input.description !== undefined && input.description !== current.description) {
+      await logActivity({
+        workspaceId,
+        actorId: actorUserId,
+        type: "ISSUE_DESCRIPTION_CHANGED",
+        targetType: "ISSUE",
+        targetId: issueId,
+        message: `Issue ${issuePublicId} description changed`,
+        metadata: buildIssueActivityMetadata(issuePublicId, {
+          entityTitle: updated?.title ?? current.title,
+          cycleId: current.cycleId ?? null,
+        }),
+      });
+    }
+
     if (input.type !== undefined && typeToDb[input.type] !== current.type) {
       await logActivity({
         workspaceId,
@@ -1085,8 +1205,13 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         type: "ISSUE_TYPE_CHANGED",
         targetType: "ISSUE",
         targetId: issueId,
-        message: `Issue ${issueId} type changed`,
-        metadata: { entityId: issueId, fromType: typeFromDb[current.type], toType: input.type, cycleId: current.cycleId ?? null },
+        message: `Issue ${issuePublicId} type changed`,
+        metadata: buildIssueActivityMetadata(issuePublicId, {
+          entityTitle: updated?.title ?? current.title,
+          fromType: typeFromDb[current.type],
+          toType: input.type,
+          cycleId: current.cycleId ?? null,
+        }),
       });
     }
     if (input.status !== undefined && input.status !== current.status) {
@@ -1096,8 +1221,13 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         type: "ISSUE_STATUS_CHANGED",
         targetType: "ISSUE",
         targetId: issueId,
-        message: `Issue ${issueId} status changed`,
-        metadata: { entityId: issueId, fromStatus: current.status, toStatus: input.status, cycleId: current.cycleId ?? null },
+        message: `Issue ${issuePublicId} status changed`,
+        metadata: buildIssueActivityMetadata(issuePublicId, {
+          entityTitle: updated?.title ?? current.title,
+          fromStatus: current.status,
+          toStatus: input.status,
+          cycleId: current.cycleId ?? null,
+        }),
       });
     }
     if (input.priority !== undefined && priorityToDb[input.priority] !== current.priority) {
@@ -1107,8 +1237,13 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         type: "ISSUE_PRIORITY_CHANGED",
         targetType: "ISSUE",
         targetId: issueId,
-        message: `Issue ${issueId} priority changed`,
-        metadata: { entityId: issueId, fromPriority: priorityFromDb[current.priority], toPriority: input.priority, cycleId: current.cycleId ?? null },
+        message: `Issue ${issuePublicId} priority changed`,
+        metadata: buildIssueActivityMetadata(issuePublicId, {
+          entityTitle: updated?.title ?? current.title,
+          fromPriority: priorityFromDb[current.priority],
+          toPriority: input.priority,
+          cycleId: current.cycleId ?? null,
+        }),
       });
     }
     if (input.assigneeId !== undefined && input.assigneeId !== current.assigneeId) {
@@ -1118,8 +1253,15 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         type: "ISSUE_ASSIGNEE_CHANGED",
         targetType: "ISSUE",
         targetId: issueId,
-        message: `Issue ${issueId} assignee changed`,
-        metadata: { entityId: issueId, fromAssigneeId: current.assigneeId, toAssigneeId: input.assigneeId ?? null, cycleId: current.cycleId ?? null },
+        message: `Issue ${issuePublicId} assignee changed`,
+        metadata: buildIssueActivityMetadata(issuePublicId, {
+          entityTitle: updated?.title ?? current.title,
+          fromAssigneeId: current.assigneeId,
+          toAssigneeId: input.assigneeId ?? null,
+          fromAssignee: buildActorSummary(current.assignee),
+          toAssignee: buildActorSummary(updated?.assignee),
+          cycleId: current.cycleId ?? null,
+        }),
       });
     }
     if (input.dueDate !== undefined) {
@@ -1132,11 +1274,93 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
           type: "ISSUE_DUE_DATE_CHANGED",
           targetType: "ISSUE",
           targetId: issueId,
-          message: `Issue ${issueId} due date changed`,
-          metadata: { entityId: issueId, fromDueDate: before, toDueDate: after, cycleId: current.cycleId ?? null },
+          message: `Issue ${issuePublicId} due date changed`,
+          metadata: buildIssueActivityMetadata(issuePublicId, {
+            entityTitle: updated?.title ?? current.title,
+            fromDueDate: before,
+            toDueDate: after,
+            cycleId: current.cycleId ?? null,
+          }),
         });
       }
     }
+
+    if (input.dueTime !== undefined) {
+      const before = formatDueTimeForActivity(current.dueTime);
+      const after = formatDueTimeForActivity(parseDueTime(input.dueTime));
+      if (before !== after) {
+        await logActivity({
+          workspaceId,
+          actorId: actorUserId,
+          type: "ISSUE_DUE_TIME_CHANGED",
+          targetType: "ISSUE",
+          targetId: issueId,
+          message: `Issue ${issuePublicId} due time changed`,
+          metadata: buildIssueActivityMetadata(issuePublicId, {
+            entityTitle: updated?.title ?? current.title,
+            fromDueTime: before,
+            toDueTime: after,
+            cycleId: current.cycleId ?? null,
+          }),
+        });
+      }
+    }
+
+    if (input.estimate !== undefined && input.estimate !== current.estimate) {
+      await logActivity({
+        workspaceId,
+        actorId: actorUserId,
+        type: "ISSUE_ESTIMATE_CHANGED",
+        targetType: "ISSUE",
+        targetId: issueId,
+        message: `Issue ${issuePublicId} estimate changed`,
+        metadata: buildIssueActivityMetadata(issuePublicId, {
+          entityTitle: updated?.title ?? current.title,
+          fromEstimate: current.estimate ?? null,
+          toEstimate: input.estimate ?? null,
+          cycleId: current.cycleId ?? null,
+        }),
+      });
+    }
+
+    if (input.parentIssueId !== undefined && input.parentIssueId !== current.parentIssueId) {
+      await logActivity({
+        workspaceId,
+        actorId: actorUserId,
+        type: "ISSUE_PARENT_CHANGED",
+        targetType: "ISSUE",
+        targetId: issueId,
+        message: `Issue ${issuePublicId} parent issue changed`,
+        metadata: buildIssueActivityMetadata(issuePublicId, {
+          entityTitle: updated?.title ?? current.title,
+          fromParent: current.parent ? { id: current.parent.id, title: current.parent.title } : null,
+          toParent: updated?.parent ? { id: updated.parent.id, title: updated.parent.title } : null,
+          cycleId: current.cycleId ?? null,
+        }),
+      });
+    }
+
+    if (input.labels !== undefined) {
+      const beforeLabels = current.labels.map((item) => item.label.name).sort();
+      const afterLabels = (updated?.labels ?? []).map((item: any) => item.label.name).sort();
+      if (JSON.stringify(beforeLabels) !== JSON.stringify(afterLabels)) {
+        await logActivity({
+          workspaceId,
+          actorId: actorUserId,
+          type: "ISSUE_LABELS_CHANGED",
+          targetType: "ISSUE",
+          targetId: issueId,
+          message: `Issue ${issuePublicId} labels updated`,
+          metadata: buildIssueActivityMetadata(issuePublicId, {
+            entityTitle: updated?.title ?? current.title,
+            previousLabels: beforeLabels,
+            labels: afterLabels,
+            cycleId: current.cycleId ?? null,
+          }),
+        });
+      }
+    }
+
     if (updated && (updated.projectId !== current.projectId || updated.teamId !== current.teamId)) {
       await logActivity({
         workspaceId,
@@ -1144,14 +1368,23 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         type: "ISSUE_SCOPE_CHANGED",
         targetType: "ISSUE",
         targetId: issueId,
-        message: `Issue ${issueId} scope changed`,
-        metadata: { entityId: issueId, fromProjectId: current.projectId, toProjectId: updated?.projectId, fromTeamId: current.teamId, toTeamId: updated?.teamId, cycleId: current.cycleId ?? null },
+        message: `Issue ${issuePublicId} scope changed`,
+        metadata: buildIssueActivityMetadata(issuePublicId, {
+          entityTitle: updated?.title ?? current.title,
+          fromProjectId: current.projectId,
+          toProjectId: updated?.projectId,
+          fromProject: current.project ? { id: current.project.id, name: current.project.name } : null,
+          toProject: updated?.project ? { id: updated.project.id, name: updated.project.name } : null,
+          fromTeamId: current.teamId,
+          toTeamId: updated?.teamId,
+          fromTeam: current.team ? { id: current.team.id, name: current.team.name } : null,
+          toTeam: updated?.team ? { id: updated.team.id, name: updated.team.name } : null,
+          cycleId: current.cycleId ?? null,
+        }),
       });
     }
 
     if (updated) {
-      const issuePublicId = updated.id;
-
       if (input.assigneeId !== undefined && input.assigneeId !== current.assigneeId && input.assigneeId) {
         await createNotification({
           workspaceId,
@@ -1465,14 +1698,20 @@ export async function deleteIssue(workspaceId: string, issueId: string) {
   }
 }
 
-export async function addDependency(workspaceId: string, issueId: string, relatedId: string, relation: "blocks" | "blocked-by" | "related") {
+export async function addDependency(
+  workspaceId: string,
+  issueId: string,
+  relatedId: string,
+  relation: "blocks" | "blocked-by" | "related",
+  actorUserId?: string,
+) {
   if (issueId === relatedId) {
     throw new AppError(409, ERROR_CODES.INVALID_RELATED_ISSUE, "Issue cannot depend on itself");
   }
 
   const [source, target] = await Promise.all([
-    prisma.issue.findFirst({ where: { id: issueId, workspaceId }, select: { id: true } }),
-    prisma.issue.findFirst({ where: { id: relatedId, workspaceId }, select: { id: true } }),
+    prisma.issue.findFirst({ where: { id: issueId, workspaceId }, select: { id: true, title: true, cycleId: true } }),
+    prisma.issue.findFirst({ where: { id: relatedId, workspaceId }, select: { id: true, title: true, status: true } }),
   ]);
   if (!source || !target) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
@@ -1492,22 +1731,74 @@ export async function addDependency(workspaceId: string, issueId: string, relate
     throw new AppError(409, ERROR_CODES.DEPENDENCY_ALREADY_EXISTS, "Dependency already exists");
   }
 
+  if (actorUserId) {
+    await logActivity({
+      workspaceId,
+      actorId: actorUserId,
+      type: "ISSUE_DEPENDENCY_ADDED",
+      targetType: "ISSUE",
+      targetId: issueId,
+      message: `Issue ${source.id} linked to ${target.id}`,
+      metadata: buildIssueActivityMetadata(source.id, {
+        entityTitle: source.title,
+        cycleId: source.cycleId ?? null,
+        relation,
+        relatedIssue: {
+          id: target.id,
+          title: target.title,
+          status: target.status,
+        },
+      }),
+    });
+  }
+
   return { issueId, relatedId, relation };
 }
 
-export async function removeDependency(workspaceId: string, issueId: string, relatedId: string) {
+export async function removeDependency(workspaceId: string, issueId: string, relatedId: string, actorUserId?: string) {
+  const [source, target] = await Promise.all([
+    prisma.issue.findFirst({ where: { id: issueId, workspaceId }, select: { id: true, title: true, cycleId: true } }),
+    prisma.issue.findFirst({ where: { id: relatedId, workspaceId }, select: { id: true, title: true, status: true } }),
+  ]);
+  if (!source || !target) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
   const existing = await prisma.issueRelation.findFirst({
     where: {
       issueId,
       relatedId,
       issue: { workspaceId },
     },
-    select: { id: true },
+    select: { id: true, type: true },
   });
   if (!existing) {
     throw new AppError(404, ERROR_CODES.DEPENDENCY_NOT_FOUND, "Dependency not found");
   }
   await prisma.issueRelation.delete({ where: { id: existing.id } });
+
+  if (actorUserId) {
+    const relation =
+      existing.type === "BLOCKS" ? "blocks" : existing.type === "BLOCKED_BY" ? "blocked-by" : "related";
+    await logActivity({
+      workspaceId,
+      actorId: actorUserId,
+      type: "ISSUE_DEPENDENCY_REMOVED",
+      targetType: "ISSUE",
+      targetId: issueId,
+      message: `Issue ${source.id} unlinked from ${target.id}`,
+      metadata: buildIssueActivityMetadata(source.id, {
+        entityTitle: source.title,
+        cycleId: source.cycleId ?? null,
+        relation,
+        relatedIssue: {
+          id: target.id,
+          title: target.title,
+          status: target.status,
+        },
+      }),
+    });
+  }
 }
 
 export async function listWatchers(workspaceId: string, issueId: string) {
@@ -1546,10 +1837,10 @@ export async function listWatchers(workspaceId: string, issueId: string) {
   })));
 }
 
-export async function addWatchers(workspaceId: string, issueId: string, userIds: string[]) {
+export async function addWatchers(workspaceId: string, issueId: string, userIds: string[], actorUserId?: string) {
   const issue = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true },
+    select: { id: true, title: true, cycleId: true },
   });
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
@@ -1569,36 +1860,101 @@ export async function addWatchers(workspaceId: string, issueId: string, userIds:
     skipDuplicates: true,
   });
 
+  if (actorUserId) {
+    const watchers = await prisma.user.findMany({
+      where: { id: { in: uniqueUserIds } },
+      select: { id: true, name: true },
+    });
+    await logActivity({
+      workspaceId,
+      actorId: actorUserId,
+      type: "ISSUE_WATCHERS_CHANGED",
+      targetType: "ISSUE",
+      targetId: issueId,
+      message: `Issue ${issue.id} watchers updated`,
+      metadata: buildIssueActivityMetadata(issue.id, {
+        entityTitle: issue.title,
+        cycleId: issue.cycleId ?? null,
+        action: "added",
+        watchers: watchers.map((watcher) => ({
+          id: watcher.id,
+          name: watcher.name ?? "Unknown",
+        })),
+      }),
+    });
+  }
+
   return { added: uniqueUserIds };
 }
 
-export async function removeWatcher(workspaceId: string, issueId: string, userId: string) {
+export async function removeWatcher(workspaceId: string, issueId: string, userId: string, actorUserId?: string) {
   const issue = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true },
+    select: { id: true, title: true, cycleId: true },
   });
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
   }
+
+  const watcher = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, name: true },
+  });
 
   await (prisma as any).issueWatcher.deleteMany({
     where: { issueId, userId },
   });
+
+  if (actorUserId && watcher) {
+    await logActivity({
+      workspaceId,
+      actorId: actorUserId,
+      type: "ISSUE_WATCHERS_CHANGED",
+      targetType: "ISSUE",
+      targetId: issueId,
+      message: `Issue ${issue.id} watchers updated`,
+      metadata: buildIssueActivityMetadata(issue.id, {
+        entityTitle: issue.title,
+        cycleId: issue.cycleId ?? null,
+        action: "removed",
+        watchers: [{ id: watcher.id, name: watcher.name ?? "Unknown" }],
+      }),
+    });
+  }
 }
 
-export async function updateIntegrationRefs(workspaceId: string, issueId: string, integrationRefs: any[]) {
+export async function updateIntegrationRefs(workspaceId: string, issueId: string, integrationRefs: any[], actorUserId?: string) {
   const issue = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true },
+    select: { id: true, title: true, cycleId: true, integrationRef: true },
   });
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
   }
+
+  const previousRefs = normalizeStoredIntegrationRefs(issue.integrationRef);
 
   await prisma.issue.update({
     where: { id: issueId },
     data: { integrationRef: (integrationRefs.length > 0 ? integrationRefs : null) as any },
   });
+
+  if (actorUserId) {
+    await logActivity({
+      workspaceId,
+      actorId: actorUserId,
+      type: "ISSUE_INTEGRATION_REFS_CHANGED",
+      targetType: "ISSUE",
+      targetId: issueId,
+      message: `Issue ${issue.id} integration references updated`,
+      metadata: buildIssueActivityMetadata(issue.id, {
+        entityTitle: issue.title,
+        cycleId: issue.cycleId ?? null,
+        previousRefs,
+        integrationRefs,
+      }),
+    });
+  }
 
   return integrationRefs;
 }

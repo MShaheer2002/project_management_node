@@ -255,6 +255,50 @@ async function notifySuggestionRecipients(input: {
   );
 }
 
+function shouldNotifySuggestion(type: SuggestionType) {
+  // Inbox should only carry high-signal AI summaries and alerts.
+  // Issue-level suggestions belong in issue/create UI, not notifications.
+  return [
+    "STALE_ISSUE",
+    "WEEKLY_DIGEST",
+    "SPRINT_PLANNING",
+    "PROJECT_HEALTH",
+    "TEAM_HEALTH",
+    "CYCLE_HEALTH",
+  ].includes(type);
+}
+
+async function notifySuggestionRecipientsIfRelevant(input: {
+  workspaceId: string;
+  suggestionId: string;
+  suggestionType: SuggestionType;
+  title: string;
+  message: string;
+  targetType: "issue" | "workspace" | "team" | "project";
+  targetId: string;
+  targetPublicId?: string | null;
+  targetUrl: string;
+  recipientUserIds: string[];
+  metadata?: Record<string, unknown>;
+}) {
+  if (!shouldNotifySuggestion(input.suggestionType)) {
+    return;
+  }
+
+  await notifySuggestionRecipients({
+    workspaceId: input.workspaceId,
+    suggestionId: input.suggestionId,
+    title: input.title,
+    message: input.message,
+    targetType: input.targetType,
+    targetId: input.targetId,
+    ...(input.targetPublicId !== undefined ? { targetPublicId: input.targetPublicId } : {}),
+    targetUrl: input.targetUrl,
+    recipientUserIds: input.recipientUserIds,
+    ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+  });
+}
+
 function normalizePriority(priority: string) {
   return priority.toLowerCase();
 }
@@ -722,23 +766,27 @@ export async function processIssueIntelligenceJob(payload: IssueIntelligenceJob,
 
     const suggestions = [prioritySuggestion, labelSuggestion, assigneeSuggestion, duplicateSuggestion].filter(Boolean);
 
-    await Promise.all(suggestions.map((suggestion) =>
-      notifySuggestionRecipients({
-        workspaceId: payload.workspaceId,
-        suggestionId: suggestion!.id,
-        title: suggestion!.title,
-        message: suggestion!.message,
-        targetType: "issue",
-        targetId: issue.id,
-        targetPublicId: issue.internalId ?? issue.id,
-        targetUrl: `/issues/${issue.internalId ?? issue.id}`,
-        recipientUserIds: recipients,
-        metadata: {
-          issueId: issue.id,
-          suggestionType: suggestion!.type,
-        },
-      }),
-    ));
+    await Promise.all(
+      suggestions
+        .map((suggestion) =>
+          notifySuggestionRecipientsIfRelevant({
+            workspaceId: payload.workspaceId,
+            suggestionId: suggestion!.id,
+            suggestionType: suggestion!.type,
+            title: suggestion!.title,
+            message: suggestion!.message,
+            targetType: "issue",
+            targetId: issue.id,
+            targetPublicId: issue.internalId ?? issue.id,
+            targetUrl: `/issues/${issue.internalId ?? issue.id}`,
+            recipientUserIds: recipients,
+            metadata: {
+              issueId: issue.id,
+              suggestionType: suggestion!.type,
+            },
+          }),
+        ),
+    );
 
     logAiInfo("ai_background_job_succeeded", {
       workspaceId: payload.workspaceId,
@@ -1009,9 +1057,10 @@ export async function processEmbeddingJob(payload: EmbeddingJob, jobMeta?: { job
 
     if (suggestion) {
       const recipients = await getIssueSuggestionRecipients(payload.workspaceId, issue.id);
-      await notifySuggestionRecipients({
+      await notifySuggestionRecipientsIfRelevant({
         workspaceId: payload.workspaceId,
         suggestionId: suggestion.id,
+        suggestionType: suggestion.type,
         title: suggestion.title,
         message: suggestion.message,
         targetType: "issue",
@@ -1136,9 +1185,10 @@ export async function processStaleScanJob(payload: StaleScanJob, jobMeta?: { job
         });
 
         suggestionsCreated += 1;
-        await notifySuggestionRecipients({
+        await notifySuggestionRecipientsIfRelevant({
           workspaceId: workspace.id,
           suggestionId: suggestion.id,
+          suggestionType: suggestion.type,
           title: suggestion.title,
           message: suggestion.message,
           targetType: "issue",
@@ -1199,9 +1249,10 @@ export async function processWeeklyDigestJob(payload: WeeklyDigestJob, jobMeta?:
         expiresAt: digest.expiresAt,
       });
 
-      await notifySuggestionRecipients({
+      await notifySuggestionRecipientsIfRelevant({
         workspaceId: workspace.id,
         suggestionId: suggestion.id,
+        suggestionType: suggestion.type,
         title: suggestion.title,
         message: suggestion.message,
         targetType: "workspace",
@@ -1347,9 +1398,10 @@ export async function processSprintPlanningJob(payload: SprintPlanningJob, jobMe
 
     const recipients = await getSprintPlanningRecipientIds(payload.workspaceId, cycle.teamId);
 
-    await notifySuggestionRecipients({
+    await notifySuggestionRecipientsIfRelevant({
       workspaceId: payload.workspaceId,
       suggestionId: suggestion.id,
+      suggestionType: suggestion.type,
       title: suggestion.title,
       message: suggestion.message,
       targetType: "team",
@@ -1425,9 +1477,10 @@ export async function processProactiveSummaryJob(payload: ProactiveSummaryJob, j
       expiresAt: summary.expiresAt,
     });
 
-    await notifySuggestionRecipients({
+    await notifySuggestionRecipientsIfRelevant({
       workspaceId: payload.workspaceId,
       suggestionId: suggestion.id,
+      suggestionType: suggestion.type,
       title: suggestion.title,
       message: suggestion.message,
       targetType: summary.notificationTargetType ?? "workspace",

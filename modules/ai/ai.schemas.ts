@@ -34,6 +34,16 @@ export const generateIssueSchema = {
   }),
 };
 
+export const draftSuggestionsSchema = {
+  body: z.object({
+    title: z.string().trim().min(3).max(500),
+    description: z.string().max(50000).optional(),
+    projectId: z.string().min(1).optional(),
+    assigneeId: z.string().min(1).nullable().optional(),
+    currentLabels: z.array(z.string().trim().min(1).max(80)).max(25).optional(),
+  }),
+};
+
 /** POST /ai/chat — Stream a Trussen AI response for a conversation */
 export const chatSchema = {
   body: z.object({
@@ -187,6 +197,7 @@ export const aiAssistResponseSchema = z.object({
 // ─── Inferred Types ─────────────────────────────────────────────────────────
 
 export type GenerateIssueInput = z.infer<typeof generateIssueSchema.body>;
+export type DraftSuggestionsInput = z.infer<typeof draftSuggestionsSchema.body>;
 export type ChatInput = z.infer<typeof chatSchema.body>;
 export type AssistInput = z.infer<typeof assistSchema.body>;
 export type ConversationParamsInput = z.infer<typeof conversationParamsSchema.params>;

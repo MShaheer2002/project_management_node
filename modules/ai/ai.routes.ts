@@ -27,6 +27,7 @@ import {
   chatSchema,
   conversationParamsSchema,
   dismissSuggestionSchema,
+  draftSuggestionsSchema,
   generateIssueSchema,
   listSuggestionsSchema,
   runSuggestionsSchema,
@@ -43,6 +44,15 @@ router.post(
   strictRateLimiter,
   validate(generateIssueSchema),
   controller.generateIssue,
+);
+
+router.post(
+  "/draft-suggestions",
+  authenticate,
+  requireWorkspace,
+  strictRateLimiter,
+  validate(draftSuggestionsSchema),
+  controller.getDraftSuggestions,
 );
 
 router.get(

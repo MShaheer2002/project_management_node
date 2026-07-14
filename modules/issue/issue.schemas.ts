@@ -26,6 +26,7 @@ export const createIssueSchema = {
     description: z.string().trim().max(50000).optional(),
     type: issueTypeSchema,
     projectId: z.string().uuid(),
+    cycleId: z.string().uuid().nullable().optional(),
     priority: issuePrioritySchema,
     status: issueStatusSchema.optional(),
     assigneeId: z.string().min(1).nullable().optional(),

@@ -896,7 +896,7 @@ export async function planIssuesIntoCycle(
 export async function assignIssueToCycle(workspaceId: string, issueRouteId: string, userId: string, role: WorkspaceRole, input: AssignIssueCycleInput) {
   const issueId = await resolveIssueRouteId(workspaceId, issueRouteId);
   const [issue, cycle] = await Promise.all([
-    prisma.issue.findFirst({ where: { id: issueId, workspaceId }, select: { id: true, teamId: true, assigneeId: true, title: true, internalId: true, creatorId: true } }),
+    prisma.issue.findFirst({ where: { id: issueId, workspaceId }, select: { id: true, teamId: true, assigneeId: true, title: true, creatorId: true } }),
     assertCycleInWorkspace(workspaceId, input.cycleId),
   ]);
 
@@ -918,8 +918,16 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
     type: "ISSUE_ADDED_TO_CYCLE",
     targetType: "ISSUE",
     targetId: issue.id,
-    message: `Issue ${issue.internalId ?? issue.id} assigned to cycle ${cycle.name}`,
-    metadata: { issueId: issue.id, cycleId: cycle.id, teamId: cycle.teamId, entityId: issue.id },
+    message: `Issue ${issue.id} assigned to cycle ${cycle.name}`,
+    metadata: {
+      issueId: issue.id,
+      issuePublicId: issue.id,
+      cycleId: cycle.id,
+      cycleName: cycle.name,
+      teamId: cycle.teamId,
+      entityId: issue.id,
+      entityTitle: issue.title,
+    },
   });
 
   const recipients = new Set<string>();
@@ -1016,7 +1024,7 @@ export async function removeIssueFromCycle(workspaceId: string, issueRouteId: st
   const issueId = await resolveIssueRouteId(workspaceId, issueRouteId);
   const issue = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true, cycleId: true, assigneeId: true, creatorId: true, title: true, internalId: true },
+    select: { id: true, cycleId: true, assigneeId: true, creatorId: true, title: true },
   });
   if (!issue) throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
   if (!issue.cycleId) return;
@@ -1032,8 +1040,16 @@ export async function removeIssueFromCycle(workspaceId: string, issueRouteId: st
     type: "ISSUE_REMOVED_FROM_CYCLE",
     targetType: "ISSUE",
     targetId: issue.id,
-    message: `Issue ${issue.internalId ?? issue.id} removed from cycle ${cycle.name}`,
-    metadata: { issueId: issue.id, cycleId: cycle.id, teamId: cycle.teamId, entityId: issue.id },
+    message: `Issue ${issue.id} removed from cycle ${cycle.name}`,
+    metadata: {
+      issueId: issue.id,
+      issuePublicId: issue.id,
+      cycleId: cycle.id,
+      cycleName: cycle.name,
+      teamId: cycle.teamId,
+      entityId: issue.id,
+      entityTitle: issue.title,
+    },
   });
 
   const recipients = new Set<string>();

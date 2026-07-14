@@ -1322,7 +1322,7 @@ async function executeToolLegacy(
           { issueId, userIds },
           ctx,
           async () => {
-            const result = await addWatchers(ctx.workspaceId, issueId, userIds);
+            const result = await addWatchers(ctx.workspaceId, issueId, userIds, ctx.userId);
 
             await recordAiMutationActivity({
               ctx,
@@ -1368,7 +1368,7 @@ async function executeToolLegacy(
           { issueId, relatedIssueId, relation },
           ctx,
           async () => {
-            const dependency = await addDependency(ctx.workspaceId, issueId, relatedIssueId, relation);
+            const dependency = await addDependency(ctx.workspaceId, issueId, relatedIssueId, relation, ctx.userId);
 
             await recordAiMutationActivity({
               ctx,
@@ -1425,7 +1425,7 @@ async function executeToolLegacy(
                 externalId: integrationRef.externalId ?? null,
                 url: integrationRef.url ?? null,
               },
-            ]);
+            ], ctx.userId);
 
             await recordAiMutationActivity({
               ctx,

@@ -14,7 +14,7 @@
  * The user reviews and submits — the normal issue creation flow handles persistence.
  */
 
-import { callAI } from "./ai.provider.js";
+import { callAI, createEmbedding } from "./ai.provider.js";
 import { assertAiAccess } from "./ai.access.js";
 import { runRuleBasedDetection } from "./ai.rules.js";
 import { buildIssueGenerationContext, resolveMentions } from "./ai.context.js";
@@ -24,6 +24,18 @@ import { aiIssueResponseSchema } from "./ai.schemas.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { prisma } from "../../shared/utils/prisma.js";
+import { buildIssueEmbeddingContent, findSimilarIssueEmbeddings, findSimilarIssuesByText } from "./ai.embeddings.js";
+import type { DraftSuggestionsInput } from "./ai.schemas.js";
+
+const LABEL_ALIAS_MAP: Record<string, string[]> = {
+  authentication: ["auth", "login", "signin", "sign-in", "oauth", "sso"],
+  payments: ["payment", "billing", "invoice", "stripe", "checkout"],
+  mobile: ["android", "ios", "mobile", "tablet"],
+  frontend: ["ui", "frontend", "client", "browser", "react"],
+  backend: ["backend", "api", "server", "endpoint", "database"],
+  performance: ["slow", "latency", "performance", "timeout", "lag"],
+  security: ["security", "vulnerability", "exploit", "breach"],
+};
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -52,9 +64,26 @@ export interface GenerateIssueSuccess {
   // Feature-specific
   acceptanceCriteria: string | null;
   notes: string | null;
+  previewSuggestions: Array<{
+    type: "LABEL" | "DUPLICATE" | "ASSIGNEE";
+    title: string;
+    message: string;
+    confidence: number | null;
+    payload: Record<string, unknown>;
+  }>;
   // Meta
   aiModel: string;
   tokensUsed: number;
+}
+
+export interface DraftSuggestionResult {
+  suggestions: Array<{
+    type: "LABEL" | "DUPLICATE" | "ASSIGNEE";
+    title: string;
+    message: string;
+    confidence: number | null;
+    payload: Record<string, unknown>;
+  }>;
 }
 
 export interface GenerateIssueClarification {
@@ -139,6 +168,248 @@ function extractJsonCandidate(content: string) {
   }
 
   return cleaned;
+}
+
+function labelSignals(text: string, labelName: string) {
+  const normalizedText = text.toLowerCase();
+  const normalizedLabel = labelName.toLowerCase();
+  const aliases = LABEL_ALIAS_MAP[normalizedLabel] ?? [];
+
+  if (normalizedText.includes(normalizedLabel)) return 0.9;
+  if (aliases.some((alias: string) => normalizedText.includes(alias))) return 0.7;
+  return 0;
+}
+
+function buildPreviewLabelSuggestion(labels: string[]) {
+  if (labels.length === 0) return null;
+
+  return {
+    type: "LABEL" as const,
+    title: "Suggested labels",
+    message: `Matched ${labels.length} workspace label${labels.length === 1 ? "" : "s"} from your draft.`,
+    confidence: 0.8,
+    payload: {
+      labels: labels.map((name) => ({ name })),
+    },
+  };
+}
+
+async function buildPreviewDuplicateSuggestion(input: {
+  workspaceId: string;
+  title: string;
+  description?: string | null;
+}) {
+  const matches = await findSimilarIssuesByText({
+    workspaceId: input.workspaceId,
+    issueId: "__draft__",
+    title: input.title,
+    description: input.description,
+    limit: 3,
+  });
+
+  if (matches.length === 0) return null;
+
+  return {
+    type: "DUPLICATE" as const,
+    title: "Similar issues found",
+    message: `Found ${matches.length} similar issue${matches.length === 1 ? "" : "s"} before creation.`,
+    confidence: matches[0]?.similarity ?? null,
+    payload: {
+      matches,
+    },
+  };
+}
+
+async function buildPreviewAssigneeSuggestion(input: {
+  workspaceId: string;
+  projectId: string;
+}) {
+  const [project, members, workloads] = await Promise.all([
+    prisma.project.findFirst({
+      where: { id: input.projectId, workspaceId: input.workspaceId },
+      select: { leadId: true, teamId: true },
+    }),
+    prisma.projectMembership.findMany({
+      where: { projectId: input.projectId },
+      select: {
+        userId: true,
+        user: { select: { name: true } },
+      },
+      take: 50,
+    }),
+    prisma.issue.groupBy({
+      by: ["assigneeId"],
+      where: {
+        workspaceId: input.workspaceId,
+        projectId: input.projectId,
+        completedAt: null,
+      },
+      _count: true,
+    }),
+  ]);
+
+  if (!project) return null;
+
+  const workloadMap = new Map(
+    workloads
+      .filter((row) => row.assigneeId)
+      .map((row) => [row.assigneeId!, row._count]),
+  );
+
+  const candidates = members
+    .map((member) => {
+      const activeIssueCount = workloadMap.get(member.userId) ?? 0;
+      const score = Number(
+        (
+          1
+          - Math.min(activeIssueCount, 8) / 10
+          + (project.leadId === member.userId ? 0.25 : 0)
+        ).toFixed(3),
+      );
+
+      return {
+        userId: member.userId,
+        name: member.user.name,
+        score,
+        reasons: [
+          ...(project.leadId === member.userId ? ["Project lead"] : []),
+          `${activeIssueCount} active project issue${activeIssueCount === 1 ? "" : "s"}`,
+        ],
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+
+  if (candidates.length === 0) return null;
+  if ((candidates[0]?.score ?? 0) < 0.35) return null;
+
+  return {
+    type: "ASSIGNEE" as const,
+    title: "Suggested assignee candidates",
+    message: `Ranked ${candidates.length} candidate${candidates.length === 1 ? "" : "s"} using project ownership and current workload.`,
+    confidence: candidates[0]?.score ?? null,
+    payload: {
+      candidates,
+    },
+  };
+}
+
+async function buildDraftDuplicateSuggestion(input: {
+  workspaceId: string;
+  title: string;
+  description?: string | null;
+}) {
+  const textMatches = await findSimilarIssuesByText({
+    workspaceId: input.workspaceId,
+    issueId: "__draft__",
+    title: input.title,
+    description: input.description,
+    limit: 5,
+  });
+
+  let embeddingMatches: Array<{ issueId: string; similarity: number }> = [];
+  try {
+    const content = buildIssueEmbeddingContent({ title: input.title, description: input.description });
+    if (content) {
+      const embedding = await createEmbedding(content);
+      embeddingMatches = (await findSimilarIssueEmbeddings({
+        workspaceId: input.workspaceId,
+        issueId: "__draft__",
+        embedding: embedding.embedding,
+        limit: 5,
+      })).map((item) => ({
+        issueId: item.entityId,
+        similarity: item.similarity,
+      }));
+    }
+  } catch {
+    embeddingMatches = [];
+  }
+
+  const textMap = new Map(textMatches.map((item) => [item.issueId, item]));
+  const candidateIds = [...new Set([...textMatches.map((item) => item.issueId), ...embeddingMatches.map((item) => item.issueId)])];
+  if (candidateIds.length === 0) return null;
+
+  const issues = await prisma.issue.findMany({
+    where: {
+      workspaceId: input.workspaceId,
+      id: { in: candidateIds },
+    },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      priority: true,
+    },
+  });
+
+  const issueMap = new Map(issues.map((issue) => [issue.id, issue]));
+  const matches = candidateIds
+    .map((issueId) => {
+      const issue = issueMap.get(issueId);
+      if (!issue) return null;
+      const textMatch = textMap.get(issueId);
+      const embeddingMatch = embeddingMatches.find((item) => item.issueId === issueId);
+      const similarity = Math.max(textMatch?.similarity ?? 0, embeddingMatch?.similarity ?? 0);
+      const source = embeddingMatch && textMatch ? "embedding+text" : embeddingMatch ? "embedding" : "text";
+
+      return {
+        issueId: issue.id,
+        title: issue.title,
+        status: issue.status,
+        priority: issue.priority,
+        similarity: Number(similarity.toFixed(4)),
+        source,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, 4);
+
+  if (matches.length === 0) return null;
+
+  return {
+    type: "DUPLICATE" as const,
+    title: "Similar issues found",
+    message: `Found ${matches.length} similar issue${matches.length === 1 ? "" : "s"} from AI issue intelligence.`,
+    confidence: matches[0]?.similarity ?? null,
+    payload: { matches },
+  };
+}
+
+async function buildDraftLabelSuggestion(input: {
+  workspaceId: string;
+  title: string;
+  description?: string | null;
+  currentLabels?: string[];
+}) {
+  const labels = await prisma.label.findMany({
+    where: { workspaceId: input.workspaceId },
+    select: { id: true, name: true },
+    take: 100,
+  });
+
+  const text = `${input.title}\n${input.description ?? ""}`;
+  const current = new Set((input.currentLabels ?? []).map((label) => label.toLowerCase()));
+  const matches = labels
+    .map((label) => ({
+      labelId: label.id,
+      name: label.name,
+      confidence: labelSignals(text, label.name),
+    }))
+    .filter((label) => label.confidence > 0 && !current.has(label.name.toLowerCase()))
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 5);
+
+  if (matches.length === 0) return null;
+
+  return {
+    type: "LABEL" as const,
+    title: "Suggested labels",
+    message: `Matched ${matches.length} workspace label${matches.length === 1 ? "" : "s"} for this draft.`,
+    confidence: matches[0]?.confidence ?? null,
+    payload: { labels: matches },
+  };
 }
 
 function normalizeAiIssuePayload(raw: unknown, fallbackPrompt: string): LooseAiIssuePayload {
@@ -578,6 +849,23 @@ export async function generateIssue(
   // Resolve estimate — rule-based first, then AI
   const suggestedEstimate = ruleDetections.estimate ?? aiData.estimate ?? null;
 
+  const previewSuggestions = (
+    await Promise.all([
+      Promise.resolve(buildPreviewLabelSuggestion(validLabels)),
+      buildPreviewDuplicateSuggestion({
+        workspaceId,
+        title: aiData.title,
+        description: aiData.description,
+      }),
+      !suggestedAssigneeId && suggestedProjectId
+        ? buildPreviewAssigneeSuggestion({
+            workspaceId,
+            projectId: suggestedProjectId,
+          })
+        : Promise.resolve(null),
+    ])
+  ).filter((suggestion): suggestion is NonNullable<typeof suggestion> => Boolean(suggestion));
+
   const response = {
     status: "generated" as const,
     title: aiData.title,
@@ -605,6 +893,7 @@ export async function generateIssue(
     // Feature-specific
     acceptanceCriteria: aiData.acceptanceCriteria ?? (template?.acceptanceCriteriaTemplate as string | null) ?? null,
     notes: aiData.notes ?? (template?.notesTemplate as string | null) ?? null,
+    previewSuggestions,
     // Meta
     aiModel: aiResult.model,
     tokensUsed: aiResult.usage.totalTokens,
@@ -630,4 +919,73 @@ export async function generateIssue(
   });
 
   return response;
+}
+
+export async function getDraftSuggestions(
+  workspaceId: string,
+  input: DraftSuggestionsInput,
+  options?: { userId?: string | undefined },
+): Promise<DraftSuggestionResult> {
+  const startedAt = Date.now();
+
+  logAiInfo("draft_suggestions_started", {
+    workspaceId,
+    userId: options?.userId,
+    feature: "issue_generation",
+    success: true,
+    metadata: {
+      title: input.title.slice(0, 120),
+      hasDescription: Boolean(input.description?.trim()),
+      projectId: input.projectId ?? null,
+      assigneeId: input.assigneeId ?? null,
+      currentLabelCount: input.currentLabels?.length ?? 0,
+    },
+  });
+
+  const suggestions = (
+    await Promise.all([
+      buildDraftLabelSuggestion({
+        workspaceId,
+        title: input.title,
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.currentLabels !== undefined ? { currentLabels: input.currentLabels } : {}),
+      }),
+      buildDraftDuplicateSuggestion({
+        workspaceId,
+        title: input.title,
+        ...(input.description !== undefined ? { description: input.description } : {}),
+      }),
+      !input.assigneeId && input.projectId
+        ? buildPreviewAssigneeSuggestion({
+            workspaceId,
+            projectId: input.projectId,
+          })
+        : Promise.resolve(null),
+    ])
+  ).filter((suggestion): suggestion is NonNullable<typeof suggestion> => Boolean(suggestion));
+
+  logAiInfo("draft_suggestions_generated", {
+    workspaceId,
+    userId: options?.userId,
+    feature: "issue_generation",
+    latencyMs: Date.now() - startedAt,
+    success: true,
+    metadata: {
+      suggestionCount: suggestions.length,
+      types: suggestions.map((suggestion) => suggestion.type),
+      projectId: input.projectId ?? null,
+      duplicateCount:
+        suggestions.find((suggestion) => suggestion.type === "DUPLICATE")?.payload?.matches
+        && Array.isArray(suggestions.find((suggestion) => suggestion.type === "DUPLICATE")?.payload?.matches)
+          ? (suggestions.find((suggestion) => suggestion.type === "DUPLICATE")!.payload.matches as unknown[]).length
+          : 0,
+      labelCount:
+        suggestions.find((suggestion) => suggestion.type === "LABEL")?.payload?.labels
+        && Array.isArray(suggestions.find((suggestion) => suggestion.type === "LABEL")?.payload?.labels)
+          ? (suggestions.find((suggestion) => suggestion.type === "LABEL")!.payload.labels as unknown[]).length
+          : 0,
+    },
+  });
+
+  return { suggestions };
 }

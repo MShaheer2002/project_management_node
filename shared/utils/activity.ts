@@ -16,6 +16,8 @@ type ActivityTargetType =
 
 type ActivityType =
   | "ISSUE_CREATED"
+  | "ISSUE_TITLE_CHANGED"
+  | "ISSUE_DESCRIPTION_CHANGED"
   | "ISSUE_COMPLETED"
   | "COMMENT_ADDED"
   | "MEMBER_JOINED"
@@ -31,8 +33,16 @@ type ActivityType =
   | "ISSUE_PRIORITY_CHANGED"
   | "ISSUE_ASSIGNEE_CHANGED"
   | "ISSUE_DUE_DATE_CHANGED"
+  | "ISSUE_DUE_TIME_CHANGED"
+  | "ISSUE_ESTIMATE_CHANGED"
+  | "ISSUE_PARENT_CHANGED"
+  | "ISSUE_LABELS_CHANGED"
   | "ISSUE_SCOPE_CHANGED"
   | "ISSUE_ARCHIVED"
+  | "ISSUE_DEPENDENCY_ADDED"
+  | "ISSUE_DEPENDENCY_REMOVED"
+  | "ISSUE_WATCHERS_CHANGED"
+  | "ISSUE_INTEGRATION_REFS_CHANGED"
   | "COMMENT_CREATED"
   | "COMMENT_EDITED"
   | "COMMENT_DELETED"
@@ -105,16 +115,33 @@ interface LogActivityInput {
   metadata?: Record<string, unknown>;
 }
 
+const DB_ACTIVITY_TYPE_OVERRIDES: Partial<Record<ActivityType, ActivityType>> = {
+  ISSUE_TITLE_CHANGED: "ISSUE_SCOPE_CHANGED",
+  ISSUE_DESCRIPTION_CHANGED: "ISSUE_SCOPE_CHANGED",
+  ISSUE_DUE_TIME_CHANGED: "ISSUE_DUE_DATE_CHANGED",
+  ISSUE_ESTIMATE_CHANGED: "ISSUE_SCOPE_CHANGED",
+  ISSUE_PARENT_CHANGED: "ISSUE_SCOPE_CHANGED",
+  ISSUE_LABELS_CHANGED: "ISSUE_LABEL_ADDED",
+  ISSUE_DEPENDENCY_ADDED: "ISSUE_SCOPE_CHANGED",
+  ISSUE_DEPENDENCY_REMOVED: "ISSUE_SCOPE_CHANGED",
+  ISSUE_WATCHERS_CHANGED: "ISSUE_SCOPE_CHANGED",
+  ISSUE_INTEGRATION_REFS_CHANGED: "ISSUE_SCOPE_CHANGED",
+};
+
 export async function logActivity(input: LogActivityInput) {
+  const dbType = DB_ACTIVITY_TYPE_OVERRIDES[input.type] ?? input.type;
   await prisma.activity.create({
     data: {
       workspaceId: input.workspaceId,
       actorId: input.actorId,
-      type: input.type as any,
+      type: dbType as any,
       targetType: input.targetType as any,
       targetId: input.targetId,
       description: input.message,
-      metadata: input.metadata ?? null,
+      metadata: {
+        ...(input.metadata ?? {}),
+        activityKind: input.type,
+      },
     } as any,
   });
 }

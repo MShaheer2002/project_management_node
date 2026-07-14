@@ -172,6 +172,7 @@ export const addDependency: RequestHandler = async (req, res, next) => {
       issueId,
       relatedIssueId,
       req.body.relation,
+      req.user!.id,
     );
     sendSuccess(res, 201, dependency);
   } catch (error) {
@@ -183,7 +184,7 @@ export const removeDependency: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
     const relatedIssueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.relatedId as string);
-    await issueService.removeDependency(req.workspace!.id, issueId, relatedIssueId);
+    await issueService.removeDependency(req.workspace!.id, issueId, relatedIssueId, req.user!.id);
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -203,7 +204,7 @@ export const listWatchers: RequestHandler = async (req, res, next) => {
 export const addWatchers: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    const added = await issueService.addWatchers(req.workspace!.id, issueId, req.body.userIds);
+    const added = await issueService.addWatchers(req.workspace!.id, issueId, req.body.userIds, req.user!.id);
     sendSuccess(res, 200, added);
   } catch (error) {
     next(error);
@@ -213,7 +214,7 @@ export const addWatchers: RequestHandler = async (req, res, next) => {
 export const removeWatcher: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    await issueService.removeWatcher(req.workspace!.id, issueId, req.params.userId as string);
+    await issueService.removeWatcher(req.workspace!.id, issueId, req.params.userId as string, req.user!.id);
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -223,7 +224,12 @@ export const removeWatcher: RequestHandler = async (req, res, next) => {
 export const updateIntegrationRef: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    const integrationRefs = await issueService.updateIntegrationRefs(req.workspace!.id, issueId, req.body.integrationRefs);
+    const integrationRefs = await issueService.updateIntegrationRefs(
+      req.workspace!.id,
+      issueId,
+      req.body.integrationRefs,
+      req.user!.id,
+    );
     sendSuccess(res, 200, integrationRefs);
   } catch (error) {
     next(error);

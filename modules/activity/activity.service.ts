@@ -22,6 +22,13 @@ const targetTypeFromDb: Record<string, string> = {
 
 function mapActivity(item: any) {
   const metadata = (item.metadata ?? {}) as Record<string, unknown>;
+  const issueId =
+    item.targetType === "ISSUE"
+      ? item.targetId
+      : typeof metadata.issueId === "string"
+        ? metadata.issueId
+        : undefined;
+
   return {
     id: item.id,
     type: item.type,
@@ -39,9 +46,12 @@ function mapActivity(item: any) {
       type: targetTypeFromDb[item.targetType] ?? "issue",
       id: item.targetId,
       entityId: typeof metadata.entityId === "string" ? metadata.entityId : undefined,
+      publicId: typeof metadata.issuePublicId === "string" ? metadata.issuePublicId : issueId,
       name: typeof metadata.entityTitle === "string" ? metadata.entityTitle : undefined,
       url: typeof metadata.url === "string" ? metadata.url : undefined,
     },
+    issueId,
+    commentId: typeof metadata.commentId === "string" ? metadata.commentId : undefined,
     metadata,
   };
 }

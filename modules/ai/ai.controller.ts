@@ -20,6 +20,7 @@ import type {
   ChatInput,
   ConversationParamsInput,
   DismissSuggestionInput,
+  DraftSuggestionsInput,
   GenerateIssueInput,
   ListSuggestionsInput,
   RunSuggestionsInput,
@@ -43,6 +44,21 @@ export const generateIssue: RequestHandler = async (req, res, next) => {
       userId: req.user!.id,
       resolvedAssigneeId,
       resolvedProjectId,
+    });
+
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getDraftSuggestions: RequestHandler = async (req, res, next) => {
+  try {
+    const body = req.body as DraftSuggestionsInput;
+    const workspaceId = req.workspace!.id;
+
+    const result = await aiService.getDraftSuggestions(workspaceId, body, {
+      userId: req.user!.id,
     });
 
     sendSuccess(res, 200, result);
