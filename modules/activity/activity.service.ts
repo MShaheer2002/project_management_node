@@ -23,11 +23,13 @@ const targetTypeFromDb: Record<string, string> = {
 function mapActivity(item: any) {
   const metadata = (item.metadata ?? {}) as Record<string, unknown>;
   const issueId =
-    item.targetType === "ISSUE"
-      ? item.targetId
+    typeof metadata.issuePublicId === "string"
+      ? metadata.issuePublicId
       : typeof metadata.issueId === "string"
         ? metadata.issueId
-        : undefined;
+        : item.targetType === "ISSUE"
+          ? item.targetId
+          : undefined;
 
   return {
     id: item.id,
