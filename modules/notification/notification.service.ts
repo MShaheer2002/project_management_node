@@ -97,10 +97,19 @@ function mapNotification(item: any) {
 export async function listNotifications(workspaceId: string, userId: string, query: ListNotificationsQuery) {
   const limit = clampListLimit(query.limit, 30);
   const types = parseCsv(query.types);
+  const search = query.q?.trim();
 
   const where: any = {
     workspaceId,
     recipientUserId: userId,
+    ...(search
+      ? {
+          OR: [
+            { title: { contains: search, mode: "insensitive" } },
+            { targetPublicId: { contains: search, mode: "insensitive" } },
+          ],
+        }
+      : {}),
     ...(query.unreadOnly ? { readAt: null } : {}),
     ...(query.category ? { category: query.category } : {}),
     ...(types ? { type: { in: types as any } } : {}),

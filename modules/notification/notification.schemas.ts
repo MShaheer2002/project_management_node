@@ -4,6 +4,7 @@ export const listNotificationsSchema = {
   query: z.object({
     cursor: z.string().uuid().optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
+    q: z.string().trim().max(200).optional(),
     unreadOnly: z.coerce.boolean().optional(),
     category: z.enum(["mention", "assignment", "update", "membership", "comment"]).optional(),
     types: z.string().trim().min(1).optional(),
