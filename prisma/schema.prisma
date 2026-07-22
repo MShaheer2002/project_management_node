@@ -196,6 +196,8 @@ enum ActivityType {
   DRIVE_CONNECTED
   DRIVE_DISCONNECTED
   AI_ACTION_EXECUTED
+  ISSUE_APPROVED
+  ISSUE_APPROVAL_REVOKED
 }
 
 /// What kind of entity an activity log entry refers to
@@ -363,6 +365,7 @@ model User {
   // -- Issue relations --
   assignedIssues Issue[] @relation("IssueAssignee") // Issues assigned to this user
   createdIssues  Issue[] @relation("IssueCreator") // Issues created by this user
+  issueApprovals IssueApproval[] // Approvals this user has given on issues
 
   // -- Collaboration --
   comments Comment[]
@@ -424,6 +427,7 @@ model Workspace {
   issuePrefix  String @unique // Uppercase prefix for issue IDs (e.g., "VAT" → VAT-1, VAT-2)
   issueCounter Int    @default(0) // Atomic counter for human-readable issue IDs per workspace
   customStatuses Json  @default("[{\"key\":\"backlog\",\"label\":\"Backlog\",\"color\":\"#6b7280\",\"order\":0,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"todo\",\"label\":\"Todo\",\"color\":\"#3b82f6\",\"order\":1,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"in-progress\",\"label\":\"In Progress\",\"color\":\"#f59e0b\",\"order\":2,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"review\",\"label\":\"Review\",\"color\":\"#8b5cf6\",\"order\":3,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"done\",\"label\":\"Done\",\"color\":\"#22c55e\",\"order\":4,\"isFinal\":true,\"showOnBoard\":true}]")
+  workflowAutomation Json @default("{\"subtaskCompletion\":{\"enabled\":true,\"mode\":\"suggest\",\"targetStatusKey\":\"done\"},\"cycleStart\":{\"enabled\":false,\"fromStatusKey\":\"backlog\",\"targetStatusKey\":\"todo\"},\"overdue\":{\"enabled\":false,\"action\":\"notify\"},\"githubPullRequest\":{\"opened\":{\"enabled\":true,\"targetStatusKey\":\"review\"},\"merged\":{\"enabled\":true,\"targetStatusKey\":\"done\"}}}")
   uploadPolicy UploadPolicy @default(BOTH) // Controls where members can upload: BOTH, SYSTEM_ONLY, DRIVE_ONLY
   createdById  String // FK → User who created this workspace (becomes OWNER)
   createdAt    DateTime @default(now())
@@ -439,6 +443,7 @@ model Workspace {
   teams          Team[]
   projects       Project[]
   issues         Issue[]
+  issueApprovals IssueApproval[]
   issueAttachments IssueAttachment[]
   commentAttachments CommentAttachment[]
   documents      EntityDocument[]
@@ -666,6 +671,8 @@ model Project {
   featureRoadmap       Boolean @default(true)
   featureCycles        Boolean @default(true)
   featureIssueTracking Boolean @default(true)
+  customStatuses     Json? // Project-level workflow override. null = inherit workspace default.
+  workflowAutomation Json? // Project-level automation override. Only meaningful when customStatuses is set.
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -837,6 +844,7 @@ model Issue {
   children      Issue[]         @relation("IssueParent")
   watchers      IssueWatcher[]
   attachments   IssueAttachment[]
+  approvals     IssueApproval[]
 
   @@unique([workspaceId, number]) // Issue numbers are unique within a workspace
   @@index([workspaceId])
@@ -870,6 +878,27 @@ model IssueSubtask {
   issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
 
   @@index([issueId])
+}
+
+/// IssueApproval — a single reviewer's approval of an issue while it sits in an
+/// approval-gated status. Records are scoped to (issueId, statusKey) so that if
+/// an issue leaves and later re-enters the same gated status, prior approvals
+/// (which belong to the earlier review cycle) don't silently carry over — the
+/// service layer clears them on re-entry.
+model IssueApproval {
+  id          String   @id @default(uuid())
+  workspaceId String
+  issueId     String
+  statusKey   String
+  approverId  String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  issue     Issue     @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  approver  User      @relation(fields: [approverId], references: [id], onDelete: Cascade)
+
+  @@unique([issueId, statusKey, approverId])
+  @@index([workspaceId, issueId, statusKey])
 }
 
 // ============================================================================

@@ -11,6 +11,14 @@ import { dispatchIntegrationEvent } from "../integration/dispatcher.js";
 import { triggerCycleBackgroundJobs } from "../ai/ai.background.js";
 import { getSocketServer } from "../../socket/index.js";
 import { createRealtimeEnvelope } from "../../socket/serializers.js";
+import { runCycleStartAutomation, runIssueAddedToCurrentCycleAutomation } from "../../shared/workflow/workflow-automation-runtime.js";
+import {
+  statusAllowedInCycle,
+  statusCountsAsCarryOver,
+  statusCountsAsCompleted,
+  type WorkspaceStatusRecord,
+} from "../../shared/workflow/workflow-automation.js";
+import { resolveEffectiveWorkflowMap, type EffectiveWorkflow } from "../../shared/workflow/effective-workflow.js";
 import type {
   AssignIssueCycleInput,
   CarryOverInput,
@@ -55,21 +63,62 @@ const issueTypeToDb: Record<"task" | "bug" | "issue", "TASK" | "BUG" | "ISSUE"> 
   issue: "ISSUE",
 };
 
-async function getWorkspaceStatusDefinitions(workspaceId: string) {
-  const workspace = await prisma.workspace.findUnique({
-    where: { id: workspaceId },
-    select: { customStatuses: true },
-  });
-
-  return Array.isArray(workspace?.customStatuses) ? (workspace.customStatuses as any[]) : [];
+/**
+ * Resolves the effective workflow for every distinct project among the given ids,
+ * in one batch. A team-scoped resource (a cycle) can contain issues from several
+ * projects that each may have a different effective workflow, so cycle math must
+ * classify each issue against its OWN project's workflow, not one global list.
+ */
+async function getEffectiveWorkflowMap(workspaceId: string, projectIds: string[]): Promise<Map<string, EffectiveWorkflow>> {
+  const uniqueProjectIds = [...new Set(projectIds)];
+  const [workspace, projects] = await Promise.all([
+    prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { customStatuses: true, workflowAutomation: true },
+    }),
+    uniqueProjectIds.length > 0
+      ? prisma.project.findMany({
+          where: { id: { in: uniqueProjectIds }, workspaceId },
+          select: { id: true, customStatuses: true, workflowAutomation: true },
+        })
+      : Promise.resolve([]),
+  ]);
+  return resolveEffectiveWorkflowMap(
+    { customStatuses: workspace?.customStatuses ?? null, workflowAutomation: workspace?.workflowAutomation ?? null },
+    projects,
+  );
 }
 
-function getFinalStatusKeys(statuses: any[]) {
-  const configuredFinalKeys = statuses
-    .filter((status) => status && status.isFinal === true && typeof status.key === "string")
+/** Memoized per-project "which keys count as X" lookup, backed by an effective-workflow map. */
+function createStatusKeyResolver(
+  workflowByProject: Map<string, EffectiveWorkflow>,
+  classify: (statuses: WorkspaceStatusRecord[]) => Set<string>,
+) {
+  const cache = new Map<string, Set<string>>();
+  return (projectId: string) => {
+    let keys = cache.get(projectId);
+    if (!keys) {
+      keys = classify(workflowByProject.get(projectId)?.statuses ?? []);
+      cache.set(projectId, keys);
+    }
+    return keys;
+  };
+}
+
+function getCompletedStatusKeys(statuses: Array<{ key: string } & Record<string, any>>) {
+  const configuredCompletedKeys = statuses
+    .filter((status) => status && typeof status.key === "string" && statusCountsAsCompleted(status as any))
     .map((status) => String(status.key));
 
-  return new Set(configuredFinalKeys.length > 0 ? configuredFinalKeys : ["done"]);
+  return new Set(configuredCompletedKeys.length > 0 ? configuredCompletedKeys : ["done"]);
+}
+
+function getCarryOverStatusKeys(statuses: Array<{ key: string } & Record<string, any>>) {
+  return new Set(
+    statuses
+      .filter((status) => status && typeof status.key === "string" && statusCountsAsCarryOver(status as any))
+      .map((status) => String(status.key)),
+  );
 }
 
 function getStatusLabel(statusKey: string) {
@@ -173,22 +222,23 @@ function mapIssueSummary(item: any) {
 }
 
 async function computeCycleStats(workspaceId: string, cycleId: string, startsAt: Date, endsAt: Date) {
-  const [issues, workspaceStatuses] = await Promise.all([
-    prisma.issue.findMany({
-      where: { workspaceId, cycleId },
-      select: {
-        id: true,
-        status: true,
-        priority: true,
-        type: true,
-        projectId: true,
-        project: { select: { name: true } },
-      },
-    }),
-    getWorkspaceStatusDefinitions(workspaceId),
-  ]);
+  const issues = await prisma.issue.findMany({
+    where: { workspaceId, cycleId },
+    select: {
+      id: true,
+      status: true,
+      priority: true,
+      type: true,
+      projectId: true,
+      project: { select: { name: true } },
+    },
+  });
 
-  const finalStatusKeys = getFinalStatusKeys(workspaceStatuses);
+  const workflowByProject = await getEffectiveWorkflowMap(workspaceId, issues.map((issue) => issue.projectId));
+  const completedKeysForProject = createStatusKeyResolver(workflowByProject, getCompletedStatusKeys);
+  const isCompleted = (issue: { projectId: string; status: string }) =>
+    completedKeysForProject(issue.projectId).has(issue.status);
+
   const countByStatus = new Map<string, number>();
 
   for (const issue of issues) {
@@ -196,7 +246,7 @@ async function computeCycleStats(workspaceId: string, cycleId: string, startsAt:
   }
 
   const totalIssues = issues.length;
-  const completedIssues = issues.filter((issue) => finalStatusKeys.has(issue.status)).length;
+  const completedIssues = issues.filter((issue) => isCompleted(issue)).length;
   const inProgressIssues = countByStatus.get("in-progress") ?? 0;
   const todoIssues = countByStatus.get("todo") ?? 0;
   const backlogIssues = countByStatus.get("backlog") ?? 0;
@@ -211,12 +261,27 @@ async function computeCycleStats(workspaceId: string, cycleId: string, startsAt:
   const daysRemaining = Math.max(0, daysTotal - daysElapsed);
   const timeElapsedPercent = Math.round((daysElapsed / daysTotal) * 100);
 
-  const byStatus = (workspaceStatuses.length > 0
-    ? workspaceStatuses.map((status) => ({
-        status: String(status.key),
-        label: typeof status.label === "string" ? status.label : getStatusLabel(String(status.key)),
-        count: countByStatus.get(String(status.key)) ?? 0,
-      }))
+  // When every issue's project shares one effective workflow (the common case), this is
+  // just that workflow's statuses. When a team's projects have diverged (some overridden,
+  // some not), this is the union of every distinct status across all of them, so no
+  // project's statuses go missing from the breakdown.
+  const statusUnion = new Map<string, { key: string; label: string; order: number }>();
+  for (const workflow of workflowByProject.values()) {
+    for (const status of workflow.statuses) {
+      if (!statusUnion.has(status.key)) {
+        statusUnion.set(status.key, { key: status.key, label: status.label, order: status.order });
+      }
+    }
+  }
+
+  const byStatus = (statusUnion.size > 0
+    ? [...statusUnion.values()]
+        .sort((a, b) => a.order - b.order)
+        .map((status) => ({
+          status: status.key,
+          label: status.label || getStatusLabel(status.key),
+          count: countByStatus.get(status.key) ?? 0,
+        }))
     : [
         { status: "backlog", label: "Backlog", count: backlogIssues },
         { status: "todo", label: "Todo", count: todoIssues },
@@ -245,7 +310,7 @@ async function computeCycleStats(workspaceId: string, cycleId: string, startsAt:
       completedCount: 0,
     };
     current.count += 1;
-    if (finalStatusKeys.has(issue.status)) current.completedCount += 1;
+    if (isCompleted(issue)) current.completedCount += 1;
     projectAgg.set(key, current);
   }
 
@@ -356,6 +421,7 @@ export async function createCycle(workspaceId: string, userId: string, role: Wor
 
   const computed = await computeCycleStats(workspaceId, cycle.id, cycle.startsAt, cycle.endsAt);
   if (cycle.status === "CURRENT") {
+    await runCycleStartAutomation(workspaceId, cycle.id, userId);
     dispatchIntegrationEvent(workspaceId, {
       type: "cycle.started",
       payload: {
@@ -551,6 +617,7 @@ export async function updateCycle(workspaceId: string, cycleId: string, userId: 
   await emitCycleEvent(workspaceId, "cycle:updated", { cycleId, full: updated }, `cycle-updated:${cycleId}:${updated.updatedAt.toISOString()}`);
   const computed = await computeCycleStats(workspaceId, updated.id, updated.startsAt, updated.endsAt);
   if (cycle.status !== "CURRENT" && updated.status === "CURRENT") {
+    await runCycleStartAutomation(workspaceId, updated.id, userId);
     dispatchIntegrationEvent(workspaceId, {
       type: "cycle.started",
       payload: {
@@ -601,15 +668,13 @@ export async function completeCycle(workspaceId: string, cycleId: string, userId
     include: { team: { select: { id: true, name: true } } },
   });
 
-  const [cycleIssues, workspaceStatuses] = await Promise.all([
-    prisma.issue.findMany({
-      where: { workspaceId, cycleId },
-      select: { status: true },
-    }),
-    getWorkspaceStatusDefinitions(workspaceId),
-  ]);
-  const finalStatusKeys = getFinalStatusKeys(workspaceStatuses);
-  const unfinishedCount = cycleIssues.filter((issue) => !finalStatusKeys.has(issue.status)).length;
+  const cycleIssues = await prisma.issue.findMany({
+    where: { workspaceId, cycleId },
+    select: { status: true, projectId: true },
+  });
+  const workflowByProject = await getEffectiveWorkflowMap(workspaceId, cycleIssues.map((issue) => issue.projectId));
+  const completedKeysForProject = createStatusKeyResolver(workflowByProject, getCompletedStatusKeys);
+  const unfinishedCount = cycleIssues.filter((issue) => !completedKeysForProject(issue.projectId).has(issue.status)).length;
 
   await logActivity({
     workspaceId,
@@ -672,6 +737,7 @@ export async function reopenCycle(workspaceId: string, cycleId: string, userId: 
   await emitCycleEvent(workspaceId, "cycle:reopened", { cycleId }, `cycle-reopened:${cycleId}`);
 
   const computed = await computeCycleStats(workspaceId, reopened.id, reopened.startsAt, reopened.endsAt);
+  await runCycleStartAutomation(workspaceId, reopened.id, userId);
   dispatchIntegrationEvent(workspaceId, {
     type: "cycle.started",
     payload: {
@@ -693,13 +759,13 @@ export async function carryOverCycle(workspaceId: string, cycleId: string, userI
     throw new AppError(409, ERROR_CODES.CONFLICT, "Only completed cycles can be carried over");
   }
 
-  const workspaceStatuses = await getWorkspaceStatusDefinitions(workspaceId);
-  const finalStatusKeys = getFinalStatusKeys(workspaceStatuses);
   const cycleIssues = await prisma.issue.findMany({
-    where: { workspaceId, cycleId },
-    select: { id: true, assigneeId: true, title: true, internalId: true, status: true },
+      where: { workspaceId, cycleId },
+    select: { id: true, assigneeId: true, title: true, internalId: true, status: true, projectId: true },
   });
-  const unfinished = cycleIssues.filter((issue) => !finalStatusKeys.has(issue.status));
+  const workflowByProject = await getEffectiveWorkflowMap(workspaceId, cycleIssues.map((issue) => issue.projectId));
+  const carryOverKeysForProject = createStatusKeyResolver(workflowByProject, getCarryOverStatusKeys);
+  const unfinished = cycleIssues.filter((issue) => carryOverKeysForProject(issue.projectId).has(issue.status));
 
   let targetCycleId: string | null = null;
   if (input.mode === "nextCycle") {
@@ -744,17 +810,18 @@ export async function carryOverCycle(workspaceId: string, cycleId: string, userI
     type: "UPDATE",
     category: "update",
     title: "Issue moved between cycles",
-    message: `Issue ${issue.id} was moved during cycle carry-over`,
-    target: { type: "issue", id: issue.id, publicId: issue.id, url: `/issues/${issue.id}` },
+    message: `Issue ${issue.internalId} was moved during cycle carry-over`,
+    target: { type: "issue", id: issue.id, publicId: issue.internalId, url: `/issues/${issue.internalId}` },
     metadata: {
       issueId: issue.id,
+      issuePublicId: issue.internalId,
       field: "cycleId",
       from: cycleId,
       to: targetCycleId,
       workspaceId,
       entityId: issue.id,
       entityTitle: issue.title,
-      url: `/issues/${issue.id}`,
+      url: `/issues/${issue.internalId}`,
     },
     eventId: `cycle-carry-over:${cycleId}:${issue.id}`,
   })));
@@ -896,7 +963,10 @@ export async function planIssuesIntoCycle(
 export async function assignIssueToCycle(workspaceId: string, issueRouteId: string, userId: string, role: WorkspaceRole, input: AssignIssueCycleInput) {
   const issueId = await resolveIssueRouteId(workspaceId, issueRouteId);
   const [issue, cycle] = await Promise.all([
-    prisma.issue.findFirst({ where: { id: issueId, workspaceId }, select: { id: true, teamId: true, assigneeId: true, title: true, creatorId: true } }),
+    prisma.issue.findFirst({
+      where: { id: issueId, workspaceId },
+      select: { id: true, internalId: true, teamId: true, assigneeId: true, title: true, creatorId: true, status: true, projectId: true },
+    }),
     assertCycleInWorkspace(workspaceId, input.cycleId),
   ]);
 
@@ -910,7 +980,14 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
     throw new AppError(409, ERROR_CODES.CYCLE_ASSIGN_COMPLETED_FORBIDDEN, "Cannot assign issue to completed cycle");
   }
 
+  const workflowByProject = await getEffectiveWorkflowMap(workspaceId, [issue.projectId]);
+  const issueStatus = workflowByProject.get(issue.projectId)?.statuses.find((status) => status.key === issue.status);
+  if (issueStatus && !statusAllowedInCycle(issueStatus)) {
+    throw new AppError(409, ERROR_CODES.CONFLICT, `${issueStatus.label} issues cannot be planned into cycles`);
+  }
+
   await prisma.issue.update({ where: { id: issue.id }, data: { cycleId: cycle.id } });
+  await runIssueAddedToCurrentCycleAutomation(workspaceId, cycle.id, issue.id, userId);
 
   await logActivity({
     workspaceId,
@@ -918,10 +995,10 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
     type: "ISSUE_ADDED_TO_CYCLE",
     targetType: "ISSUE",
     targetId: issue.id,
-    message: `Issue ${issue.id} assigned to cycle ${cycle.name}`,
+    message: `Issue ${issue.internalId} assigned to cycle ${cycle.name}`,
     metadata: {
       issueId: issue.id,
-      issuePublicId: issue.id,
+      issuePublicId: issue.internalId,
       cycleId: cycle.id,
       cycleName: cycle.name,
       teamId: cycle.teamId,
@@ -941,17 +1018,18 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
     type: "UPDATE",
     category: "update",
     title: "Issue planned into cycle",
-    message: `Issue ${issue.id} was planned into cycle ${cycle.name}`,
-    target: { type: "issue", id: issue.id, publicId: issue.id, url: `/issues/${issue.id}` },
+    message: `Issue ${issue.internalId} was planned into cycle ${cycle.name}`,
+    target: { type: "issue", id: issue.id, publicId: issue.internalId, url: `/issues/${issue.internalId}` },
     metadata: {
       issueId: issue.id,
+      issuePublicId: issue.internalId,
       field: "cycleId",
       from: null,
       to: cycle.id,
       workspaceId,
       entityId: issue.id,
       entityTitle: issue.title,
-      url: `/issues/${issue.id}`,
+      url: `/issues/${issue.internalId}`,
     },
     eventId: `issue-cycle-assigned:${issue.id}:${cycle.id}:${recipientUserId}`,
   })));

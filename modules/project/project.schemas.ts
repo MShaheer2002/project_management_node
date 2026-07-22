@@ -1,5 +1,10 @@
 import { z } from "zod/v4";
 import { documentDraftSchema } from "../documents/documents.schemas.js";
+import {
+  statusRemovalResolutionSchema,
+  workflowAutomationSchema,
+  workspaceStatusItemSchema,
+} from "../workspace/workspace.schemas.js";
 
 const visibilitySchema = z.enum(["PUBLIC", "PRIVATE"]);
 const projectStatusSchema = z.enum(["ACTIVE", "ARCHIVED", "COMPLETED"]);
@@ -32,8 +37,8 @@ export const createProjectSchema = {
     leadId: z.string().min(1).optional(),
     memberIds: z.array(z.string().min(1)).max(200).optional(),
     visibility: visibilitySchema.optional(),
-    startDate: z.string().date().optional(),
-    targetDate: z.string().date().optional(),
+    startDate: z.string().date().nullable().optional(),
+    targetDate: z.string().date().nullable().optional(),
     features: featuresSchema.optional(),
     docs: z.array(documentDraftSchema).max(20).optional(),
   }).superRefine((value, ctx) => {
@@ -118,8 +123,68 @@ export const removeProjectMemberSchema = {
   }),
 };
 
+// ─── Project Workflow Override ───────────────────────────────────────────────
+
+export const getProjectWorkflowSchema = {
+  params: z.object({
+    id: z.string().uuid("Invalid project ID"),
+  }),
+};
+
+export const getProjectWorkflowStatusUsageSchema = {
+  params: z.object({
+    id: z.string().uuid("Invalid project ID"),
+    statusKey: z.string().min(1).max(50),
+  }),
+  query: z.object({
+    limit: z.coerce.number().int().min(1).max(1000).optional(),
+  }),
+};
+
+export const mergeProjectWorkflowStatusSchema = {
+  params: z.object({
+    id: z.string().uuid("Invalid project ID"),
+    statusKey: z.string().min(1).max(50),
+  }),
+  body: z.object({
+    targetStatusKey: z.string().min(1).max(50),
+  }),
+};
+
+/** PUT /projects/:id/workflow/statuses — Set/replace this project's workflow override */
+export const updateProjectWorkflowStatusesSchema = {
+  params: z.object({
+    id: z.string().uuid("Invalid project ID"),
+  }),
+  body: z.object({
+    statuses: z.array(workspaceStatusItemSchema).min(1).max(20),
+    removalResolutions: z.array(statusRemovalResolutionSchema).max(20).default([]),
+  }),
+};
+
+/** DELETE /projects/:id/workflow — Clear override, revert to the workspace default workflow */
+export const clearProjectWorkflowOverrideSchema = {
+  params: z.object({
+    id: z.string().uuid("Invalid project ID"),
+  }),
+  body: z.object({
+    removalResolutions: z.array(statusRemovalResolutionSchema).max(20).default([]),
+  }),
+};
+
+/** PUT /projects/:id/workflow/automation — Replace this project's automation config (override must already be active) */
+export const updateProjectWorkflowAutomationSchema = {
+  params: z.object({
+    id: z.string().uuid("Invalid project ID"),
+  }),
+  body: workflowAutomationSchema,
+};
+
 export type CreateProjectInput = z.infer<typeof createProjectSchema.body>;
 export type ListProjectsQuery = z.infer<typeof listProjectsSchema.query>;
 export type UpdateProjectInput = z.infer<typeof updateProjectSchema.body>;
 export type ListProjectMembersQuery = z.infer<typeof listProjectMembersSchema.query>;
 export type AddProjectMembersInput = z.infer<typeof addProjectMembersSchema.body>;
+export type UpdateProjectWorkflowStatusesInput = z.infer<typeof updateProjectWorkflowStatusesSchema.body>;
+export type ClearProjectWorkflowOverrideInput = z.infer<typeof clearProjectWorkflowOverrideSchema.body>;
+export type UpdateProjectWorkflowAutomationInput = z.infer<typeof updateProjectWorkflowAutomationSchema.body>;

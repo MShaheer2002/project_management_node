@@ -1,6 +1,7 @@
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { runSubtaskCompletionAutomation } from "../../shared/workflow/workflow-automation-runtime.js";
 
 async function assertIssueExists(workspaceId: string, issueId: string) {
   const issue = await prisma.issue.findFirst({
@@ -35,6 +36,7 @@ export async function updateSubtask(
   workspaceId: string,
   issueId: string,
   subtaskId: string,
+  actorUserId: string,
   input: { title?: string; completed?: boolean; order?: number },
 ) {
   await assertIssueExists(workspaceId, issueId);
@@ -48,7 +50,7 @@ export async function updateSubtask(
     throw new AppError(404, ERROR_CODES.SUBTASK_NOT_FOUND, "Subtask not found");
   }
 
-  return prisma.issueSubtask.update({
+  const subtask = await prisma.issueSubtask.update({
     where: { id: subtaskId },
     data: {
       ...(input.title !== undefined ? { title: input.title } : {}),
@@ -56,6 +58,12 @@ export async function updateSubtask(
       ...(input.order !== undefined ? { order: input.order } : {}),
     },
   });
+
+  if (input.completed !== undefined) {
+    await runSubtaskCompletionAutomation(workspaceId, issueId, actorUserId);
+  }
+
+  return subtask;
 }
 
 export async function deleteSubtask(workspaceId: string, issueId: string, subtaskId: string) {

@@ -12,12 +12,18 @@ import * as controller from "./project.controller.js";
 import * as projectService from "./project.service.js";
 import {
   addProjectMembersSchema,
+  clearProjectWorkflowOverrideSchema,
   createProjectSchema,
+  getProjectWorkflowSchema,
+  getProjectWorkflowStatusUsageSchema,
+  mergeProjectWorkflowStatusSchema,
   listProjectMembersSchema,
   listProjectsSchema,
   projectIdParamsSchema,
   removeProjectMemberSchema,
   updateProjectSchema,
+  updateProjectWorkflowAutomationSchema,
+  updateProjectWorkflowStatusesSchema,
 } from "./project.schemas.js";
 
 const router = Router();
@@ -130,6 +136,91 @@ router.delete(
     },
   ),
   controller.removeMember,
+);
+
+// ─── Workflow Override ───────────────────────────────────────────────────────
+
+// Get this project's effective workflow — any member can view
+router.get(
+  "/:id/workflow",
+  authenticate,
+  validate(getProjectWorkflowSchema),
+  requireWorkspace,
+  controller.getWorkflow,
+);
+
+router.get(
+  "/:id/workflow/statuses/:statusKey/usage",
+  authenticate,
+  validate(getProjectWorkflowStatusUsageSchema),
+  requireWorkspace,
+  controller.getWorkflowStatusUsage,
+);
+
+router.post(
+  "/:id/workflow/statuses/:statusKey/merge",
+  authenticate,
+  validate(mergeProjectWorkflowStatusSchema),
+  requireWorkspace,
+  requireOwnership(
+    (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
+    {
+      notFoundCode: "PROJECT_NOT_FOUND",
+      notFoundMessage: "Project not found",
+      forbiddenMessage: "You do not have permission to manage this project's workflow",
+    },
+  ),
+  controller.mergeWorkflowStatus,
+);
+
+// Set/replace this project's workflow override — same ownership rule as other project settings
+router.put(
+  "/:id/workflow/statuses",
+  authenticate,
+  validate(updateProjectWorkflowStatusesSchema),
+  requireWorkspace,
+  requireOwnership(
+    (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
+    {
+      notFoundCode: "PROJECT_NOT_FOUND",
+      notFoundMessage: "Project not found",
+      forbiddenMessage: "You do not have permission to manage this project's workflow",
+    },
+  ),
+  controller.updateWorkflowStatuses,
+);
+
+// Clear this project's workflow override, reverting to the workspace default
+router.delete(
+  "/:id/workflow",
+  authenticate,
+  validate(clearProjectWorkflowOverrideSchema),
+  requireWorkspace,
+  requireOwnership(
+    (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
+    {
+      notFoundCode: "PROJECT_NOT_FOUND",
+      notFoundMessage: "Project not found",
+      forbiddenMessage: "You do not have permission to manage this project's workflow",
+    },
+  ),
+  controller.clearWorkflowOverride,
+);
+
+router.put(
+  "/:id/workflow/automation",
+  authenticate,
+  validate(updateProjectWorkflowAutomationSchema),
+  requireWorkspace,
+  requireOwnership(
+    (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
+    {
+      notFoundCode: "PROJECT_NOT_FOUND",
+      notFoundMessage: "Project not found",
+      forbiddenMessage: "You do not have permission to manage this project's workflow",
+    },
+  ),
+  controller.updateWorkflowAutomation,
 );
 
 export default router;

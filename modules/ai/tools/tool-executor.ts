@@ -1223,7 +1223,7 @@ async function executeToolLegacy(
           },
           ctx,
           async () => {
-            const subtask = await updateSubtask(ctx.workspaceId, issueId, subtaskId, {
+            const subtask = await updateSubtask(ctx.workspaceId, issueId, subtaskId, ctx.userId, {
               ...(args.title ? { title: str(args.title).trim() } : {}),
               ...(completed !== undefined ? { completed } : {}),
               ...(args.order ? { order: num(args.order, 0) } : {}),

@@ -3,11 +3,12 @@ import type { RequestHandler } from "express";
 import { sendList, sendSuccess } from "../../shared/utils/api-response.js";
 import * as issueService from "./issue.service.js";
 import * as subtaskService from "./subtask.service.js";
+import * as issueApprovalService from "./issue-approval.service.js";
 import type { ListIssuesQuery } from "./issue.schemas.js";
 
 export const create: RequestHandler = async (req, res, next) => {
   try {
-    const issue = await issueService.createIssue(req.workspace!.id, req.user!.id, req.body);
+    const issue = await issueService.createIssue(req.workspace!.id, req.user!.id, req.body, req.workspace!.role);
     sendSuccess(res, 201, issue);
   } catch (error) {
     next(error);
@@ -60,7 +61,7 @@ export const getById: RequestHandler = async (req, res, next) => {
 export const update: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    const issue = await issueService.updateIssue(req.workspace!.id, issueId, req.user!.id, req.body);
+    const issue = await issueService.updateIssue(req.workspace!.id, issueId, req.user!.id, req.body, req.workspace!.role);
     sendSuccess(res, 200, issue);
   } catch (error) {
     next(error);
@@ -93,6 +94,36 @@ export const updateStatus: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const getApprovalStatus: RequestHandler = async (req, res, next) => {
+  try {
+    const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
+    const status = await issueApprovalService.getIssueApprovalStatus(req.workspace!.id, issueId);
+    sendSuccess(res, 200, status);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const approveStatus: RequestHandler = async (req, res, next) => {
+  try {
+    const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
+    const status = await issueApprovalService.approveIssueStatus(req.workspace!.id, issueId, req.user!.id);
+    sendSuccess(res, 200, status);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const revokeApproval: RequestHandler = async (req, res, next) => {
+  try {
+    const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
+    const status = await issueApprovalService.revokeIssueApproval(req.workspace!.id, issueId, req.user!.id);
+    sendSuccess(res, 200, status);
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const createSubtask: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
@@ -110,6 +141,7 @@ export const updateSubtask: RequestHandler = async (req, res, next) => {
       req.workspace!.id,
       issueId,
       req.params.sid as string,
+      req.user!.id,
       req.body,
     );
     sendSuccess(res, 200, subtask);

@@ -36,6 +36,10 @@ router.patch("/:id", authenticate, validate(updateIssueSchema), requireWorkspace
 router.delete("/:id", authenticate, validate(issueIdParamsSchema), requireWorkspace, requireRole("ADMIN", "OWNER"), controller.remove);
 router.patch("/:id/status", authenticate, validate(updateIssueStatusSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.updateStatus);
 
+router.get("/:id/approvals", authenticate, validate(issueIdParamsSchema), requireWorkspace, controller.getApprovalStatus);
+router.post("/:id/approvals", authenticate, validate(issueIdParamsSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.approveStatus);
+router.delete("/:id/approvals", authenticate, validate(issueIdParamsSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.revokeApproval);
+
 router.post("/:id/subtasks", authenticate, validate(createSubtaskSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.createSubtask);
 router.patch("/:id/subtasks/:sid", authenticate, validate(updateSubtaskSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.updateSubtask);
 router.delete("/:id/subtasks/:sid", authenticate, validate(deleteSubtaskParamsSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.deleteSubtask);

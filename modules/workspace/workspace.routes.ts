@@ -37,7 +37,11 @@ import {
   acceptInvitationSchema,
   revokeInvitationSchema,
   getWorkspaceStatusesSchema,
+  getWorkspaceStatusUsageSchema,
+  getWorkflowAutomationSchema,
+  mergeWorkspaceStatusSchema,
   updateWorkspaceStatusesSchema,
+  updateWorkflowAutomationSchema,
 } from "./workspace.schemas.js";
 
 const router = Router();
@@ -108,6 +112,24 @@ router.get(
   controller.getStatuses,
 );
 
+router.get(
+  "/:workspaceId/statuses/:statusKey/usage",
+  authenticate,
+  validate(getWorkspaceStatusUsageSchema),
+  requireWorkspace,
+  controller.getStatusUsage,
+);
+
+// Merge a status into another — ADMIN or OWNER only
+router.post(
+  "/:workspaceId/statuses/:statusKey/merge",
+  authenticate,
+  validate(mergeWorkspaceStatusSchema),
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  controller.mergeStatus,
+);
+
 // Replace workspace statuses — ADMIN or OWNER only
 router.put(
   "/:workspaceId/statuses",
@@ -116,6 +138,25 @@ router.put(
   requireWorkspace,
   requireRole("ADMIN", "OWNER"),
   controller.updateStatuses,
+);
+
+// Get workflow automation config — any member can view
+router.get(
+  "/:workspaceId/workflow-automation",
+  authenticate,
+  validate(getWorkflowAutomationSchema),
+  requireWorkspace,
+  controller.getWorkflowAutomation,
+);
+
+// Replace workflow automation config — ADMIN or OWNER only
+router.put(
+  "/:workspaceId/workflow-automation",
+  authenticate,
+  validate(updateWorkflowAutomationSchema),
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  controller.updateWorkflowAutomation,
 );
 
 // ─── Invitation Management ───────────────────────────────────────────────────

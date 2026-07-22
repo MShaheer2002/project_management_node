@@ -3,10 +3,14 @@ import type { RequestHandler } from "express";
 import { sendList, sendSuccess } from "../../shared/utils/api-response.js";
 import * as projectService from "./project.service.js";
 import * as projectMembershipService from "./project-membership.service.js";
+import * as projectWorkflowService from "./project-workflow.service.js";
 import type {
   AddProjectMembersInput,
+  ClearProjectWorkflowOverrideInput,
   ListProjectMembersQuery,
   ListProjectsQuery,
+  UpdateProjectWorkflowAutomationInput,
+  UpdateProjectWorkflowStatusesInput,
 } from "./project.schemas.js";
 
 export const create: RequestHandler = async (req, res, next) => {
@@ -108,6 +112,85 @@ export const removeMember: RequestHandler = async (req, res, next) => {
       req.params.uid as string,
     );
     res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─── Workflow Override ───────────────────────────────────────────────────────
+
+export const getWorkflow: RequestHandler = async (req, res, next) => {
+  try {
+    const workflow = await projectWorkflowService.getProjectWorkflow(req.workspace!.id, req.params.id as string);
+    sendSuccess(res, 200, workflow);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getWorkflowStatusUsage: RequestHandler = async (req, res, next) => {
+  try {
+    const query = (req.validated?.query ?? req.query) as { limit?: number };
+    const usage = await projectWorkflowService.getProjectWorkflowStatusUsage(
+      req.workspace!.id,
+      req.params.id as string,
+      req.params.statusKey as string,
+      query.limit,
+    );
+    sendSuccess(res, 200, usage);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const mergeWorkflowStatus: RequestHandler = async (req, res, next) => {
+  try {
+    const workflow = await projectWorkflowService.mergeProjectWorkflowStatus(
+      req.workspace!.id,
+      req.params.id as string,
+      req.params.statusKey as string,
+      req.body.targetStatusKey,
+    );
+    sendSuccess(res, 200, workflow);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateWorkflowStatuses: RequestHandler = async (req, res, next) => {
+  try {
+    const workflow = await projectWorkflowService.updateProjectWorkflowStatuses(
+      req.workspace!.id,
+      req.params.id as string,
+      req.body as UpdateProjectWorkflowStatusesInput,
+    );
+    sendSuccess(res, 200, workflow);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const clearWorkflowOverride: RequestHandler = async (req, res, next) => {
+  try {
+    const workflow = await projectWorkflowService.clearProjectWorkflowOverride(
+      req.workspace!.id,
+      req.params.id as string,
+      req.body as ClearProjectWorkflowOverrideInput,
+    );
+    sendSuccess(res, 200, workflow);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateWorkflowAutomation: RequestHandler = async (req, res, next) => {
+  try {
+    const workflow = await projectWorkflowService.updateProjectWorkflowAutomation(
+      req.workspace!.id,
+      req.params.id as string,
+      req.body as UpdateProjectWorkflowAutomationInput,
+    );
+    sendSuccess(res, 200, workflow);
   } catch (error) {
     next(error);
   }

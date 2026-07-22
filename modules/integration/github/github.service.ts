@@ -22,6 +22,7 @@ import {
   getSettings,
   initDefaultSettings,
 } from "../integration.service.js";
+import { getGithubAutomationTargets } from "../../../shared/workflow/workflow-automation-runtime.js";
 
 // ─── Default GitHub Settings ─────────────────────────────────────────────────
 
@@ -365,12 +366,14 @@ export async function handleGitHubPullRequest(workspaceId: string, payload: any)
         assigneeId: true,
         creatorId: true,
         completedAt: true,
+        projectId: true,
         watchers: { select: { userId: true } },
       },
     });
 
     if (!issue) continue;
 
+    const automationTargets = await getGithubAutomationTargets(workspaceId, issue.projectId);
     const issueRouteId = issue.internalId ?? issue.id;
 
     if (action === "opened" || action === "reopened") {
@@ -396,10 +399,16 @@ export async function handleGitHubPullRequest(workspaceId: string, payload: any)
       });
 
       // Auto-move to Review if enabled and issue is not already in Review/Done
-      if (settings.autoMoveToReviewOnPr && issue.status !== "REVIEW" && issue.status !== "DONE") {
+      const reviewStatusKey = automationTargets.opened.targetStatusKey;
+      if (
+        settings.autoMoveToReviewOnPr &&
+        automationTargets.opened.enabled &&
+        reviewStatusKey &&
+        issue.status !== reviewStatusKey
+      ) {
         await prisma.issue.update({
           where: { id: issue.id },
-          data: { status: "REVIEW" },
+          data: { status: reviewStatusKey },
         });
 
         await logActivity({
@@ -411,7 +420,7 @@ export async function handleGitHubPullRequest(workspaceId: string, payload: any)
           message: `${issue.id} moved to Review (PR #${prNumber} opened)`,
           metadata: {
             fromStatus: issue.status,
-            toStatus: "REVIEW",
+            toStatus: reviewStatusKey,
             trigger: "github_pr_opened",
             prNumber,
             entityId: issue.id,
@@ -474,10 +483,16 @@ export async function handleGitHubPullRequest(workspaceId: string, payload: any)
       });
 
       // Auto-complete issue if enabled
-      if (settings.autoCompleteOnMerge && issue.status !== "DONE") {
+      const mergedStatusKey = automationTargets.merged.targetStatusKey;
+      if (
+        settings.autoCompleteOnMerge &&
+        automationTargets.merged.enabled &&
+        mergedStatusKey &&
+        issue.status !== mergedStatusKey
+      ) {
         await prisma.issue.update({
           where: { id: issue.id },
-          data: { status: "DONE", completedAt: new Date() },
+          data: { status: mergedStatusKey, completedAt: new Date() },
         });
 
         await logActivity({
@@ -489,7 +504,7 @@ export async function handleGitHubPullRequest(workspaceId: string, payload: any)
           message: `${issue.id} completed (PR #${prNumber} merged)`,
           metadata: {
             fromStatus: issue.status,
-            toStatus: "DONE",
+            toStatus: mergedStatusKey,
             trigger: "github_pr_merged",
             prNumber,
             entityId: issue.id,

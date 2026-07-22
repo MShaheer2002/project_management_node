@@ -87,11 +87,59 @@ export const getStatuses: RequestHandler = async (req, res, next) => {
   }
 };
 
+/** GET /workspaces/:workspaceId/statuses/:statusKey/usage — Count issues using a status */
+export const getStatusUsage: RequestHandler = async (req, res, next) => {
+  try {
+    const query = (req.validated?.query ?? req.query) as { limit?: number };
+    const usage = await workspaceService.getWorkspaceStatusUsage(
+      req.params.workspaceId as string,
+      req.params.statusKey as string,
+      query.limit,
+    );
+    sendSuccess(res, 200, usage);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const mergeStatus: RequestHandler = async (req, res, next) => {
+  try {
+    const statuses = await workspaceService.mergeWorkspaceStatus(
+      req.params.workspaceId as string,
+      req.params.statusKey as string,
+      req.body.targetStatusKey,
+    );
+    sendSuccess(res, 200, statuses);
+  } catch (error) {
+    next(error);
+  }
+};
+
 /** PUT /workspaces/:workspaceId/statuses — Replace workspace custom statuses */
 export const updateStatuses: RequestHandler = async (req, res, next) => {
   try {
     const statuses = await workspaceService.updateWorkspaceStatuses(req.params.workspaceId as string, req.body);
     sendSuccess(res, 200, statuses);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** GET /workspaces/:workspaceId/workflow-automation — Get workflow automation config */
+export const getWorkflowAutomation: RequestHandler = async (req, res, next) => {
+  try {
+    const config = await workspaceService.getWorkflowAutomation(req.params.workspaceId as string);
+    sendSuccess(res, 200, config);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** PUT /workspaces/:workspaceId/workflow-automation — Replace workflow automation config */
+export const updateWorkflowAutomation: RequestHandler = async (req, res, next) => {
+  try {
+    const config = await workspaceService.updateWorkflowAutomation(req.params.workspaceId as string, req.body);
+    sendSuccess(res, 200, config);
   } catch (error) {
     next(error);
   }

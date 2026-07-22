@@ -12,6 +12,14 @@ import { createIssueAttachments } from "./issue-attachment.service.js";
 import { dispatchIntegrationEvent } from "../integration/dispatcher.js";
 import { decrementStorageUsage } from "../billing/billing.service.js";
 import { triggerIssueBackgroundJobs } from "../ai/ai.background.js";
+import {
+  getDefaultCreateStatus,
+  getStatusRecord,
+  statusAllowedInCycle,
+  statusVisibleInCreate,
+  type WorkspaceStatusRecord,
+} from "../../shared/workflow/workflow-automation.js";
+import { resolveEffectiveWorkflow } from "../../shared/workflow/effective-workflow.js";
 import type {
   CheckAssignmentEligibilityInput,
   CreateIssueInput,
@@ -19,16 +27,28 @@ import type {
   UpdateIssueInput,
 } from "./issue.schemas.js";
 
-async function getWorkspaceStatuses(workspaceId: string) {
+/**
+ * Resolves the effective workflow (statuses + automation) for a specific project —
+ * the project's own override if it has one, else the workspace default. Every issue
+ * status read/write must go through this, since a project may not use the
+ * workspace's workflow at all.
+ */
+async function getEffectiveWorkflowForProject(
+  workspaceId: string,
+  project: { customStatuses: unknown; workflowAutomation: unknown } | null,
+) {
   const workspace = await prisma.workspace.findUnique({
     where: { id: workspaceId },
-    select: { customStatuses: true },
+    select: { customStatuses: true, workflowAutomation: true },
   });
-  return (workspace?.customStatuses as any[]) ?? [];
+  return resolveEffectiveWorkflow(
+    { customStatuses: workspace?.customStatuses ?? null, workflowAutomation: workspace?.workflowAutomation ?? null },
+    project,
+  );
 }
 
-function isStatusFinal(statuses: any[], statusKey: string): boolean {
-  return statuses.find((s) => s.key === statusKey)?.isFinal ?? false;
+function isStatusFinal(statuses: WorkspaceStatusRecord[], statusKey: string): boolean {
+  return getStatusRecord(statuses, statusKey)?.isFinal ?? false;
 }
 
 const priorityToDb: Record<string, string> = {
@@ -121,6 +141,104 @@ function parseDueTime(value: string | null | undefined) {
     return null;
   }
   return date;
+}
+
+type IssueStatusValidationContext = {
+  issueId: string;
+  issueTitle: string;
+  currentStatus: string;
+  nextStatus: string;
+  actorUserId: string;
+  actorRole: WorkspaceRole;
+  creatorId: string;
+  assigneeId: string | null;
+  dueDate: Date | null;
+  acceptanceCriteria: string | null;
+  parentIssueId: string | null;
+  integrationRefCount: number;
+  subtaskTotal: number;
+  incompleteSubtaskCount: number;
+  currentStatusApprovalCount: number;
+};
+
+function assertTransitionPermission(
+  statuses: WorkspaceStatusRecord[],
+  context: IssueStatusValidationContext,
+) {
+  if (context.currentStatus === context.nextStatus) {
+    return;
+  }
+
+  const currentStatus = getStatusRecord(statuses, context.currentStatus);
+  const nextStatus = getStatusRecord(statuses, context.nextStatus);
+  if (!currentStatus || !nextStatus) {
+    throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, `Invalid status: ${context.nextStatus}`);
+  }
+
+  if (currentStatus.transitions.mode === "restricted") {
+    const isExplicitlyAllowed = currentStatus.transitions.to.includes(context.nextStatus);
+    const isRollback = currentStatus.transitions.allowRollback && nextStatus.order < currentStatus.order;
+    if (!isExplicitlyAllowed && !isRollback) {
+      throw new AppError(409, ERROR_CODES.INVALID_STATUS_TRANSITION, `Issues in ${currentStatus.label} cannot move directly to ${nextStatus.label}`);
+    }
+  }
+
+  // Approval gate only blocks moving FORWARD out of a gated status — a rejection/rollback
+  // move (sending work back for changes) doesn't need reviewer sign-off to happen.
+  if (currentStatus.approval.required && nextStatus.order > currentStatus.order) {
+    const remaining = currentStatus.approval.requiredCount - context.currentStatusApprovalCount;
+    if (remaining > 0) {
+      throw new AppError(
+        409,
+        ERROR_CODES.APPROVAL_REQUIREMENTS_NOT_MET,
+        `${currentStatus.label} needs ${remaining} more approval${remaining === 1 ? "" : "s"} before it can move forward`,
+      );
+    }
+  }
+
+  const roleAllowed = nextStatus.transitions.allowedRoles.includes(context.actorRole);
+  const userAllowed = nextStatus.transitions.allowedUserIds.includes(context.actorUserId);
+  if (!roleAllowed && !userAllowed) {
+    throw new AppError(403, ERROR_CODES.STATUS_TRANSITION_FORBIDDEN, `${context.actorRole.toLowerCase()} cannot move issues into ${nextStatus.label}`);
+  }
+
+  if (nextStatus.transitions.assigneeOnly && context.assigneeId !== context.actorUserId) {
+    throw new AppError(403, ERROR_CODES.STATUS_TRANSITION_FORBIDDEN, `${nextStatus.label} can only be entered by the assignee`);
+  }
+
+  if (nextStatus.transitions.creatorOnly && context.creatorId !== context.actorUserId) {
+    throw new AppError(403, ERROR_CODES.STATUS_TRANSITION_FORBIDDEN, `${nextStatus.label} can only be entered by the issue creator`);
+  }
+}
+
+function assertStatusEntryRules(
+  statuses: WorkspaceStatusRecord[],
+  context: IssueStatusValidationContext,
+) {
+  const nextStatus = getStatusRecord(statuses, context.nextStatus);
+  if (!nextStatus) {
+    throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, `Invalid status: ${context.nextStatus}`);
+  }
+
+  const label = nextStatus.label;
+  if (nextStatus.rules.requireAssignee && !context.assigneeId) {
+    throw new AppError(422, ERROR_CODES.STATUS_ENTRY_RULE_FAILED, `${label} requires an assignee`);
+  }
+  if (nextStatus.rules.requireDueDate && !context.dueDate) {
+    throw new AppError(422, ERROR_CODES.STATUS_ENTRY_RULE_FAILED, `${label} requires a due date`);
+  }
+  if (nextStatus.rules.requireAcceptanceCriteria && !context.acceptanceCriteria?.trim()) {
+    throw new AppError(422, ERROR_CODES.STATUS_ENTRY_RULE_FAILED, `${label} requires acceptance criteria`);
+  }
+  if (nextStatus.rules.requireParentIssue && !context.parentIssueId) {
+    throw new AppError(422, ERROR_CODES.STATUS_ENTRY_RULE_FAILED, `${label} requires a parent issue`);
+  }
+  if (nextStatus.rules.requireIntegrationRef && context.integrationRefCount === 0) {
+    throw new AppError(422, ERROR_CODES.STATUS_ENTRY_RULE_FAILED, `${label} requires at least one integration reference`);
+  }
+  if (nextStatus.rules.requireAllSubtasksComplete && context.subtaskTotal > 0 && context.incompleteSubtaskCount > 0) {
+    throw new AppError(422, ERROR_CODES.STATUS_ENTRY_RULE_FAILED, `${label} requires all subtasks to be complete`);
+  }
 }
 
 function formatDueTimeForActivity(value: Date | string | null | undefined) {
@@ -400,7 +518,7 @@ async function assertIssueAccessible(workspaceId: string, workspaceRole: Workspa
 async function assertProjectInWorkspace(tx: any, workspaceId: string, projectId: string) {
   const project = await tx.project.findFirst({
     where: { id: projectId, workspaceId },
-    select: { id: true, teamId: true, departmentId: true },
+    select: { id: true, teamId: true, departmentId: true, customStatuses: true, workflowAutomation: true },
   });
   if (!project) {
     throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
@@ -612,8 +730,16 @@ function validateTypeSpecific(input: CreateIssueInput | UpdateIssueInput, curren
   }
 }
 
-export async function createIssue(workspaceId: string, creatorId: string, input: CreateIssueInput) {
+export async function createIssue(
+  workspaceId: string,
+  creatorId: string,
+  input: CreateIssueInput,
+  actorRole: WorkspaceRole = "MEMBER",
+) {
   const mapped = await prisma.$transaction(async (tx) => {
+    const project = await assertProjectInWorkspace(tx, workspaceId, input.projectId);
+    const effectiveWorkflow = await getEffectiveWorkflowForProject(workspaceId, project);
+    const workspaceStatuses = effectiveWorkflow.statuses;
     let template: any = null;
     if ((input as any).templateId) {
       template = await (tx as any).template.findFirst({
@@ -648,7 +774,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
       ...input,
       type: template?.issueType ?? input.type,
       priority: template?.defaultPriority ?? input.priority,
-      status: input.status ?? template?.defaultStatus ?? "backlog",
+      status: input.status ?? template?.defaultStatus ?? getDefaultCreateStatus(workspaceStatuses),
       title: input.title || template?.titleTemplate || input.title,
       description: input.description ?? template?.contentTemplate ?? null,
       assigneeId: input.assigneeId ?? template?.defaultAssigneeId ?? null,
@@ -659,6 +785,7 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
       expectedBehavior: input.expectedBehavior ?? template?.expectedBehaviorTemplate ?? undefined,
       actualBehavior: input.actualBehavior ?? template?.actualBehaviorTemplate ?? undefined,
       notes: input.notes ?? template?.notesTemplate ?? undefined,
+      integrationRefs: input.integrationRefs ?? [],
       labels: (input.labels && input.labels.length > 0) ? input.labels : undefined,
       subtasks: (input.subtasks && input.subtasks.length > 0)
         ? input.subtasks
@@ -670,16 +797,21 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
 
     validateTypeSpecific(normalizedInput);
 
-    const workspaceStatuses = await getWorkspaceStatuses(workspaceId);
     const resolvedStatus = normalizedInput.status ?? "backlog";
-    if (!workspaceStatuses.some((s: any) => s.key === resolvedStatus)) {
+    const targetStatus = getStatusRecord(workspaceStatuses, resolvedStatus);
+    if (!targetStatus) {
       throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, `Invalid status: ${resolvedStatus}`);
+    }
+    if (!statusVisibleInCreate(targetStatus)) {
+      throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, `${targetStatus.label} is not available in issue creation`);
     }
     const isFinalStatus = isStatusFinal(workspaceStatuses, resolvedStatus);
 
-    const project = await assertProjectInWorkspace(tx, workspaceId, input.projectId);
     if (input.cycleId) {
       await assertCycleAssignable(tx, workspaceId, input.cycleId, project.teamId);
+      if (!statusAllowedInCycle(targetStatus)) {
+        throw new AppError(422, ERROR_CODES.CYCLE_ASSIGN_COMPLETED_FORBIDDEN, `${targetStatus.label} cannot be planned into a cycle`);
+      }
     }
     if (normalizedInput.assigneeId) {
       await assertAssigneeInWorkspace(tx, workspaceId, normalizedInput.assigneeId);
@@ -695,6 +827,24 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         throw new AppError(404, ERROR_CODES.PARENT_ISSUE_NOT_FOUND, "Parent issue not found");
       }
     }
+
+    assertStatusEntryRules(workspaceStatuses, {
+      issueId: "draft",
+      issueTitle: normalizedInput.title,
+      currentStatus: resolvedStatus,
+      nextStatus: resolvedStatus,
+      actorUserId: creatorId,
+      actorRole,
+      creatorId,
+      assigneeId: normalizedInput.assigneeId ?? null,
+      dueDate: normalizedInput.dueDate ? new Date(normalizedInput.dueDate) : null,
+      acceptanceCriteria: normalizedInput.acceptanceCriteria ?? null,
+      parentIssueId: input.parentIssueId ?? null,
+      integrationRefCount: normalizedInput.integrationRefs?.length ?? 0,
+      subtaskTotal: normalizedInput.subtasks?.length ?? 0,
+      incompleteSubtaskCount: normalizedInput.subtasks?.length ?? 0,
+      currentStatusApprovalCount: 0,
+    });
 
     const workspace = await tx.workspace.update({
       where: { id: workspaceId },
@@ -728,6 +878,9 @@ export async function createIssue(workspaceId: string, creatorId: string, input:
         severity: normalizedInput.severity ? severityToDb[normalizedInput.severity] : null,
         acceptanceCriteria: normalizedInput.acceptanceCriteria ?? null,
         notes: normalizedInput.notes ?? null,
+        integrationRef: normalizedInput.integrationRefs && normalizedInput.integrationRefs.length > 0
+          ? normalizedInput.integrationRefs as any
+          : null,
         parentIssueId: input.parentIssueId ?? null,
         templateId: template?.id ?? null,
         templateVersion: template?.activeVersion ?? null,
@@ -1026,7 +1179,13 @@ export async function getIssueById(workspaceId: string, workspaceRole: Workspace
   return mapIssue(issue, true);
 }
 
-export async function updateIssue(workspaceId: string, issueId: string, actorUserId: string, input: UpdateIssueInput) {
+export async function updateIssue(
+  workspaceId: string,
+  issueId: string,
+  actorUserId: string,
+  input: UpdateIssueInput,
+  actorRole?: WorkspaceRole,
+) {
   const mapped = await prisma.$transaction(async (tx) => {
     const current = await tx.issue.findFirst({
       where: { id: issueId, workspaceId },
@@ -1047,9 +1206,12 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
         creatorId: true,
         cycleId: true,
         completedAt: true,
+        acceptanceCriteria: true,
+        integrationRef: true,
+        subtasks: { select: { id: true, completed: true } },
         assignee: { select: { id: true, name: true } },
         parent: { select: { id: true, title: true } },
-        project: { select: { id: true, name: true } },
+        project: { select: { id: true, name: true, customStatuses: true, workflowAutomation: true } },
         team: { select: { id: true, name: true } },
         labels: {
           include: {
@@ -1064,6 +1226,13 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
     }
 
     validateTypeSpecific(input, current.type);
+
+    const resolvedActorRole = actorRole ?? (
+      await tx.workspaceMembership.findUnique({
+        where: { userId_workspaceId: { userId: actorUserId, workspaceId } },
+        select: { role: true },
+      })
+    )?.role ?? "MEMBER";
 
     if (input.assigneeId) {
       await assertAssigneeInWorkspace(tx, workspaceId, input.assigneeId);
@@ -1089,9 +1258,59 @@ export async function updateIssue(workspaceId: string, issueId: string, actorUse
     const nextStatus = input.status !== undefined ? input.status : current.status;
     let nextCompletedAt: Date | null | undefined = current.completedAt;
     if (input.status !== undefined) {
-      const statuses = await getWorkspaceStatuses(workspaceId);
+      const effectiveWorkflow = await getEffectiveWorkflowForProject(workspaceId, current.project);
+      const statuses = effectiveWorkflow.statuses;
       if (!statuses.some((s: any) => s.key === nextStatus)) {
         throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, `Invalid status: ${nextStatus}`);
+      }
+      const mergedAssigneeId = input.assigneeId !== undefined ? input.assigneeId : current.assigneeId;
+      const mergedDueDate = input.dueDate !== undefined ? (input.dueDate ? new Date(input.dueDate) : null) : current.dueDate;
+      const mergedAcceptanceCriteria = input.acceptanceCriteria !== undefined ? input.acceptanceCriteria : current.acceptanceCriteria;
+      const mergedParentIssueId = input.parentIssueId !== undefined ? input.parentIssueId : current.parentIssueId;
+      const integrationRefCount = normalizeStoredIntegrationRefs(current.integrationRef).length;
+      const subtaskTotal = current.subtasks.length;
+      const incompleteSubtaskCount = current.subtasks.filter((subtask) => !subtask.completed).length;
+      const currentStatusApprovalCount = await tx.issueApproval.count({
+        where: { issueId: current.id, statusKey: current.status },
+      });
+
+      assertTransitionPermission(statuses, {
+        issueId: current.id,
+        issueTitle: current.title,
+        currentStatus: current.status,
+        nextStatus,
+        actorUserId,
+        actorRole: resolvedActorRole,
+        creatorId: current.creatorId,
+        assigneeId: mergedAssigneeId ?? null,
+        dueDate: mergedDueDate,
+        acceptanceCriteria: mergedAcceptanceCriteria ?? null,
+        parentIssueId: mergedParentIssueId ?? null,
+        integrationRefCount,
+        subtaskTotal,
+        incompleteSubtaskCount,
+        currentStatusApprovalCount,
+      });
+      assertStatusEntryRules(statuses, {
+        issueId: current.id,
+        issueTitle: current.title,
+        currentStatus: current.status,
+        nextStatus,
+        actorUserId,
+        actorRole: resolvedActorRole,
+        creatorId: current.creatorId,
+        assigneeId: mergedAssigneeId ?? null,
+        dueDate: mergedDueDate,
+        acceptanceCriteria: mergedAcceptanceCriteria ?? null,
+        parentIssueId: mergedParentIssueId ?? null,
+        integrationRefCount,
+        subtaskTotal,
+        incompleteSubtaskCount,
+        currentStatusApprovalCount,
+      });
+
+      if (nextStatus !== current.status && statuses.find((s) => s.key === nextStatus)?.approval.required) {
+        await tx.issueApproval.deleteMany({ where: { issueId: current.id, statusKey: nextStatus } });
       }
       const isFinalOld = isStatusFinal(statuses, current.status);
       const isFinalNew = isStatusFinal(statuses, nextStatus);
@@ -1547,16 +1766,74 @@ export async function updateIssueStatus(
 ) {
   const issue = await prisma.issue.findFirst({
     where: { id: issueId, workspaceId },
-    select: { id: true, status: true, cycleId: true, completedAt: true },
+    select: {
+      id: true,
+      status: true,
+      cycleId: true,
+      completedAt: true,
+      title: true,
+      creatorId: true,
+      assigneeId: true,
+      dueDate: true,
+      acceptanceCriteria: true,
+      parentIssueId: true,
+      integrationRef: true,
+      project: { select: { customStatuses: true, workflowAutomation: true } },
+      subtasks: { select: { id: true, completed: true } },
+    },
   });
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
   }
 
   const nextStatus = status;
-  const statuses = await getWorkspaceStatuses(workspaceId);
+  const effectiveWorkflow = await getEffectiveWorkflowForProject(workspaceId, issue.project);
+  const statuses = effectiveWorkflow.statuses;
   if (!statuses.some((s: any) => s.key === nextStatus)) {
     throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, `Invalid status: ${nextStatus}`);
+  }
+  const integrationRefCount = normalizeStoredIntegrationRefs(issue.integrationRef).length;
+  const subtaskTotal = issue.subtasks.length;
+  const incompleteSubtaskCount = issue.subtasks.filter((subtask) => !subtask.completed).length;
+  const currentStatusApprovalCount = await prisma.issueApproval.count({
+    where: { issueId: issue.id, statusKey: issue.status },
+  });
+  assertTransitionPermission(statuses, {
+    issueId: issue.id,
+    issueTitle: issue.title,
+    currentStatus: issue.status,
+    nextStatus,
+    actorUserId: userId,
+    actorRole: workspaceRole,
+    creatorId: issue.creatorId,
+    assigneeId: issue.assigneeId ?? null,
+    dueDate: issue.dueDate,
+    acceptanceCriteria: issue.acceptanceCriteria ?? null,
+    parentIssueId: issue.parentIssueId ?? null,
+    integrationRefCount,
+    subtaskTotal,
+    incompleteSubtaskCount,
+    currentStatusApprovalCount,
+  });
+  assertStatusEntryRules(statuses, {
+    issueId: issue.id,
+    issueTitle: issue.title,
+    currentStatus: issue.status,
+    nextStatus,
+    actorUserId: userId,
+    actorRole: workspaceRole,
+    creatorId: issue.creatorId,
+    assigneeId: issue.assigneeId ?? null,
+    dueDate: issue.dueDate,
+    acceptanceCriteria: issue.acceptanceCriteria ?? null,
+    parentIssueId: issue.parentIssueId ?? null,
+    integrationRefCount,
+    subtaskTotal,
+    incompleteSubtaskCount,
+    currentStatusApprovalCount,
+  });
+  if (nextStatus !== issue.status && statuses.find((s) => s.key === nextStatus)?.approval.required) {
+    await prisma.issueApproval.deleteMany({ where: { issueId: issue.id, statusKey: nextStatus } });
   }
   const isFinalOld = isStatusFinal(statuses, issue.status);
   const isFinalNew = isStatusFinal(statuses, nextStatus);

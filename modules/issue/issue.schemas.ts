@@ -15,6 +15,14 @@ const attachmentRefSchema = z.object({
   assetUrl: z.string().url().nullable().optional(),
 });
 
+const integrationRefInputSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  provider: z.enum(["github", "jira", "slack", "notion", "figma", "custom"]),
+  label: z.string().trim().max(100).nullable().optional(),
+  externalId: z.string().trim().max(255).nullable().optional(),
+  url: z.string().url().nullable().optional(),
+});
+
 const createSubtaskInlineSchema = z.object({
   title: z.string().trim().min(1).max(500),
   order: z.number().int().min(0).optional(),
@@ -42,6 +50,7 @@ export const createIssueSchema = {
     acceptanceCriteria: z.string().trim().max(50000).optional(),
     relatedIssueKeys: z.array(z.string().trim().min(1)).max(100).optional(),
     notes: z.string().trim().max(50000).optional(),
+    integrationRefs: z.array(integrationRefInputSchema).max(25).optional(),
     attachments: z.array(attachmentRefSchema).max(100).optional(),
     parentIssueId: z.string().min(1).nullable().optional(),
     templateId: z.string().uuid().optional(),

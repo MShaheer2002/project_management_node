@@ -103,7 +103,9 @@ type ActivityType =
   | "GITHUB_PR_REVIEW"
   | "DRIVE_CONNECTED"
   | "DRIVE_DISCONNECTED"
-  | "AI_ACTION_EXECUTED";
+  | "AI_ACTION_EXECUTED"
+  | "ISSUE_APPROVED"
+  | "ISSUE_APPROVAL_REVOKED";
 
 interface LogActivityInput {
   workspaceId: string;

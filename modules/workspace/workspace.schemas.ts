@@ -187,21 +187,164 @@ export const getWorkspaceStatusesSchema = {
   }),
 };
 
+/** GET /workspaces/:workspaceId/statuses/:statusKey/usage — Count issues using a status */
+export const getWorkspaceStatusUsageSchema = {
+  params: z.object({
+    workspaceId: z.string().uuid("Invalid workspace ID"),
+    statusKey: z.string().min(1).max(50),
+  }),
+  query: z.object({
+    limit: z.coerce.number().int().min(1).max(1000).optional(),
+  }),
+};
+
+export const mergeWorkspaceStatusSchema = {
+  params: z.object({
+    workspaceId: z.string().uuid("Invalid workspace ID"),
+    statusKey: z.string().min(1).max(50),
+  }),
+  body: z.object({
+    targetStatusKey: z.string().min(1).max(50),
+  }),
+};
+
 /** PUT /workspaces/:workspaceId/statuses — Replace workspace statuses */
-const workspaceStatusItemSchema = z.object({
+export const workspaceStatusItemSchema = z.object({
   key: z.string().min(1).max(50),
   label: z.string().min(1).max(50),
   color: z.string().min(4).max(9),
   order: z.number().int().min(0),
+  category: z.enum(["backlog", "unstarted", "active", "review", "done", "cancelled"]).default("active"),
+  isActive: z.boolean().default(true),
   isFinal: z.boolean(),
   showOnBoard: z.boolean().default(true),
+  visibility: z.object({
+    board: z.boolean().default(true),
+    list: z.boolean().default(true),
+    filters: z.boolean().default(true),
+    create: z.boolean().default(true),
+    cycleBoard: z.boolean().default(true),
+    cycleList: z.boolean().default(true),
+  }).default({
+    board: true,
+    list: true,
+    filters: true,
+    create: true,
+    cycleBoard: true,
+    cycleList: true,
+  }),
+  cycle: z.object({
+    allowedInCycle: z.boolean().default(true),
+    countsAsCompleted: z.boolean().default(false),
+    countsAsCarryOver: z.boolean().default(true),
+    planIntoThisStatus: z.boolean().default(false),
+  }).default({
+    allowedInCycle: true,
+    countsAsCompleted: false,
+    countsAsCarryOver: true,
+    planIntoThisStatus: false,
+  }),
+  transitions: z.object({
+    mode: z.enum(["free", "restricted"]).default("free"),
+    to: z.array(z.string().min(1).max(50)).max(20).default([]),
+    allowRollback: z.boolean().default(false),
+    allowedRoles: z.array(z.enum(["OWNER", "ADMIN", "MEMBER", "GUEST"])).min(1).max(4).default(["OWNER", "ADMIN", "MEMBER"]),
+    allowedUserIds: z.array(z.string().min(1).max(100)).max(50).default([]),
+    assigneeOnly: z.boolean().default(false),
+    creatorOnly: z.boolean().default(false),
+  }).default({
+    mode: "free",
+    to: [],
+    allowRollback: false,
+    allowedRoles: ["OWNER", "ADMIN", "MEMBER"],
+    allowedUserIds: [],
+    assigneeOnly: false,
+    creatorOnly: false,
+  }),
+  rules: z.object({
+    requireAssignee: z.boolean().default(false),
+    requireDueDate: z.boolean().default(false),
+    requireAllSubtasksComplete: z.boolean().default(false),
+    requireAcceptanceCriteria: z.boolean().default(false),
+    requireParentIssue: z.boolean().default(false),
+    requireIntegrationRef: z.boolean().default(false),
+  }).default({
+    requireAssignee: false,
+    requireDueDate: false,
+    requireAllSubtasksComplete: false,
+    requireAcceptanceCriteria: false,
+    requireParentIssue: false,
+    requireIntegrationRef: false,
+  }),
+  approval: z.object({
+    required: z.boolean().default(false),
+    requiredCount: z.number().int().min(1).max(10).default(1),
+    reviewerSource: z.enum(["project_members", "team_lead", "department_head", "manual"]).default("project_members"),
+    reviewerUserIds: z.array(z.string().min(1).max(100)).max(50).default([]),
+  }).default({
+    required: false,
+    requiredCount: 1,
+    reviewerSource: "project_members",
+    reviewerUserIds: [],
+  }),
+});
+
+export const workflowAutomationSchema = z.object({
+  subtaskCompletion: z.object({
+    enabled: z.boolean(),
+    mode: z.enum(["suggest", "move"]),
+    targetStatusKey: z.string().min(1).max(50).nullable(),
+  }),
+  cycleStart: z.object({
+    enabled: z.boolean(),
+    fromStatusKey: z.string().min(1).max(50).nullable(),
+    targetStatusKey: z.string().min(1).max(50).nullable(),
+  }),
+  overdue: z.object({
+    enabled: z.boolean(),
+    action: z.enum(["notify"]),
+  }),
+  githubPullRequest: z.object({
+    opened: z.object({
+      enabled: z.boolean(),
+      targetStatusKey: z.string().min(1).max(50).nullable(),
+    }),
+    merged: z.object({
+      enabled: z.boolean(),
+      targetStatusKey: z.string().min(1).max(50).nullable(),
+    }),
+  }),
+});
+
+export const statusRemovalResolutionSchema = z.object({
+  statusKey: z.string().min(1).max(50),
+  action: z.enum(["move", "delete"]),
+  targetStatusKey: z.string().min(1).max(50).nullable().optional(),
 });
 
 export const updateWorkspaceStatusesSchema = {
   params: z.object({
     workspaceId: z.string().uuid("Invalid workspace ID"),
   }),
-  body: z.array(workspaceStatusItemSchema).min(1).max(20),
+  body: z.object({
+    statuses: z.array(workspaceStatusItemSchema).min(1).max(20),
+    removalResolutions: z.array(statusRemovalResolutionSchema).max(20).default([]),
+  }),
+};
+
+/** GET /workspaces/:workspaceId/workflow-automation — Get workflow automation config */
+export const getWorkflowAutomationSchema = {
+  params: z.object({
+    workspaceId: z.string().uuid("Invalid workspace ID"),
+  }),
+};
+
+/** PUT /workspaces/:workspaceId/workflow-automation — Replace workflow automation config */
+export const updateWorkflowAutomationSchema = {
+  params: z.object({
+    workspaceId: z.string().uuid("Invalid workspace ID"),
+  }),
+  body: workflowAutomationSchema,
 };
 
 /** DELETE /workspaces/:workspaceId/invitations/:invitationId — Revoke invite */
@@ -217,6 +360,7 @@ export const revokeInvitationSchema = {
 export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema.body>;
 export type UpdateWorkspaceInput = z.infer<typeof updateWorkspaceSchema.body>;
 export type UpdateWorkspaceStatusesInput = z.infer<typeof updateWorkspaceStatusesSchema.body>;
+export type UpdateWorkflowAutomationInput = z.infer<typeof updateWorkflowAutomationSchema.body>;
 export type InviteMemberInput = z.infer<typeof inviteMemberSchema.body>;
 export type ChangeMemberRoleInput = z.infer<typeof changeMemberRoleSchema.body>;
 export type ListWorkspaceMembersQuery = z.infer<typeof listWorkspaceMembersSchema.query>;

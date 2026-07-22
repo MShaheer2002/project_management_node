@@ -14,16 +14,23 @@
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import {
+  normalizeWorkflowAutomation,
+  normalizeWorkspaceStatuses,
+  statusVisibleOnBoard,
+} from "../../shared/workflow/workflow-automation.js";
+import {
+  validateWorkflowUserReferences,
+  validateWorkflowAutomationAgainstStatuses,
+  validateWorkflowStatusList,
+} from "../../shared/workflow/status-validation.js";
 import { createInitialWorkspaceSubscription } from "../billing/billing.service.js";
-import type { CreateWorkspaceInput, UpdateWorkspaceInput, UpdateWorkspaceStatusesInput } from "./workspace.schemas.js";
-
-function normalizeWorkspaceStatuses(statuses: any[] | null | undefined) {
-  return ((statuses as any[]) ?? []).map((status: any, index: number) => ({
-    ...status,
-    order: typeof status?.order === "number" ? status.order : index,
-    showOnBoard: status?.showOnBoard !== false,
-  }));
-}
+import type {
+  CreateWorkspaceInput,
+  UpdateWorkspaceInput,
+  UpdateWorkspaceStatusesInput,
+  UpdateWorkflowAutomationInput,
+} from "./workspace.schemas.js";
 
 /**
  * Create a workspace and set up the initial structure:
@@ -158,6 +165,10 @@ export async function createWorkspace(userId: string, input: CreateWorkspaceInpu
     teamSize: result.workspace.teamSize,
     issuePrefix: result.workspace.issuePrefix,
     customStatuses: normalizeWorkspaceStatuses((result.workspace as any).customStatuses),
+    workflowAutomation: normalizeWorkflowAutomation(
+      (result.workspace as any).workflowAutomation,
+      (result.workspace as any).customStatuses,
+    ),
     role: "OWNER" as const,
     defaultTeamId: result.defaultTeam.id,
     createdAt: result.workspace.createdAt,
@@ -182,6 +193,7 @@ export async function listWorkspaces(userId: string) {
           teamSize: true,
           issuePrefix: true,
           customStatuses: true,
+          workflowAutomation: true,
           uploadPolicy: true,
           createdAt: true,
         },
@@ -230,6 +242,10 @@ export async function listWorkspaces(userId: string) {
     teamSize: m.workspace.teamSize,
     issuePrefix: m.workspace.issuePrefix,
     customStatuses: normalizeWorkspaceStatuses(m.workspace.customStatuses as any[]),
+    workflowAutomation: normalizeWorkflowAutomation(
+      m.workspace.workflowAutomation,
+      m.workspace.customStatuses as any[],
+    ),
     uploadPolicy: m.workspace.uploadPolicy,
     role: m.role,
     defaultTeamId: defaultTeamMap.get(m.workspace.id) ?? null,
@@ -255,6 +271,7 @@ export async function getWorkspaceById(workspaceId: string) {
       issuePrefix: true,
       issueCounter: true,
       customStatuses: true,
+      workflowAutomation: true,
       uploadPolicy: true,
       createdById: true,
       createdAt: true,
@@ -278,6 +295,7 @@ export async function getWorkspaceById(workspaceId: string) {
   return {
     ...workspace,
     customStatuses: normalizeWorkspaceStatuses(workspace.customStatuses as any[]),
+    workflowAutomation: normalizeWorkflowAutomation(workspace.workflowAutomation, workspace.customStatuses as any[]),
   };
 }
 
@@ -300,6 +318,7 @@ export async function updateWorkspace(workspaceId: string, input: UpdateWorkspac
       logo: true,
       teamSize: true,
       customStatuses: true,
+      workflowAutomation: true,
       uploadPolicy: true,
       updatedAt: true,
     },
@@ -308,6 +327,7 @@ export async function updateWorkspace(workspaceId: string, input: UpdateWorkspac
   return {
     ...workspace,
     customStatuses: normalizeWorkspaceStatuses(workspace.customStatuses as any[]),
+    workflowAutomation: normalizeWorkflowAutomation(workspace.workflowAutomation, workspace.customStatuses as any[]),
   };
 }
 
@@ -348,68 +368,296 @@ export async function getWorkspaceStatuses(workspaceId: string) {
   return normalizeWorkspaceStatuses(workspace.customStatuses as any[]);
 }
 
+const STATUS_USAGE_PREVIEW_LIMIT = 25;
+const STATUS_USAGE_EXPORT_LIMIT = 1000;
+
+export async function getWorkspaceStatusUsage(workspaceId: string, statusKey: string, limit?: number) {
+  const statuses = await getWorkspaceStatuses(workspaceId);
+  const status = statuses.find((item) => item.key === statusKey);
+
+  if (!status) {
+    throw new AppError(404, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "Workflow status not found");
+  }
+
+  const take = Math.min(limit ?? STATUS_USAGE_PREVIEW_LIMIT, STATUS_USAGE_EXPORT_LIMIT);
+
+  const [issueCount, issues] = await Promise.all([
+    prisma.issue.count({
+      where: { workspaceId, status: statusKey },
+    }),
+    prisma.issue.findMany({
+      where: { workspaceId, status: statusKey },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+      take: take + 1,
+      select: {
+        id: true,
+        internalId: true,
+        title: true,
+        project: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  const truncated = issues.length > take;
+
+  return {
+    statusKey,
+    label: status.label,
+    issueCount,
+    truncated,
+    issues: issues.slice(0, take).map((issue) => ({
+      id: issue.internalId,
+      publicId: issue.id,
+      title: issue.title,
+      project: issue.project
+        ? {
+            id: issue.project.id,
+            name: issue.project.name,
+          }
+        : null,
+    })),
+  };
+}
+
+/**
+ * Merge one status into another: every issue currently on sourceKey moves to
+ * targetKey, then sourceKey is removed from the workflow (and stripped from any
+ * other status's transition list). A dedicated action instead of routing merges
+ * through the generic "replace the whole status list" update — safer, since the
+ * caller doesn't have to resend every other status untouched.
+ */
+export async function mergeWorkspaceStatus(workspaceId: string, sourceKey: string, targetKey: string) {
+  if (sourceKey === targetKey) {
+    throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "Merge source and target must be different");
+  }
+
+  const statuses = await getWorkspaceStatuses(workspaceId);
+  const sourceStatus = statuses.find((status) => status.key === sourceKey);
+  const targetStatus = statuses.find((status) => status.key === targetKey);
+  if (!sourceStatus) {
+    throw new AppError(404, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "Source status not found");
+  }
+  if (!targetStatus) {
+    throw new AppError(404, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "Target status not found");
+  }
+
+  const remaining = statuses
+    .filter((status) => status.key !== sourceKey)
+    .map((status) => ({
+      ...status,
+      transitions: { ...status.transitions, to: status.transitions.to.filter((key) => key !== sourceKey) },
+    }));
+
+  const validatedStatuses = validateWorkflowStatusList(remaining, ERROR_CODES.INVALID_WORKSPACE_STATUSES);
+  const nextStatuses = validatedStatuses.map((status, index) => ({
+    ...status,
+    order: index,
+    showOnBoard: statusVisibleOnBoard(status),
+  }));
+
+  const currentWorkspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { workflowAutomation: true },
+  });
+  if (!currentWorkspace) {
+    throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "Workspace not found");
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.issue.updateMany({
+      where: { workspaceId, status: sourceKey },
+      data: { status: targetKey, completedAt: targetStatus.isFinal ? new Date() : null },
+    });
+    await tx.issueApproval.deleteMany({ where: { workspaceId, statusKey: sourceKey } });
+
+    return tx.workspace.update({
+      where: { id: workspaceId },
+      data: {
+        customStatuses: nextStatuses as any,
+        workflowAutomation: normalizeWorkflowAutomation(currentWorkspace.workflowAutomation, nextStatuses) as any,
+      },
+      select: { customStatuses: true },
+    });
+  });
+
+  return updated.customStatuses as any[];
+}
+
+/**
+ * Get workflow automation config for a workspace.
+ */
+export async function getWorkflowAutomation(workspaceId: string) {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { customStatuses: true, workflowAutomation: true },
+  });
+
+  if (!workspace) {
+    throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "Workspace not found");
+  }
+
+  return normalizeWorkflowAutomation(workspace.workflowAutomation, workspace.customStatuses as any[]);
+}
+
 /**
  * Replace the entire custom statuses array for a workspace.
  * Validates structure, uniqueness, and business rules.
  */
-export async function updateWorkspaceStatuses(workspaceId: string, statuses: UpdateWorkspaceStatusesInput) {
-  const KEBAB_CASE_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export async function updateWorkspaceStatuses(workspaceId: string, input: UpdateWorkspaceStatusesInput) {
+  const statuses = input.statuses;
+  const removalResolutions = input.removalResolutions ?? [];
 
-  if (statuses.length === 0) {
-    throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "At least one status is required");
-  }
-
-  if (statuses.length > 20) {
-    throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "Maximum 20 statuses allowed");
-  }
-
-  const keys = new Set<string>();
-  for (const s of statuses) {
-    if (!KEBAB_CASE_REGEX.test(s.key)) {
-      throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, `Status key "${s.key}" must be lowercase kebab-case`);
-    }
-    if (keys.has(s.key)) {
-      throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, `Duplicate status key "${s.key}"`);
-    }
-    keys.add(s.key);
-  }
-
-  const hasFinal = statuses.some((s) => s.isFinal);
-  if (!hasFinal) {
-    throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "At least one status must have isFinal: true");
-  }
-
-  const hasBoardStatus = statuses.some((s) => s.showOnBoard !== false);
-  if (!hasBoardStatus) {
-    throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "At least one status must be visible on the board");
-  }
+  const normalizedStatuses = validateWorkflowStatusList(statuses, ERROR_CODES.INVALID_WORKSPACE_STATUSES);
+  await validateWorkflowUserReferences(prisma, workspaceId, normalizedStatuses, ERROR_CODES.INVALID_WORKSPACE_STATUSES);
 
   const currentStatuses = await getWorkspaceStatuses(workspaceId);
   const currentKeys = new Set(currentStatuses.map((s: any) => s.key));
   const newKeys = new Set(statuses.map((s) => s.key));
   const removedKeys = [...currentKeys].filter((k) => !newKeys.has(k));
+  const resolutionMap = new Map(removalResolutions.map((resolution) => [resolution.statusKey, resolution]));
 
-  if (removedKeys.length > 0) {
-    const affectedCount = await prisma.issue.count({
-      where: { workspaceId, status: { in: removedKeys } },
-    });
-    if (affectedCount > 0) {
-      throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES,
-        `Cannot remove statuses that are in use. ${affectedCount} issue(s) use the statuses: ${removedKeys.join(', ')}`);
+  for (const resolution of removalResolutions) {
+    if (!removedKeys.includes(resolution.statusKey)) {
+      throw new AppError(
+        422,
+        ERROR_CODES.INVALID_WORKSPACE_STATUSES,
+        `Removal resolution references a status that is not being removed: ${resolution.statusKey}`,
+      );
     }
   }
 
-  const workspace = await prisma.workspace.update({
+  const removedStatusCounts =
+    removedKeys.length > 0
+      ? await (prisma as any).issue.groupBy({
+          by: ["status"],
+          where: { workspaceId, status: { in: removedKeys } },
+          _count: { _all: true },
+        })
+      : [];
+
+  const removedStatusCountMap = new Map<string, number>(
+    (removedStatusCounts as Array<{ status: string; _count: { _all: number } }>).map((item) => [item.status, item._count._all]),
+  );
+
+  for (const removedKey of removedKeys) {
+    const affectedCount = removedStatusCountMap.get(removedKey) ?? 0;
+    if (affectedCount === 0) continue;
+
+    const resolution = resolutionMap.get(removedKey);
+    if (!resolution) {
+      throw new AppError(
+        422,
+        ERROR_CODES.INVALID_WORKSPACE_STATUSES,
+        `Cannot remove ${removedKey} while ${affectedCount} issue(s) still use it. Move those issues to another workflow or delete them with the workflow.`,
+      );
+    }
+
+    if (resolution.action === "move") {
+      if (!resolution.targetStatusKey) {
+        throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, `A destination workflow is required for ${removedKey}`);
+      }
+      if (!newKeys.has(resolution.targetStatusKey)) {
+        throw new AppError(
+          422,
+          ERROR_CODES.INVALID_WORKSPACE_STATUSES,
+          `Destination workflow ${resolution.targetStatusKey} must remain in the workflow list`,
+        );
+      }
+      if (resolution.targetStatusKey === removedKey) {
+        throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, `Destination workflow for ${removedKey} must be different`);
+      }
+    }
+  }
+
+  const currentWorkspace = await prisma.workspace.findUnique({
     where: { id: workspaceId },
-    data: {
-      customStatuses: statuses.map((status, index) => ({
-        ...status,
-        order: typeof status.order === "number" ? status.order : index,
-        showOnBoard: status.showOnBoard !== false,
-      })) as any,
-    },
-    select: { customStatuses: true },
+    select: { workflowAutomation: true },
+  });
+
+  if (!currentWorkspace) {
+    throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "Workspace not found");
+  }
+
+  const nextStatuses = normalizedStatuses.map((status, index) => ({
+    ...status,
+    order: index,
+    showOnBoard: statusVisibleOnBoard(status),
+  }));
+  const nextStatusMap = new Map(nextStatuses.map((status) => [status.key, status]));
+
+  const workspace = await prisma.$transaction(async (tx) => {
+    for (const removedKey of removedKeys) {
+      const affectedCount = removedStatusCountMap.get(removedKey) ?? 0;
+      if (affectedCount === 0) continue;
+
+      const resolution = resolutionMap.get(removedKey)!;
+
+      if (resolution.action === "move") {
+        const targetStatus = nextStatusMap.get(resolution.targetStatusKey!);
+        if (!targetStatus) {
+          throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, `Destination workflow ${resolution.targetStatusKey} was not found`);
+        }
+
+        await tx.issue.updateMany({
+          where: { workspaceId, status: removedKey },
+          data: {
+            status: targetStatus.key,
+            completedAt: targetStatus.isFinal ? new Date() : null,
+          },
+        });
+        continue;
+      }
+
+      await tx.issue.deleteMany({
+        where: { workspaceId, status: removedKey },
+      });
+    }
+
+    return tx.workspace.update({
+      where: { id: workspaceId },
+      data: {
+        customStatuses: nextStatuses as any,
+        workflowAutomation: normalizeWorkflowAutomation(
+          currentWorkspace.workflowAutomation,
+          nextStatuses,
+        ) as any,
+      },
+      select: { customStatuses: true },
+    });
   });
 
   return workspace.customStatuses as any[];
+}
+
+/**
+ * Replace workflow automation config for a workspace.
+ */
+export async function updateWorkflowAutomation(
+  workspaceId: string,
+  input: UpdateWorkflowAutomationInput,
+) {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { customStatuses: true },
+  });
+
+  if (!workspace) {
+    throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "Workspace not found");
+  }
+
+  const statuses = normalizeWorkspaceStatuses(workspace.customStatuses as any[]);
+  const normalized = validateWorkflowAutomationAgainstStatuses(input, statuses, ERROR_CODES.INVALID_WORKSPACE_STATUSES);
+
+  const updated = await prisma.workspace.update({
+    where: { id: workspaceId },
+    data: { workflowAutomation: normalized as any },
+    select: { workflowAutomation: true, customStatuses: true },
+  });
+
+  return normalizeWorkflowAutomation(updated.workflowAutomation, updated.customStatuses as any[]);
 }

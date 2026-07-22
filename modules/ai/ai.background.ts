@@ -2,6 +2,7 @@ import { prisma } from "../../shared/utils/prisma.js";
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { AiSuggestionType } from "../../app/generated/prisma/client.js";
+import { runOverdueIssueAutomation } from "../../shared/workflow/workflow-automation-runtime.js";
 import { logAiError, logAiInfo, logAiWarn } from "./ai.observability.js";
 import { upsertEntityAliases } from "./ai.entity-aliases.js";
 import { detectPriority } from "./ai.rules.js";
@@ -1113,6 +1114,8 @@ export async function processStaleScanJob(payload: StaleScanJob, jobMeta?: { job
     let suggestionsCreated = 0;
 
     for (const workspace of workspaces) {
+      await runOverdueIssueAutomation(workspace.id);
+
       const issues = await prisma.issue.findMany({
         where: {
           workspaceId: workspace.id,
