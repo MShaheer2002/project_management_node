@@ -20,6 +20,7 @@ import type { RequestHandler } from "express";
 import { prisma } from "../utils/prisma.js";
 import { AppError } from "../utils/api-error.js";
 import { ERROR_CODES } from "../errors/error-codes.js";
+import { assertWorkspaceAccessAllowed } from "../../modules/billing/billing.service.js";
 
 export const requireWorkspace: RequestHandler = async (req, _res, next) => {
   try {
@@ -73,6 +74,11 @@ export const requireWorkspace: RequestHandler = async (req, _res, next) => {
         "You are not a member of this workspace",
       );
     }
+
+    // ─── Block access if the workspace is over the Free plan's member cap ──
+    // (e.g. a paid subscription with >10 seats lapsed back to Free). Owners
+    // are always allowed; everyone else is gated to the earliest-joined seats.
+    await assertWorkspaceAccessAllowed(workspaceId, req.user?.id ?? "", membership.role);
 
     // ─── Attach workspace context to request ────────────────────────────
     req.workspace = {

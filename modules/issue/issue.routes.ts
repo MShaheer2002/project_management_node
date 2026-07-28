@@ -31,6 +31,8 @@ const router = Router();
 router.post("/", authenticate, validate(createIssueSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.create);
 router.post("/assignment-eligibility", authenticate, validate(checkAssignmentEligibilitySchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.checkAssignmentEligibility);
 router.get("/", authenticate, validate(listIssuesSchema), requireWorkspace, controller.list);
+// Must be registered before "/:id" — otherwise Express would match "status-counts" as an :id.
+router.get("/status-counts", authenticate, requireWorkspace, controller.getStatusCounts);
 router.get("/:id", authenticate, validate(issueIdParamsSchema), requireWorkspace, controller.getById);
 router.patch("/:id", authenticate, validate(updateIssueSchema), requireWorkspace, requireRole("MEMBER", "ADMIN", "OWNER"), controller.update);
 router.delete("/:id", authenticate, validate(issueIdParamsSchema), requireWorkspace, requireRole("ADMIN", "OWNER"), controller.remove);

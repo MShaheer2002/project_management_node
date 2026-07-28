@@ -24,6 +24,7 @@ import {
   initDefaultSettings,
 } from "../integration.service.js";
 import { maskWebhookUrl } from "./discord.utils.js";
+import { assertIntegrationAllowedForPlan } from "../../billing/billing.service.js";
 
 // ─── Default Settings ───────────────────────────────────────────────────────
 
@@ -60,6 +61,8 @@ export async function connectDiscord(
   userId: string,
   input: { webhookUrl: string; label?: string },
 ) {
+  await assertIntegrationAllowedForPlan(workspaceId, "DISCORD");
+
   // 1. Validate URL format
   if (!DISCORD_WEBHOOK_URL_PATTERN.test(input.webhookUrl)) {
     throw new AppError(

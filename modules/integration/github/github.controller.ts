@@ -22,7 +22,7 @@ import {
 /** POST /integrations/github/connect — Start GitHub OAuth flow */
 export const connect: RequestHandler = async (req, res, next) => {
   try {
-    const authUrl = githubService.getGitHubAuthUrl(req.workspace!.id, req.user!.id);
+    const authUrl = await githubService.getGitHubAuthUrl(req.workspace!.id, req.user!.id);
     sendSuccess(res, 200, { authUrl });
   } catch (error) {
     next(error);

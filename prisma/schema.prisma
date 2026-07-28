@@ -474,6 +474,7 @@ model Workspace {
   aiJobRuns             AiJobRun[]
   aiResolverSnapshots   AiResolverSnapshot[]
   aiMetricCountersDaily AiMetricCounterDaily[]
+  statusCounts          WorkspaceStatusCount[]
 
   @@index([slug])
 }
@@ -1976,4 +1977,26 @@ model AiMetricCounterDaily {
 
   @@unique([workspaceId, feature, metric, bucketDate, dimensionsHash])
   @@index([workspaceId, feature, metric, bucketDate])
+}
+
+/// WorkspaceStatusCount — live per-status issue count, kept in sync entirely by a
+/// Postgres trigger on Issue (see migration 20260723100000_workspace_status_counts),
+/// not application code. Every INSERT/UPDATE(status)/DELETE on Issue updates this
+/// table directly at the database level, so it can never drift out of sync no matter
+/// which code path (controller, automation, bulk merge, AI tool) touches an issue's
+/// status — the API only ever reads this table, never runs a runtime COUNT(*).
+///
+/// Keyed by the issue's raw `status` string, not by which workflow (workspace default
+/// or a project override) it belongs to — a status key means the same thing everywhere
+/// it appears across a workspace.
+model WorkspaceStatusCount {
+  workspaceId String
+  statusKey   String
+  count       Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@id([workspaceId, statusKey])
+  @@index([workspaceId])
 }

@@ -35,7 +35,7 @@ const envSchema = z.object({
 
   // Resend — email service (for workspace invitations, notifications)
   RESEND_API_KEY: z.string().min(1, "RESEND_API_KEY is required"),
-  RESEND_FROM_ADDRESS: z.string().default("Trussen <onboarding@resend.dev>"),
+  RESEND_FROM_ADDRESS: z.string().default("Trussen <hello@trussen.app>"),
 
   // App settings
   PORT: z.coerce.number().default(8000),

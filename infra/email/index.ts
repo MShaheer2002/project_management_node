@@ -65,31 +65,60 @@ export async function sendInvitationEmail(params: {
   inviteToken: string;
 }) {
   const inviteUrl = `${env.FRONTEND_URL}/invite?token=${params.inviteToken}`;
+  const brand = "#5f72ea";
+  const roleLabel = params.role.charAt(0) + params.role.slice(1).toLowerCase();
 
   await sendEmail({
     to: params.to,
-    subject: `You've been invited to ${params.workspaceName} on Trussen`,
+    subject: `${params.inviterName} invited you to ${params.workspaceName} on Trussen`,
     html: `
-      <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto;">
-        <h2>You're invited!</h2>
-        <p>
-          <strong>${params.inviterName}</strong> invited you to join
-          <strong>${params.workspaceName}</strong> as a <strong>${params.role}</strong>.
-        </p>
-        <p>
-          <a href="${inviteUrl}"
-             style="display: inline-block; padding: 12px 24px; background: #6366f1;
-                    color: white; text-decoration: none; border-radius: 8px; font-weight: 600;">
-            Accept Invitation
-          </a>
-        </p>
-        <p style="color: #666; font-size: 14px;">
-          This invitation expires in 7 days. If you don't have a Trussen account,
-          you'll be asked to create one first.
-        </p>
-        <p style="color: #999; font-size: 12px;">
-          If you didn't expect this invitation, you can safely ignore this email.
-        </p>
+      <div style="margin: 0; padding: 32px 16px; background: #f4f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;">
+        <div style="max-width: 480px; margin: 0 auto;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <img src="https://project-management-assets-bucket.s3.ap-southeast-1.amazonaws.com/uploads/branding/Trussen-logo.png"
+                 alt="Trussen" height="32" style="height: 32px; width: auto;" />
+          </div>
+
+          <div style="background: #ffffff; border-radius: 16px; padding: 40px 36px; box-shadow: 0 1px 3px rgba(20, 22, 31, 0.08);">
+            <p style="margin: 0 0 4px; font-size: 13px; font-weight: 600; color: ${brand}; text-transform: uppercase; letter-spacing: 0.04em;">
+              You're invited
+            </p>
+            <h1 style="margin: 0 0 16px; font-size: 22px; line-height: 1.35; color: #14161f;">
+              Join ${params.workspaceName} on Trussen
+            </h1>
+            <p style="margin: 0 0 28px; font-size: 15px; line-height: 1.6; color: #555b6e;">
+              <strong style="color: #14161f;">${params.inviterName}</strong> has invited you to collaborate
+              in <strong style="color: #14161f;">${params.workspaceName}</strong> as
+              a<span> </span><strong style="color: #14161f;">${roleLabel}</strong>.
+            </p>
+
+            <a href="${inviteUrl}"
+               style="display: block; text-align: center; padding: 13px 24px; background: ${brand};
+                      color: #ffffff; text-decoration: none; border-radius: 10px; font-weight: 600;
+                      font-size: 15px;">
+              Accept Invitation
+            </a>
+
+            <p style="margin: 24px 0 0; font-size: 13px; line-height: 1.6; color: #8a8fa3;">
+              This invitation expires in 7 days. If you don't have a Trussen account yet,
+              you'll be asked to create one first.
+            </p>
+          </div>
+
+          <div style="text-align: center; margin-top: 28px;">
+            <p style="margin: 0 0 8px; font-size: 12px; color: #9a9fb0;">
+              If you weren't expecting this, you can safely ignore this email.
+            </p>
+            <p style="margin: 0; font-size: 12px; color: #9a9fb0;">
+              <a href="mailto:hello@trussen.app" style="color: #9a9fb0; text-decoration: underline;">Contact support</a>
+              &nbsp;&middot;&nbsp;
+              <a href="${env.FRONTEND_URL}" style="color: #9a9fb0; text-decoration: underline;">trussen.app</a>
+            </p>
+            <p style="margin: 12px 0 0; font-size: 11px; color: #b7bacc;">
+              &copy; ${new Date().getFullYear()} Trussen. All rights reserved.
+            </p>
+          </div>
+        </div>
       </div>
     `,
   });

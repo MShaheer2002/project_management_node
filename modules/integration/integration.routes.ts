@@ -22,7 +22,7 @@ const router = Router();
 
 // ─── Shared: List all integrations ───────────────────────────────────────────
 
-router.get("/", authenticate, requireWorkspace, async (req, res, next) => {
+router.get("/", authenticate, requireWorkspace, requireRole("ADMIN", "OWNER"), async (req, res, next) => {
   try {
     const integrations = await listIntegrations(req.workspace!.id);
     sendSuccess(res, 200, integrations);

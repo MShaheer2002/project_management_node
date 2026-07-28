@@ -23,6 +23,7 @@ import {
   type FigmaFileMetadata,
   type FigmaUserInfo,
 } from "./figma.utils.js";
+import { assertIntegrationAllowedForPlan } from "../../billing/billing.service.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -140,6 +141,8 @@ export async function connectFigma(
   userId: string,
   accessToken: string,
 ) {
+  await assertIntegrationAllowedForPlan(workspaceId, "FIGMA");
+
   // Verify the token by calling /v1/me
   const user = await figmaGet<FigmaUserInfo>(accessToken, "/me", { skipCache: true });
 

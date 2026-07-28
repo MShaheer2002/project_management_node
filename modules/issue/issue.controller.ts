@@ -43,6 +43,15 @@ export const checkAssignmentEligibility: RequestHandler = async (req, res, next)
   }
 };
 
+export const getStatusCounts: RequestHandler = async (req, res, next) => {
+  try {
+    const counts = await issueService.getStatusCounts(req.workspace!.id);
+    sendSuccess(res, 200, counts);
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getById: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);

@@ -23,6 +23,7 @@ import {
   initDefaultSettings,
 } from "../integration.service.js";
 import { getGithubAutomationTargets } from "../../../shared/workflow/workflow-automation-runtime.js";
+import { assertIntegrationAllowedForPlan } from "../../billing/billing.service.js";
 
 // ─── Default GitHub Settings ─────────────────────────────────────────────────
 
@@ -41,10 +42,12 @@ export const DEFAULT_GITHUB_SETTINGS: Record<string, boolean> = {
 /**
  * Start GitHub OAuth flow — returns the authorization URL.
  */
-export function getGitHubAuthUrl(workspaceId: string, userId: string): string {
+export async function getGitHubAuthUrl(workspaceId: string, userId: string): Promise<string> {
   if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) {
     throw new AppError(500, ERROR_CODES.GITHUB_NOT_CONFIGURED, "GitHub integration is not configured on this server");
   }
+
+  await assertIntegrationAllowedForPlan(workspaceId, "GITHUB");
 
   // State encodes workspace + user for the callback to resolve
   const state = Buffer.from(JSON.stringify({ workspaceId, userId })).toString("base64url");

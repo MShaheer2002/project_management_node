@@ -10,6 +10,7 @@ import type {
   CreateSubscriptionInput,
 } from "./billing.schemas.js";
 import type {
+  IntegrationProvider,
   Prisma,
   SubscriptionPlan,
   SubscriptionStatus,
@@ -20,6 +21,9 @@ const PRORATION_NOTICE =
   "Seat changes during the billing period may create prorated charges or credits on the current or next invoice.";
 
 const GIGABYTE = 1024 * 1024 * 1024;
+const FREE_PLAN_MEMBER_CAP = 10;
+const FREE_PLAN_TEAM_CAP = 2;
+const FREE_PLAN_ALLOWED_INTEGRATIONS: IntegrationProvider[] = ["SLACK"];
 
 function toSubscriptionPlan(plan: CreateSubscriptionInput["plan"] | ChangePlanInput["plan"]): SubscriptionPlan {
   return plan === "standard" ? "STANDARD" : "PREMIUM";
@@ -41,9 +45,11 @@ function getEntitlements(plan: SubscriptionPlan) {
     case "FREE":
       return {
         aiEnabled: false,
-        memberInviteCap: 10,
+        memberInviteCap: FREE_PLAN_MEMBER_CAP,
         storageLimitBytes: 2 * GIGABYTE,
         paidSeatBilling: false,
+        teamCap: FREE_PLAN_TEAM_CAP,
+        allowedIntegrations: FREE_PLAN_ALLOWED_INTEGRATIONS as IntegrationProvider[] | null,
       };
     case "STANDARD":
       return {
@@ -51,6 +57,8 @@ function getEntitlements(plan: SubscriptionPlan) {
         memberInviteCap: null,
         storageLimitBytes: 50 * GIGABYTE,
         paidSeatBilling: true,
+        teamCap: null,
+        allowedIntegrations: null as IntegrationProvider[] | null,
       };
     case "PREMIUM":
       return {
@@ -58,6 +66,8 @@ function getEntitlements(plan: SubscriptionPlan) {
         memberInviteCap: null,
         storageLimitBytes: null,
         paidSeatBilling: true,
+        teamCap: null,
+        allowedIntegrations: null as IntegrationProvider[] | null,
       };
   }
 }
@@ -490,13 +500,101 @@ export async function enforceFreeWorkspaceCapacity(workspaceId: string, email?: 
     }),
   ]);
 
-  if (acceptedMembers + pendingInvitations >= 10) {
+  if (acceptedMembers + pendingInvitations >= FREE_PLAN_MEMBER_CAP) {
     throw new AppError(
       409,
       ERROR_CODES.FREE_PLAN_MEMBER_LIMIT_REACHED,
       "Free plan supports up to 10 workspace members and pending invites combined. Upgrade to Standard or Premium to continue.",
     );
   }
+}
+
+/**
+ * Gate workspace access when a workspace has fallen back to (or stayed on) Free
+ * with more accepted members than the plan allows — e.g. a paid plan with 23
+ * seats lapses at period end and reverts to Free's 10-member cap. Existing
+ * memberships are never deleted, but only the earliest-joined members (by
+ * `joinedAt`) plus every OWNER retain access until the owner upgrades again or
+ * membership drops back to the cap.
+ *
+ * Called from `requireWorkspace` after membership is confirmed, so a 403 here
+ * reads the same as "not a member" to the caller — the person still exists in
+ * the workspace, they just can't use it right now.
+ */
+export async function assertWorkspaceAccessAllowed(workspaceId: string, userId: string, role: WorkspaceRole) {
+  if (role === "OWNER") return;
+
+  const subscription = await prisma.subscription.findUnique({
+    where: { workspaceId },
+    select: { plan: true, status: true },
+  });
+  const accessPlan = subscription ? getAccessPlan(subscription.plan, subscription.status) : "FREE";
+  if (accessPlan !== "FREE") return;
+
+  const totalMembers = await prisma.workspaceMembership.count({ where: { workspaceId } });
+  if (totalMembers <= FREE_PLAN_MEMBER_CAP) return;
+
+  const ownerCount = await prisma.workspaceMembership.count({ where: { workspaceId, role: "OWNER" } });
+  const nonOwnerSlots = Math.max(FREE_PLAN_MEMBER_CAP - ownerCount, 0);
+
+  const allowedNonOwners = await prisma.workspaceMembership.findMany({
+    where: { workspaceId, role: { not: "OWNER" } },
+    orderBy: [{ joinedAt: "asc" }, { id: "asc" }],
+    take: nonOwnerSlots,
+    select: { userId: true },
+  });
+
+  if (!allowedNonOwners.some((member) => member.userId === userId)) {
+    throw new AppError(
+      403,
+      ERROR_CODES.FREE_PLAN_ACCESS_LIMIT_EXCEEDED,
+      "This workspace is over the Free plan's 10-member limit. Ask the workspace owner to upgrade the plan to restore your access.",
+    );
+  }
+}
+
+async function getAccessPlanForWorkspace(workspaceId: string): Promise<SubscriptionPlan> {
+  const subscription = await prisma.subscription.findUnique({
+    where: { workspaceId },
+    select: { plan: true, status: true },
+  });
+
+  return subscription ? getAccessPlan(subscription.plan, subscription.status) : "FREE";
+}
+
+/**
+ * Free plan is capped at 2 teams total (the default team created alongside the
+ * workspace counts toward this). Standard/Premium are unlimited. The cap is a
+ * live count, not a lifetime counter — deleting a team frees up a slot.
+ */
+export async function enforceFreeTeamCapacity(workspaceId: string) {
+  const accessPlan = await getAccessPlanForWorkspace(workspaceId);
+  if (accessPlan !== "FREE") return;
+
+  const teamCount = await prisma.team.count({ where: { workspaceId } });
+  if (teamCount >= FREE_PLAN_TEAM_CAP) {
+    throw new AppError(
+      409,
+      ERROR_CODES.FREE_PLAN_TEAM_LIMIT_REACHED,
+      "Free plan supports up to 2 teams. Upgrade to Standard or Premium to create more.",
+    );
+  }
+}
+
+/**
+ * Free plan only allows Slack (Google Drive is user-scoped and never gated
+ * here — see drive.routes.ts). Standard/Premium can connect any integration.
+ */
+export async function assertIntegrationAllowedForPlan(workspaceId: string, provider: IntegrationProvider) {
+  const accessPlan = await getAccessPlanForWorkspace(workspaceId);
+  if (accessPlan !== "FREE") return;
+  if (FREE_PLAN_ALLOWED_INTEGRATIONS.includes(provider)) return;
+
+  throw new AppError(
+    403,
+    ERROR_CODES.INTEGRATION_PLAN_UPGRADE_REQUIRED,
+    `${provider} is available on Standard or Premium. Upgrade the workspace plan to connect it.`,
+  );
 }
 
 export async function syncPaidSeatQuantity(workspaceId: string) {

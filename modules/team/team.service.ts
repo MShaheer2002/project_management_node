@@ -9,6 +9,7 @@ import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { attachInitialTeamDocuments } from "../documents/documents.service.js";
+import { enforceFreeTeamCapacity } from "../billing/billing.service.js";
 import type {
   CreateTeamInput,
   ListTeamsQuery,
@@ -222,6 +223,8 @@ async function assertDepartmentExists(
 }
 
 export async function createTeam(workspaceId: string, actorUserId: string, input: CreateTeamInput) {
+  await enforceFreeTeamCapacity(workspaceId);
+
   const existing = await prisma.team.findFirst({
     where: {
       workspaceId,
