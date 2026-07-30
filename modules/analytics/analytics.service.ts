@@ -6,14 +6,16 @@ import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import type { AnalyticsQuery, ExportQuery } from "./analytics.schemas.js";
 import {
   avgResolutionTime,
+  buildAnalyticsCsv,
   buildAnalyticsPdf,
   buildDaySeries,
   calculateTrend,
   formatDayKey,
   msToReadableUnit,
   resolveDateRange,
-  toCsv,
+  resolveFixedDateRange,
 } from "./analytics.utils.js";
+import { getStatusRecord, normalizeWorkspaceStatuses } from "../../shared/workflow/workflow-automation.js";
 
 const ISSUE_SELECT = {
   id: true,
@@ -42,12 +44,18 @@ function isPrivileged(role: WorkspaceRole) {
   return role === "OWNER" || role === "ADMIN";
 }
 
-function isOpenStatus(status: string) {
-  return status !== "DONE";
+// Whether an issue counts as "done" is workspace/project-specific — workflows use custom status
+// keys (e.g. "done", "shipped", "closed"), not a fixed "DONE" enum. `completedAt` is already
+// maintained everywhere else in the app (see isStatusFinal / issue.service.ts) as the single
+// source of truth for "this issue is currently sitting in a final/isFinal status" — set the
+// moment an issue transitions into a final status, cleared the moment it transitions out — so
+// analytics uses it directly instead of re-deriving completion from a hardcoded status string.
+function isDone(issue: IssueRecord) {
+  return issue.completedAt != null;
 }
 
 function isOverdue(issue: IssueRecord, now: Date) {
-  return !!issue.dueDate && isOpenStatus(issue.status) && issue.dueDate < now;
+  return !!issue.dueDate && !isDone(issue) && issue.dueDate < now;
 }
 
 function getCompletionRate(done: number, total: number) {
@@ -67,14 +75,6 @@ function metricWithTrend(value: number, previous: number) {
     trend: trend.value,
     direction: trend.direction,
   };
-}
-
-function flattenSection(section: string, rows: Array<Record<string, unknown>>) {
-  if (rows.length === 0) {
-    return [{ section }];
-  }
-
-  return rows.map((row) => ({ section, ...row }));
 }
 
 type AnalyticsScope = "workspace" | "project" | "team" | "member" | "cycle";
@@ -187,15 +187,7 @@ async function assertProjectAnalyticsAccess(workspaceId: string, role: Workspace
     where: {
       id: projectId,
       workspaceId,
-      ...(isPrivileged(role)
-        ? {}
-        : {
-            OR: [
-              { visibility: "PUBLIC" },
-              { leadId: userId },
-              { memberships: { some: { userId } } },
-            ],
-          }),
+      ...(isPrivileged(role) ? {} : { leadId: userId }),
     },
     select: { id: true, name: true, startDate: true, targetDate: true, leadId: true, teamId: true },
   });
@@ -207,7 +199,7 @@ async function assertProjectAnalyticsAccess(workspaceId: string, role: Workspace
     throw new AppError(404, ERROR_CODES.PROJECT_NOT_FOUND, "Project not found");
   }
 
-  throw new AppError(404, ERROR_CODES.PRIVATE_PROJECT_FORBIDDEN, "Project is not visible");
+  throw new AppError(403, ERROR_CODES.FORBIDDEN, "You can view analytics only for projects you lead");
 }
 
 async function assertTeamAnalyticsAccess(workspaceId: string, role: WorkspaceRole, userId: string, teamId: string) {
@@ -222,13 +214,8 @@ async function assertTeamAnalyticsAccess(workspaceId: string, role: WorkspaceRol
 
   if (isPrivileged(role)) return team;
 
-  const membership = await prisma.teamMembership.findUnique({
-    where: { userId_teamId: { userId, teamId } },
-    select: { userId: true },
-  });
-
-  if (!membership && team.leadId !== userId) {
-    throw new AppError(403, ERROR_CODES.FORBIDDEN, "You can view analytics only for teams you belong to");
+  if (team.leadId !== userId) {
+    throw new AppError(403, ERROR_CODES.FORBIDDEN, "You can view analytics only for teams you lead");
   }
 
   return team;
@@ -255,13 +242,8 @@ async function assertCycleAnalyticsAccess(workspaceId: string, role: WorkspaceRo
 
   if (isPrivileged(role)) return cycle;
 
-  const membership = await prisma.teamMembership.findUnique({
-    where: { userId_teamId: { userId, teamId: cycle.teamId } },
-    select: { userId: true },
-  });
-
-  if (!membership && cycle.team?.leadId !== userId) {
-    throw new AppError(403, ERROR_CODES.FORBIDDEN, "You can view analytics only for cycles tied to your teams");
+  if (cycle.team?.leadId !== userId) {
+    throw new AppError(403, ERROR_CODES.FORBIDDEN, "You can view analytics only for cycles of teams you lead");
   }
 
   return cycle;
@@ -348,8 +330,8 @@ function getCurrentAndPreviousMetrics(issues: IssueRecord[], from: Date, to: Dat
 function memberWorkloadRows(issues: IssueRecord[], users: Array<{ id: string; name: string; avatar: string | null }>) {
   return users.map((user) => {
     const assigned = issues.filter((issue) => issue.assigneeId === user.id);
-    const completed = assigned.filter((issue) => issue.status === "DONE").length;
-    const open = assigned.filter((issue) => issue.status !== "DONE").length;
+    const completed = assigned.filter(isDone).length;
+    const open = assigned.filter((issue) => !isDone(issue)).length;
     const overdue = assigned.filter((issue) => isOverdue(issue, new Date())).length;
     return {
       userId: user.id,
@@ -372,7 +354,7 @@ function workloadPressureScore(row: { assigned: number; open: number; overdue: n
 export async function getWorkspaceAnalytics(workspaceId: string, query: AnalyticsQuery) {
   const range = resolveDateRange(query.period, query.from, query.to);
   const now = new Date();
-  const [issues, teams, memberships] = await Promise.all([
+  const [issues, teams, memberships, workspace] = await Promise.all([
     loadWorkspaceIssues(workspaceId),
     prisma.team.findMany({
       where: { workspaceId },
@@ -382,7 +364,13 @@ export async function getWorkspaceAnalytics(workspaceId: string, query: Analytic
       where: { workspaceId, role: { not: "GUEST" } },
       select: { userId: true, user: { select: { id: true, name: true, avatar: true } } },
     }),
+    prisma.workspace.findUnique({ where: { id: workspaceId }, select: { customStatuses: true } }),
   ]);
+  const workspaceStatuses = normalizeWorkspaceStatuses(workspace?.customStatuses as any[] | null);
+  const isBottleneckStatus = (statusKey: string) => {
+    const category = getStatusRecord(workspaceStatuses, statusKey)?.category;
+    return category === "active" || category === "review";
+  };
 
   const { currentCreated, currentCompleted, previousCompleted } = getCurrentAndPreviousMetrics(
     issues,
@@ -397,17 +385,17 @@ export async function getWorkspaceAnalytics(workspaceId: string, query: Analytic
   const activeProjectsCurrent = new Set(currentCreated.map((issue) => issue.projectId)).size;
   const activeProjectsPrevious = new Set(filterByDate(issues, range.previousFrom, range.previousTo).map((issue) => issue.projectId)).size;
   const overdueCurrent = issues.filter((issue) => isOverdue(issue, now)).length;
-  const overduePrevious = issues.filter((issue) => issue.dueDate && issue.dueDate < range.previousTo && issue.status !== "DONE").length;
-  const membersWithAssignments = new Set(issues.filter((issue) => issue.assigneeId && issue.status !== "DONE").map((issue) => issue.assigneeId));
+  const overduePrevious = issues.filter((issue) => issue.dueDate && issue.dueDate < range.previousTo && !isDone(issue)).length;
+  const membersWithAssignments = new Set(issues.filter((issue) => issue.assigneeId && !isDone(issue)).map((issue) => issue.assigneeId));
   const workloadPercent = memberships.length === 0 ? 0 : Math.round((membersWithAssignments.size / memberships.length) * 100);
 
-  const openCount = issues.filter((issue) => issue.status !== "DONE").length;
-  const closedCount = issues.filter((issue) => issue.status === "DONE").length;
+  const openCount = issues.filter((issue) => !isDone(issue)).length;
+  const closedCount = issues.filter(isDone).length;
 
   const teamPerformance = teams.map((team) => {
     const teamIssues = issues.filter((issue) => issue.teamId === team.id);
-    const completed = teamIssues.filter((issue) => issue.status === "DONE").length;
-    const open = teamIssues.filter((issue) => issue.status !== "DONE").length;
+    const completed = teamIssues.filter(isDone).length;
+    const open = teamIssues.filter((issue) => !isDone(issue)).length;
     return {
       teamId: team.id,
       teamName: team.name,
@@ -427,7 +415,7 @@ export async function getWorkspaceAnalytics(workspaceId: string, query: Analytic
     .slice(0, 10);
 
   const bottlenecks = issues
-    .filter((issue) => issue.status === "IN_PROGRESS" || issue.status === "REVIEW")
+    .filter((issue) => isBottleneckStatus(issue.status))
     .map((issue) => ({
       issueId: issue.id,
       publicId: issue.internalId,
@@ -460,6 +448,8 @@ export async function getWorkspaceAnalytics(workspaceId: string, query: Analytic
       activeProjects: metricWithTrend(activeProjectsCurrent, activeProjectsPrevious),
       teamWorkload: metricWithTrend(workloadPercent, workloadPercent),
       overdueIssues: metricWithTrend(overdueCurrent, overduePrevious),
+      progress: getCompletionRate(closedCount, closedCount + openCount),
+      totalIssues: closedCount + openCount,
       openVsClosed: {
         open: openCount,
         closed: closedCount,
@@ -497,7 +487,7 @@ export async function getProjectAnalytics(workspaceId: string, role: WorkspaceRo
   ]);
 
   const total = issues.length;
-  const done = issues.filter((issue) => issue.status === "DONE").length;
+  const done = issues.filter(isDone).length;
   const firstIssueDate = issues.length > 0
     ? issues.reduce((min: Date, issue: IssueRecord) => (issue.createdAt < min ? issue.createdAt : min), issues[0]!.createdAt)
     : null;
@@ -571,7 +561,7 @@ export async function getTeamAnalytics(workspaceId: string, role: WorkspaceRole,
   const overdueByMember = memberPerformance.map((row) => ({ userId: row.userId, name: row.name, overdue: row.overdue }));
   const cycleComparison = cycles.map((cycle: any) => {
     const cycleIssues = issues.filter((issue) => issue.cycleId === cycle.id);
-    const completed = cycleIssues.filter((issue) => issue.status === "DONE").length;
+    const completed = cycleIssues.filter(isDone).length;
     return {
       cycleId: cycle.id,
       cycleName: cycle.name,
@@ -590,6 +580,9 @@ export async function getTeamAnalytics(workspaceId: string, role: WorkspaceRole,
     summary: {
       velocity: metricWithTrend(currentCompleted, previousCompleted),
       avgResolutionTime: msToReadableUnit(avgResolutionTime(issues.filter((issue) => issue.assigneeId !== null))),
+      progress: getCompletionRate(issues.filter(isDone).length, issues.length),
+      totalIssues: issues.length,
+      completedIssues: issues.filter(isDone).length,
     },
     charts: {
       completionVelocity: buildVelocitySeries(issues.filter((issue) => issue.createdAt >= range.from && issue.createdAt <= range.to), range.from, range.to),
@@ -612,7 +605,7 @@ export async function getTeamAnalytics(workspaceId: string, role: WorkspaceRole,
 export async function getMemberAnalytics(workspaceId: string, role: WorkspaceRole, userId: string, memberId: string, query: AnalyticsQuery) {
   const range = resolveDateRange(query.period, query.from, query.to);
   const member = await assertMemberAnalyticsAccess(workspaceId, role, userId, memberId);
-  const [assignedIssues, teamMemberships, activities] = await Promise.all([
+  const [assignedIssues, teamMemberships, activities, workspace] = await Promise.all([
     prisma.issue.findMany({ where: { workspaceId, assigneeId: memberId }, select: ISSUE_SELECT }),
     prisma.teamMembership.findMany({ where: { userId: memberId, team: { workspaceId } }, select: { team: { select: { id: true, name: true } } } }),
     prisma.activity.findMany({
@@ -629,7 +622,14 @@ export async function getMemberAnalytics(workspaceId: string, role: WorkspaceRol
         createdAt: true,
       },
     }),
+    prisma.workspace.findUnique({ where: { id: workspaceId }, select: { customStatuses: true } }),
   ]);
+
+  // "In progress" is a workflow category ("active"), not a fixed status key — workspaces define
+  // their own status keys (e.g. "in-progress", "building"), so this resolves the category from
+  // the workspace's actual workflow config instead of guessing a hardcoded key.
+  const workspaceStatuses = normalizeWorkspaceStatuses(workspace?.customStatuses as any[] | null);
+  const isActiveStatus = (statusKey: string) => getStatusRecord(workspaceStatuses, statusKey)?.category === "active";
 
   const completedCurrent = filterCompletedByDate(assignedIssues, range.from, range.to).length;
   const completedPrevious = filterCompletedByDate(assignedIssues, range.previousFrom, range.previousTo).length;
@@ -648,7 +648,7 @@ export async function getMemberAnalytics(workspaceId: string, role: WorkspaceRol
       completed: 0,
     };
     current.assigned += 1;
-    if (issue.status === "DONE") current.completed += 1;
+    if (isDone(issue)) current.completed += 1;
     byProject.set(issue.projectId, current);
   }
 
@@ -661,7 +661,7 @@ export async function getMemberAnalytics(workspaceId: string, role: WorkspaceRol
       completed: 0,
     };
     current.assigned += 1;
-    if (issue.status === "DONE") current.completed += 1;
+    if (isDone(issue)) current.completed += 1;
     byTeam.set(issue.teamId, current);
   }
 
@@ -671,11 +671,11 @@ export async function getMemberAnalytics(workspaceId: string, role: WorkspaceRol
     member,
     summary: {
       assigned: assignedIssues.length,
-      completed: assignedIssues.filter((issue) => issue.status === "DONE").length,
-      inProgress: assignedIssues.filter((issue) => issue.status === "IN_PROGRESS").length,
+      completed: assignedIssues.filter(isDone).length,
+      inProgress: assignedIssues.filter((issue) => isActiveStatus(issue.status)).length,
       overdue: assignedIssues.filter((issue) => isOverdue(issue, new Date())).length,
       completionRate: {
-        value: getCompletionRate(assignedIssues.filter((issue) => issue.status === "DONE").length, assignedIssues.length),
+        value: getCompletionRate(assignedIssues.filter(isDone).length, assignedIssues.length),
         trend: completionTrend.value,
         direction: completionTrend.direction,
       },
@@ -702,11 +702,15 @@ export async function getMemberAnalytics(workspaceId: string, role: WorkspaceRol
 }
 
 export async function getCycleAnalytics(workspaceId: string, role: WorkspaceRole, userId: string, cycleId: string, query: AnalyticsQuery) {
-  const range = resolveDateRange(query.period, query.from, query.to);
   const cycle = await assertCycleAnalyticsAccess(workspaceId, role, userId, cycleId);
+  // Burndown/velocity must span the cycle's own scheduled window, not a rolling period from
+  // today — a cycle's dates are fixed once planned, unrelated to when someone views the chart.
+  const range = cycle.startsAt && cycle.endsAt
+    ? resolveFixedDateRange(cycle.startsAt, cycle.endsAt)
+    : resolveDateRange(query.period, query.from, query.to);
   const issues = await prisma.issue.findMany({ where: { workspaceId, cycleId }, select: ISSUE_SELECT });
   const total = issues.length;
-  const completed = issues.filter((issue) => issue.status === "DONE").length;
+  const completed = issues.filter(isDone).length;
 
   const dailyVelocity = buildVelocitySeries(issues.filter((issue) => issue.createdAt >= range.from && issue.createdAt <= range.to), range.from, range.to);
   const scopeByStatus = groupCount(issues, (issue) => issue.status, "status");
@@ -757,9 +761,15 @@ export async function exportAnalytics(workspaceId: string, role: WorkspaceRole, 
     payload = await getProjectAnalytics(workspaceId, role, userId, scopeId!, query);
     exportTitle = "Project Analytics Report";
   } else if (query.scope === "team") {
+    if (!isPrivileged(role)) {
+      throw new AppError(403, ERROR_CODES.FORBIDDEN, "Only admins can export team analytics");
+    }
     payload = await getTeamAnalytics(workspaceId, role, userId, scopeId!, query);
     exportTitle = "Team Analytics Report";
   } else if (query.scope === "cycle") {
+    if (!isPrivileged(role)) {
+      throw new AppError(403, ERROR_CODES.FORBIDDEN, "Only admins can export cycle analytics");
+    }
     payload = await getCycleAnalytics(workspaceId, role, userId, scopeId!, query);
     exportTitle = "Cycle Analytics Report";
   } else {
@@ -795,32 +805,14 @@ export async function exportAnalytics(workspaceId: string, role: WorkspaceRole, 
     };
   }
 
-  const rows: Array<Record<string, unknown>> = [];
-  for (const [sectionKey, sectionValue] of Object.entries(payload)) {
-    if (Array.isArray(sectionValue)) {
-      rows.push(...flattenSection(sectionKey, sectionValue as Array<Record<string, unknown>>));
-      continue;
-    }
-
-    if (sectionValue && typeof sectionValue === "object") {
-      for (const [subKey, subValue] of Object.entries(sectionValue as Record<string, unknown>)) {
-        if (Array.isArray(subValue)) {
-          rows.push(...flattenSection(`${sectionKey}.${subKey}`, subValue as Array<Record<string, unknown>>));
-        } else if (subValue && typeof subValue === "object") {
-          rows.push({ section: `${sectionKey}.${subKey}`, ...(subValue as Record<string, unknown>) });
-        } else {
-          rows.push({ section: `${sectionKey}.${subKey}`, value: subValue });
-        }
-      }
-      continue;
-    }
-
-    rows.push({ section: sectionKey, value: sectionValue });
-  }
-
   return {
     fileName: `analytics-${query.scope}.csv`,
     contentType: "text/csv; charset=utf-8",
-    body: toCsv(rows),
+    body: buildAnalyticsCsv({
+      title: exportTitle,
+      scope: query.scope,
+      period: exportPeriod,
+      payload,
+    }),
   };
 }
