@@ -22,15 +22,16 @@ import { callAI, CHAT_MODEL_DEFAULT, fallbackChainForPrimary } from "./ai.provid
 import { incrementAiMetricCounter, logAiError, logAiInfo, logAiWarn } from "./ai.observability.js";
 import { callAIWithTools } from "./ai.tool-runtime.js";
 import { recordAiDailyUsage } from "./ai.usage.js";
-import { getToolDefinitions } from "./tools/tool-definitions.js";
+import { getScopedToolDefinitions, getToolDefinitions } from "./tools/tool-definitions.js";
 import { buildHighImpactApprovalHash, executeTool } from "./tools/tool-executor.js";
 import { parsePendingAiAction, resolveAiPreflight, type PendingAiAction } from "./ai.action-state.js";
-import { classifyAiIntentHybrid } from "./ai.intent.js";
+import { classifyAiIntentHybrid, detectToolDomains } from "./ai.intent.js";
 import { parseConversationMemory, rememberResolvedEntity, updateConversationMemoryFromPendingAction, updateConversationMemoryFromUserMessage, type ConversationMemory } from "./ai.memory.js";
 import { buildExecutionPlan, getPendingPlanSteps, observeAndReplanExecution, shouldUseDeterministicPlanLoop, type ExecutionPlan, type ExecutionPlanContinuation, type ExecutionPlanObservation, type ExecutorResult } from "./ai.planner.js";
 
 const MAX_TOOL_CALLS_PER_TURN = 5;
 const MAX_RECENT_HISTORY_MESSAGES = 30;
+const MAX_DETERMINISTIC_REPLY_HISTORY_TURNS = 10;
 const MAX_TOKENS_PER_TURN = 10000;
 const MAX_TOOL_RESULT_LENGTH = 5000; // Truncate large tool results
 const SUMMARY_TRIGGER_MESSAGE_COUNT = 36;
@@ -547,6 +548,51 @@ function buildConfirmationResponse(input: {
   ].filter(Boolean).join(" ");
 }
 
+// Last-resort summary when a tool result has neither `meta.report` nor `data.message` —
+// e.g. get_issue/get_project-style tools that return the raw entity, not a prose summary.
+// Without this, buildDeterministicToolCompletionResponse falls back to a content-free
+// "Completed get issue." (see the token-budget short-circuit below, which skips the
+// model-formatted reply entirely once a turn's tool calls already exhausted the budget).
+// Only issue IDs (workspace prefix + number, e.g. "TRU-1") are human-facing identifiers used
+// throughout the app — UUIDs (teams, projects, etc.) and Clerk user ids ("user_...") are
+// internal implementation details never shown anywhere in the actual UI, only their name.
+const HUMAN_FACING_ID_PATTERN = /^[A-Z]{2,10}-\d+$/;
+
+function summarizeEntityPayload(data: Record<string, unknown> | null): string | null {
+  if (!data) return null;
+  const rawId = typeof data.id === "string" ? data.id : null;
+  const id = rawId && HUMAN_FACING_ID_PATTERN.test(rawId) ? rawId : null;
+  const label = typeof data.title === "string" ? data.title : typeof data.name === "string" ? data.name : null;
+  if (!id && !label) return null;
+
+  const details = [data.status, data.priority]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+
+  const header = [id, label].filter(Boolean).join(" — ");
+  return details.length > 0 ? `${header} (${details.join(", ")})` : header;
+}
+
+const MAX_FALLBACK_LIST_ITEMS = 10;
+
+// list_issues/prioritize_tasks-style tools return an array, not a single object — typeof [] is
+// "object", so the array was silently passed through summarizeEntityPayload as a Record, whose
+// .id/.title lookups are always undefined on an array, always falling through to the
+// content-free "Completed list issues." stub. Handles the plural case the same way
+// summarizeEntityPayload handles the singular one.
+function summarizeListPayload(payload: unknown): string | null {
+  if (!Array.isArray(payload) || payload.length === 0) return null;
+
+  const items = payload
+    .slice(0, MAX_FALLBACK_LIST_ITEMS)
+    .map((entry) => (entry && typeof entry === "object" ? summarizeEntityPayload(entry as Record<string, unknown>) : null))
+    .filter((entry): entry is string => Boolean(entry));
+
+  if (items.length === 0) return null;
+
+  const suffix = payload.length > items.length ? ` (+${payload.length - items.length} more)` : "";
+  return `${items.map((item) => `- ${item}`).join("\n")}${suffix}`;
+}
+
 function buildDeterministicToolCompletionResponse(input: {
   toolRuns: Array<{
     tool: string;
@@ -560,7 +606,8 @@ function buildDeterministicToolCompletionResponse(input: {
   }
 
   const lines = input.toolRuns.map(({ tool, success, error, result }) => {
-    const data = result.payload && typeof result.payload === "object" ? (result.payload as Record<string, unknown>) : null;
+    const isListPayload = Array.isArray(result.payload);
+    const data = !isListPayload && result.payload && typeof result.payload === "object" ? (result.payload as Record<string, unknown>) : null;
     const meta = result.meta && typeof result.meta === "object" ? result.meta : null;
     const message =
       typeof meta?.report === "string" && meta.report.trim().length > 0
@@ -569,7 +616,7 @@ function buildDeterministicToolCompletionResponse(input: {
           ? data.message.trim()
           : typeof result.error === "string" && result.error.trim().length > 0
             ? result.error.trim()
-            : error?.trim();
+            : (error?.trim() || (isListPayload ? summarizeListPayload(result.payload) : summarizeEntityPayload(data)));
 
     if (success) {
       return message ? message : `Completed ${tool.replace(/_/g, " ")}.`;
@@ -701,46 +748,107 @@ function buildDeterministicPlanCompletionResponse(observations: ExecutionPlanObs
   });
 }
 
+// The deterministic canned-plan path (executeDeterministicPlanTurn) previously formatted its
+// reply from only the current turn's tool results, with no prior conversation context — every
+// canned-plan reply was effectively stateless. This reconstructs the same recent-turn context
+// the free-form tool-calling loop already gets (see the `history` mapping below in the main
+// generator), scoped down to plain user/assistant text since callAI() (unlike callAIWithTools)
+// has no "tool" role to carry raw tool-result messages.
+function buildRecentConversationTurns(
+  history: Array<{ role: string; content: string }>,
+): Array<{ role: "user" | "assistant"; content: string }> {
+  const turns = history
+    .filter((msg) => (msg.role === "USER" || msg.role === "ASSISTANT") && msg.content.trim().length > 0)
+    .map((msg) => ({ role: msg.role === "USER" ? "user" as const : "assistant" as const, content: msg.content }));
+  return turns.slice(-MAX_DETERMINISTIC_REPLY_HISTORY_TURNS);
+}
+
+// A canned plan (e.g. MY_TASKS -> list_issues) queries one narrow, hardcoded scope. An empty
+// result from that scope is not necessarily "nothing to report" — it just means that specific
+// query came back empty. Without this, the model reports a flat negative as if it were
+// exhaustive, which reads as wrong when the user actually has related work under a different
+// scope (created by them, watched, etc.) that this plan never checked.
+function hasEmptyListPayload(payload: unknown): boolean {
+  return Array.isArray(payload) && payload.length === 0;
+}
+
+// The canned-plan path (e.g. MY_TASKS) always runs the same fixed list_issues + prioritize_tasks
+// steps regardless of whether the user asked for a count, a list, or full detail. Without this,
+// the model — even though the actual issue IDs/titles are right there in the observed payload —
+// defaulted to a vague "N issues, 2 flagged as priority" summary every time, forcing users to
+// keep re-asking with different phrasing to get anything specific.
+function hasNamedEntityListPayload(payload: unknown): boolean {
+  return (
+    Array.isArray(payload) &&
+    payload.length > 0 &&
+    payload.some((entry) => entry && typeof entry === "object" && ("id" in entry || "title" in entry || "name" in entry))
+  );
+}
+
+const EMPTY_RESULT_GUIDANCE = [
+  "If the observed data for the user's core question is an empty list, do not state a flat negative as if it were exhaustive.",
+  "Briefly name the specific scope that came back empty (e.g. issues currently assigned to you), and suggest one relevant alternative the user could ask for next (e.g. issues they created, are watching, or across a specific project/team).",
+  "Only suggest asking for those alternatives — do not claim to have already checked them.",
+].join("\n");
+
+const LIST_RESULT_SPECIFICITY_GUIDANCE = [
+  "The observed data includes a list of named/identified items (e.g. issues with IDs and titles).",
+  "Name the specific items (ID and title, not just a count) instead of only saying how many there are — the user can always ask for more detail on a specific one next, but do not force them to re-ask just to learn which ones you mean.",
+].join("\n");
+
 async function formatPlannedExecutionReply(input: {
   userPrompt: string;
   observations: ExecutionPlanObservation[];
   deterministicFallback: string;
+  history?: Array<{ role: string; content: string }>;
+  conversationSummary?: string | null;
 }) {
   try {
-    const response = await callAI(
-      [
-        {
-          role: "system",
-          content: [
-            "You are Trussen AI.",
-            "A bounded deterministic execution plan has already been executed.",
-            "Summarize the grounded results naturally.",
-            "Do not mention internal tool names, planning, orchestration, or execution loops.",
-          ].join("\n"),
-        },
-        {
-          role: "user",
-          content: [
-            `User request: ${input.userPrompt}`,
-            `Deterministic summary: ${input.deterministicFallback}`,
-            `Observed plan results: ${JSON.stringify(compactJson(input.observations.map((observation) => ({
-              stepId: observation.stepId,
-              executor: observation.executor,
-              success: observation.result.success,
-              payload: observation.result.payload,
-              error: observation.result.error,
-              meta: observation.result.meta,
-            }))))}`,
-          ].join("\n\n"),
-        },
-      ],
+    const isEmptyResult = input.observations.some((observation) => hasEmptyListPayload(observation.result.payload));
+    const hasNamedList = input.observations.some((observation) => hasNamedEntityListPayload(observation.result.payload));
+
+    const messages: Parameters<typeof callAI>[0] = [
       {
-        model: CHAT_MODEL_DEFAULT,
-        taskType: "chat_response",
-        maxTokens: 360,
-        temperature: 0.2,
+        role: "system",
+        content: [
+          "You are Trussen AI.",
+          "A bounded deterministic execution plan has already been executed.",
+          "Summarize the grounded results naturally.",
+          "Use the prior conversation turns below only for context (e.g. what the user already asked about) — the current request is answered from the observed plan results, not from memory.",
+          "Do not mention internal tool names, planning, orchestration, or execution loops.",
+          ...(isEmptyResult ? [EMPTY_RESULT_GUIDANCE] : []),
+          ...(hasNamedList ? [LIST_RESULT_SPECIFICITY_GUIDANCE] : []),
+        ].join("\n"),
       },
-    );
+    ];
+
+    if (input.conversationSummary) {
+      messages.push({ role: "system", content: `Conversation memory:\n${input.conversationSummary}` });
+    }
+    messages.push(...buildRecentConversationTurns(input.history ?? []));
+
+    messages.push({
+      role: "user",
+      content: [
+        `User request: ${input.userPrompt}`,
+        `Deterministic summary: ${input.deterministicFallback}`,
+        `Observed plan results: ${JSON.stringify(compactJson(input.observations.map((observation) => ({
+          stepId: observation.stepId,
+          executor: observation.executor,
+          success: observation.result.success,
+          payload: observation.result.payload,
+          error: observation.result.error,
+          meta: observation.result.meta,
+        }))))}`,
+      ].join("\n\n"),
+    });
+
+    const response = await callAI(messages, {
+      model: CHAT_MODEL_DEFAULT,
+      taskType: "chat_response",
+      maxTokens: 360,
+      temperature: 0.2,
+    });
 
     return response.content?.trim() || input.deterministicFallback;
   } catch {
@@ -759,6 +867,8 @@ async function executeDeterministicPlanTurn(input: {
   plan: ExecutionPlan;
   memory: ConversationMemory;
   responseMode?: "overloaded";
+  history?: Array<{ role: string; content: string }>;
+  conversationSummary?: string | null;
 }) {
   const observations: ExecutionPlanObservation[] = [];
   let plan = input.plan;
@@ -925,12 +1035,16 @@ async function executeDeterministicPlanTurn(input: {
           toolName: observations[0]!.executor,
           result: observations[0]!.result,
           deterministicFallback,
+          history: input.history ?? [],
+          conversationSummary: input.conversationSummary ?? null,
           ...(input.responseMode ? { responseMode: input.responseMode } : {}),
         })
       : await formatPlannedExecutionReply({
           userPrompt: input.userPrompt,
           observations,
           deterministicFallback,
+          history: input.history ?? [],
+          conversationSummary: input.conversationSummary ?? null,
         });
 
   await persistConversationTurn({
@@ -983,6 +1097,8 @@ async function formatResolvedToolReply(input: {
   responseMode?: "overloaded";
   result: ExecutorResult;
   deterministicFallback: string;
+  history?: Array<{ role: string; content: string }>;
+  conversationSummary?: string | null;
 }) {
   try {
     const modeInstruction = input.responseMode === "overloaded"
@@ -998,33 +1114,44 @@ async function formatResolvedToolReply(input: {
           "Be concise, but answer naturally as Trussen AI.",
         ].join("\n");
 
-    const response = await callAI(
-      [
-        {
-          role: "system",
-          content: [
-            "You are Trussen AI.",
-            "A backend tool has already been executed successfully or failed.",
-            "Your job is only to answer the user's request from the tool result.",
-            modeInstruction,
-          ].join("\n"),
-        },
-        {
-          role: "user",
-          content: [
-            `User request: ${input.userPrompt}`,
-            `Tool result summary: ${input.deterministicFallback}`,
-            `Tool result payload: ${JSON.stringify(compactJson({ payload: input.result.payload, error: input.result.error, meta: input.result.meta }))}`,
-          ].join("\n\n"),
-        },
-      ],
+    const isEmptyResult = hasEmptyListPayload(input.result.payload);
+    const hasNamedList = hasNamedEntityListPayload(input.result.payload);
+
+    const messages: Parameters<typeof callAI>[0] = [
       {
-        model: CHAT_MODEL_DEFAULT,
-        taskType: "chat_response",
-        maxTokens: 320,
-        temperature: input.responseMode === "overloaded" ? 0.2 : 0.3,
+        role: "system",
+        content: [
+          "You are Trussen AI.",
+          "A backend tool has already been executed successfully or failed.",
+          "Your job is only to answer the user's request from the tool result.",
+          "Use the prior conversation turns below only for context — the current request is answered from the tool result, not from memory.",
+          modeInstruction,
+          ...(isEmptyResult ? [EMPTY_RESULT_GUIDANCE] : []),
+          ...(hasNamedList ? [LIST_RESULT_SPECIFICITY_GUIDANCE] : []),
+        ].join("\n"),
       },
-    );
+    ];
+
+    if (input.conversationSummary) {
+      messages.push({ role: "system", content: `Conversation memory:\n${input.conversationSummary}` });
+    }
+    messages.push(...buildRecentConversationTurns(input.history ?? []));
+
+    messages.push({
+      role: "user",
+      content: [
+        `User request: ${input.userPrompt}`,
+        `Tool result summary: ${input.deterministicFallback}`,
+        `Tool result payload: ${JSON.stringify(compactJson({ payload: input.result.payload, error: input.result.error, meta: input.result.meta }))}`,
+      ].join("\n\n"),
+    });
+
+    const response = await callAI(messages, {
+      model: CHAT_MODEL_DEFAULT,
+      taskType: "chat_response",
+      maxTokens: 320,
+      temperature: input.responseMode === "overloaded" ? 0.2 : 0.3,
+    });
 
     return response.content?.trim() || input.deterministicFallback;
   } catch {
@@ -1524,6 +1651,8 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
       userRole,
       plan: executionPlan,
       memory: conversationMemory,
+      history: history.slice(0, -1),
+      conversationSummary: summaryState.summary,
     });
 
     if (planned) {
@@ -1584,6 +1713,35 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
     }
   }
 
+  // Scope the tool payload to what this turn actually needs. Sending all ~100 tool schemas
+  // on every call was consuming most of MAX_TOKENS_PER_TURN before the model did any real
+  // work — e.g. a bare "yes" confirming a prior offer could exhaust the budget on the tool
+  // definitions alone, leaving no room for a synthesis call. Scan the current message plus
+  // recent turns so a context-dependent follow-up like "yes" still inherits the domain of
+  // what it's confirming. No domain signal at all falls back to the full catalog rather than
+  // risk under-provisioning a legitimately domain-spanning request.
+  const recentHistoryText = history
+    .slice(-6)
+    .map((msg) => msg.content)
+    .filter((content): content is string => typeof content === "string" && content.length > 0);
+  const detectedToolDomains = detectToolDomains(sanitized, ...recentHistoryText);
+  const scopedToolDefinitions = detectedToolDomains.length > 0
+    ? getScopedToolDefinitions(detectedToolDomains)
+    : getToolDefinitions();
+
+  logAiInfo("chat_tool_scope_resolved", {
+    workspaceId,
+    userId,
+    conversationId: resolvedConversationId,
+    feature: "chat",
+    success: true,
+    metadata: {
+      detectedToolDomains,
+      toolCount: scopedToolDefinitions.length,
+      fullCatalogFallback: detectedToolDomains.length === 0,
+    },
+  });
+
   // Step 5: Call AI with tool calling loop
   const modelsToTry = fallbackChainForPrimary(CHAT_MODEL_DEFAULT);
   let currentModel = CHAT_MODEL_DEFAULT;
@@ -1608,7 +1766,7 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
     for (const candidate of candidates) {
       const attemptStartedAt = Date.now();
       try {
-        const result = await callAIWithTools(messages, candidate, getToolDefinitions());
+        const result = await callAIWithTools(messages, candidate, scopedToolDefinitions);
         if (result.content === null && result.toolCalls === null) {
           logAiWarn("chat_model_unavailable", {
             workspaceId,
@@ -1729,8 +1887,9 @@ export async function* processChat(input: ChatInput): AsyncGenerator<ChatEvent> 
 
       const toolName = tc.function.name;
 
-      // Validate tool name against whitelist
-      const validTools = getToolDefinitions().map((t) => t.function.name);
+      // Validate tool name against the scoped whitelist actually offered to the model this
+      // turn — a hard boundary, not just a prompt-size optimization.
+      const validTools = scopedToolDefinitions.map((t) => t.function.name);
       if (!validTools.includes(toolName)) {
         const errorResult = JSON.stringify({ success: false, error: `Unknown tool: ${toolName}` });
         toolResults.push({ tool_call_id: tc.id, content: errorResult });

@@ -2170,12 +2170,22 @@ async function resolvePendingSlotTurn(input: PreflightInput): Promise<AiPrefligh
   }
 
   if (pending.action === "analytics_report") {
+    // The locked-in scope from the original message must not win unconditionally — if the
+    // user's latest reply explicitly names a different scope (e.g. answering "which team?"
+    // with "overall workspace"), that correction was previously ignored entirely: this always
+    // re-passed the original scopeKind, so buildAnalyticsPendingAction kept searching for a
+    // team match no matter what the reply said, producing an infinite "Which team..." loop
+    // with zero model calls involved (pure keyword slot-filling, not AI reasoning). A plain
+    // answer with no scope keyword of its own (e.g. just a team name) still falls back to the
+    // locked scope, so normal slot-filling is unaffected.
+    const lockedScopeKind = isAnalyticsScopeKind(pending.slots.scopeKind) ? pending.slots.scopeKind : undefined;
+    const replyStatedScopeKind = resolveAnalyticsScopeKind(input.message) ?? undefined;
     const merged = await buildAnalyticsPendingAction(
       [pending.prompt, input.message].filter(Boolean).join("\n"),
       input.workspaceId,
       input.userId,
       input.userRole,
-      isAnalyticsScopeKind(pending.slots.scopeKind) ? pending.slots.scopeKind : undefined,
+      replyStatedScopeKind ?? lockedScopeKind,
       input.conversationMemory,
     );
 

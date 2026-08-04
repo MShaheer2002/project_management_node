@@ -36,7 +36,7 @@ export type ConversationResolverContext = {
 
 const MAX_RECENT_ENTITIES = 8;
 const MAX_RECENT_REFERENCES = 12;
-const REFERENCE_PRONOUN_PATTERN = /\b(it|that|this|them|those|these)\b/i;
+export const REFERENCE_PRONOUN_PATTERN = /\b(it|that|this|them|those|these)\b/i;
 
 export function createEmptyConversationMemory(): ConversationMemory {
   return {

@@ -13,7 +13,7 @@
 
 import { prisma } from "../../../shared/utils/prisma.js";
 import { AppError } from "../../../shared/utils/api-error.js";
-import { randomBytes, createHash } from "node:crypto";
+import { createHash } from "node:crypto";
 import { logActivity } from "../../../shared/utils/activity.js";
 import { invalidateContextCache } from "../ai.context.js";
 import { triggerIssueBackgroundJobs } from "../ai.background.js";
@@ -36,9 +36,12 @@ import type { AnalyticsQuery } from "../../analytics/analytics.schemas.js";
 import {
   addDependency,
   addWatchers,
+  createIssue,
   listWatchers,
   updateIntegrationRefs,
+  updateIssueStatus,
 } from "../../issue/issue.service.js";
+import type { CreateIssueInput } from "../../issue/issue.schemas.js";
 import {
   createSubtask,
   reorderSubtasks,
@@ -91,6 +94,7 @@ import {
 } from "../../workspace/membership.service.js";
 import {
   acceptInvitationById,
+  createInvitation,
   listInvitations,
   listPendingInvitationsForUser,
 } from "../../workspace/invitation.service.js";
@@ -151,6 +155,7 @@ import {
   cancelDependency,
   getProjectRoadmapDetail,
   hasAnyRoadmapManageAccess,
+  hasDependencyManageAccess,
   hasRoadmapManageAccess,
   listRoadmap,
   reorderMilestones,
@@ -197,6 +202,7 @@ type MutationGuardOptions = {
 type MutationToolName =
   | "create_issue"
   | "update_issue"
+  | "update_issue_status"
   | "assign_issue"
   | "add_comment"
   | "add_label_to_issue"
@@ -808,75 +814,50 @@ async function executeToolLegacy(
 
       case "create_issue": {
         if (!canWrite(ctx)) return { success: false, data: null, error: "You don't have permission to create issues" };
+        const projectId = str(args.projectId);
+        if (!projectId) return { success: false, data: null, error: "projectId is required" };
+
         const assigneeId = resolveUserId(args.assigneeId, ctx);
         const description = args.description
           ? str(args.description)
           : `Created via Trussen AI: "${str(args.title)}"`;
         const dueDate = args.dueDate ? resolveDueDate(str(args.dueDate)) : null;
+        const type = str(args.type, "task").toLowerCase() as CreateIssueInput["type"];
+        const priority = str(args.priority, "medium").toLowerCase() as CreateIssueInput["priority"];
+        const status = args.status ? str(args.status).toLowerCase().replace(/_/g, "-") : undefined;
+
         return withMutationGuard(
           "create_issue",
           {
             title: str(args.title, "Untitled"),
-            projectId: str(args.projectId),
+            projectId,
             assigneeId: assigneeId ?? null,
-            type: str(args.type, "TASK").toUpperCase(),
-            priority: str(args.priority, "MEDIUM").toUpperCase(),
-            status: args.status ? str(args.status).toLowerCase().replace(/_/g, "-") : null,
+            type,
+            priority,
+            status: status ?? null,
             dueDate: dueDate?.toISOString() ?? null,
           },
           ctx,
           async () => {
-            const issue = await prisma.$transaction(async (tx) => {
-              const project = await tx.project.findFirst({
-                where: { id: str(args.projectId), workspaceId: ctx.workspaceId },
-                select: { id: true, teamId: true, visibility: true, leadId: true, memberships: { select: { userId: true } } },
-              });
-              if (!project) return null;
-
-              if (
-                project.visibility === "PRIVATE" &&
-                !isAdmin(ctx) &&
-                project.leadId !== ctx.userId &&
-                !project.memberships.some((m) => m.userId === ctx.userId)
-              ) {
-                throw new AppError(403, "FORBIDDEN", "You don't have access to this project");
-              }
-
-              if (assigneeId) {
-                const member = await tx.workspaceMembership.findFirst({
-                  where: { userId: assigneeId, workspaceId: ctx.workspaceId },
-                  select: { userId: true },
-                });
-                if (!member) {
-                  throw new AppError(422, "VALIDATION_ERROR", "Assignee must be a workspace member");
-                }
-              }
-
-              const workspace = await tx.workspace.update({
-                where: { id: ctx.workspaceId },
-                data: { issueCounter: { increment: 1 } },
-                select: { issuePrefix: true, issueCounter: true, customStatuses: true },
-              });
-
-              const issueId = `${workspace.issuePrefix}-${workspace.issueCounter}`;
-
-              let issueStatus = "todo";
-              if (args.status) {
-                issueStatus = str(args.status).toLowerCase().replace(/_/g, "-");
-              } else {
-                const statuses = workspace.customStatuses as Array<{ key: string }> | null;
-                if (statuses && statuses.length > 1 && statuses[1]) {
-                  issueStatus = statuses[1].key;
-                }
-              }
-
-              return tx.issue.create({
-                data: { id: issueId, number: workspace.issueCounter, workspaceId: ctx.workspaceId, projectId: project.id, teamId: project.teamId, title: str(args.title, "Untitled"), type: str(args.type, "TASK").toUpperCase() as "TASK" | "BUG" | "ISSUE", priority: str(args.priority, "MEDIUM").toUpperCase() as "LOW" | "MEDIUM" | "HIGH" | "URGENT", status: issueStatus, description, creatorId: ctx.userId, assigneeId: assigneeId ?? null, dueDate },
-                select: { id: true, title: true, status: true, priority: true, type: true, projectId: true, assigneeId: true },
-              });
-            });
-
-            if (!issue) return { success: false, data: null, error: "Project not found" };
+            // Routed through the real issue service so AI-created issues get the same
+            // template application, workflow/status-entry validation, assignment
+            // notifications, realtime broadcast, and integration dispatch as issues
+            // created through the normal UI — not a parallel, thinner reimplementation.
+            const issue = await createIssue(
+              ctx.workspaceId,
+              ctx.userId,
+              {
+                title: str(args.title, "Untitled"),
+                projectId,
+                type,
+                priority,
+                description,
+                ...(status ? { status } : {}),
+                ...(assigneeId ? { assigneeId } : {}),
+                ...(dueDate ? { dueDate: dueDate.toISOString().slice(0, 10) } : {}),
+              } as CreateIssueInput,
+              workspaceRole(ctx),
+            );
 
             await recordAiMutationActivity({
               ctx,
@@ -895,14 +876,22 @@ async function executeToolLegacy(
               },
             });
 
-            await triggerIssueBackgroundJobs({
-              workspaceId: ctx.workspaceId,
-              issueId: issue.id,
-              triggeredByUserId: ctx.userId,
-              reason: "created",
-            });
+            // createIssue() already enqueues issue-intelligence + embedding jobs —
+            // do not enqueue them a second time here.
 
-            return { success: true, data: { ...issue, message: `Issue ${issue.id} created` } };
+            return {
+              success: true,
+              data: {
+                id: issue.id,
+                title: issue.title,
+                status: issue.status,
+                priority: issue.priority,
+                type: issue.type,
+                projectId: issue.projectId,
+                assigneeId: issue.assigneeId,
+                message: `Issue ${issue.id} created`,
+              },
+            };
           },
         );
       }
@@ -994,13 +983,52 @@ async function executeToolLegacy(
       }
 
       case "update_issue_status": {
-        return executeToolLegacy(
-          "update_issue",
-          {
-            issueId: args.issueId,
-            status: args.status,
-          },
+        if (!canWrite(ctx)) return { success: false, data: null, error: "You don't have permission to update issues" };
+
+        const issueId = str(args.issueId);
+        const status = str(args.status).toLowerCase().replace(/_/g, "-");
+        if (!issueId || !status) return { success: false, data: null, error: "issueId and status are required" };
+
+        const existing = await prisma.issue.findFirst({
+          where: { id: issueId, workspaceId: ctx.workspaceId, ...issueVisibilityWhere(ctx) },
+          select: { id: true, title: true, assigneeId: true, creatorId: true, status: true },
+        });
+        if (!existing) return { success: false, data: null, error: `Issue ${args.issueId} not found` };
+
+        if (!isAdmin(ctx) && existing.assigneeId !== ctx.userId && existing.creatorId !== ctx.userId) {
+          return { success: false, data: null, error: "You can only update issues assigned to you or created by you" };
+        }
+
+        return withMutationGuard(
+          "update_issue_status",
+          { issueId: existing.id, status },
           ctx,
+          async () => {
+            // Previously forwarded into update_issue's raw-Prisma write, which skipped
+            // assertTransitionPermission/assertStatusEntryRules entirely — a MEMBER could move
+            // an issue through an approval-gated or otherwise-restricted transition via chat
+            // that the real PATCH /:id/status route would reject. Routed through the same
+            // issueService.updateIssueStatus() the REST route calls, which also restores the
+            // notification/realtime/integration-dispatch side effects the raw version skipped.
+            const updated = await updateIssueStatus(ctx.workspaceId, workspaceRole(ctx), ctx.userId, existing.id, status);
+
+            await recordAiMutationActivity({
+              ctx,
+              toolName: "update_issue_status",
+              targetType: "ISSUE",
+              targetId: existing.id,
+              message: `AI updated issue ${existing.id} status`,
+              metadata: {
+                issueId: existing.id,
+                entityId: existing.id,
+                entityTitle: existing.title,
+                fromStatus: existing.status,
+                toStatus: status,
+              },
+            });
+
+            return { success: true, data: { ...(updated as Record<string, unknown>), message: `${existing.id} status updated to ${status}` } };
+          },
         );
       }
 
@@ -1508,7 +1536,10 @@ async function executeToolLegacy(
       }
 
       case "create_project": {
-        if (!isAdmin(ctx)) return { success: false, data: null, error: "Only admins and owners can create projects" };
+        // Route requires MEMBER+ (project.routes.ts: requireRole("MEMBER","ADMIN","OWNER")) —
+        // this previously required isAdmin(ctx), silently blocking a legitimate MEMBER from
+        // creating a project via chat that they could create through the UI.
+        if (!canWrite(ctx)) return { success: false, data: null, error: "You don't have permission to create projects" };
 
         const team = await prisma.team.findFirst({ where: { id: str(args.teamId), workspaceId: ctx.workspaceId }, select: { id: true, departmentId: true } });
         if (!team) return { success: false, data: null, error: "Team not found" };
@@ -1768,6 +1799,13 @@ async function executeToolLegacy(
         const userId = resolveUserId(args.userId, ctx);
         const role = str(args.role).toUpperCase();
         if (!userId || !role) return { success: false, data: null, error: "userId and role are required" };
+        // Runtime backstop matching the REST route's z.enum(["ADMIN","MEMBER","GUEST"]) — the
+        // tool-definitions.ts enum is only a prompting hint to the model, not an enforced
+        // constraint on args actually reaching the executor. Without this, a malformed or
+        // adversarial tool call could set role: "OWNER" and mint a second workspace owner.
+        if (role !== "ADMIN" && role !== "MEMBER" && role !== "GUEST") {
+          return { success: false, data: null, error: "role must be ADMIN, MEMBER, or GUEST" };
+        }
         const confirmationError = requireConfirmedHighImpact(
           ctx,
           "change_workspace_member_role",
@@ -2215,6 +2253,10 @@ async function executeToolLegacy(
             return { success: false, data: null, error: "You don't have access to this team" };
           }
           where.teamId = str(args.teamId);
+        } else if (!isAdmin(ctx)) {
+          // Workspace-wide workload ranks every member — same sensitivity as
+          // get_workspace_analytics, so it needs the same admin/owner gate.
+          return { success: false, data: null, error: "Workspace-wide workload data requires admin or owner access" };
         }
 
         const issues = await prisma.issue.groupBy({ by: ["assigneeId"], where, _count: true });
@@ -2222,7 +2264,14 @@ async function executeToolLegacy(
         const users = userIds.length > 0 ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true } }) : [];
         const userMap = new Map(users.map((u) => [u.id, u.name]));
 
-        return { success: true, data: issues.filter((i) => i.assigneeId).map((i) => ({ name: userMap.get(i.assigneeId!) ?? "Unknown", openIssues: i._count })).sort((a, b) => b.openIssues - a.openIssues) };
+        const assigned = issues.filter((i) => i.assigneeId).map((i) => ({ name: userMap.get(i.assigneeId!) ?? "Unknown", openIssues: i._count }));
+        // groupBy includes a row with assigneeId: null for unassigned open issues — previously
+        // dropped entirely, which made a team with unassigned backlog read as "no open issues /
+        // no current stress" instead of surfacing that nobody owns that work yet.
+        const unassignedCount = issues.find((i) => !i.assigneeId)?._count ?? 0;
+        const withUnassigned = unassignedCount > 0 ? [...assigned, { name: "Unassigned", openIssues: unassignedCount }] : assigned;
+
+        return { success: true, data: withUnassigned.sort((a, b) => b.openIssues - a.openIssues) };
       }
 
       case "invite_member": {
@@ -2231,35 +2280,43 @@ async function executeToolLegacy(
         const email = str(args.email).toLowerCase().trim();
         if (!email || !email.includes("@")) return { success: false, data: null, error: "Invalid email address" };
 
+        const role = str(args.role, "MEMBER").toUpperCase();
+        // Runtime backstop matching the REST route's z.enum(["ADMIN","MEMBER","GUEST"]) —
+        // without this a crafted role: "OWNER" could mint a second workspace owner via
+        // invite acceptance, since role flows straight into the created membership.
+        if (role !== "ADMIN" && role !== "MEMBER" && role !== "GUEST") {
+          return { success: false, data: null, error: "role must be ADMIN, MEMBER, or GUEST" };
+        }
+
+        const designation = str(args.designation).trim();
+        if (!designation) return { success: false, data: null, error: "designation is required (e.g. \"Frontend Engineer\")" };
+
         const team = await prisma.team.findFirst({ where: { id: str(args.teamId), workspaceId: ctx.workspaceId }, select: { id: true } });
         if (!team) return { success: false, data: null, error: "Team not found" };
 
-        // Check if already a member
-        const existingMember = await prisma.user.findFirst({ where: { email }, select: { id: true } });
-        if (existingMember) {
-          const membership = await prisma.workspaceMembership.findFirst({ where: { userId: existingMember.id, workspaceId: ctx.workspaceId }, select: { id: true } });
-          if (membership) return { success: false, data: null, error: `${email} is already a workspace member` };
-        }
-
-        // Check for pending invitation
-        const existingInvite = await prisma.workspaceInvitation.findFirst({ where: { workspaceId: ctx.workspaceId, email, status: "PENDING" }, select: { id: true } });
-        if (existingInvite) return { success: false, data: null, error: `A pending invitation already exists for ${email}` };
-
-        const token = randomBytes(32).toString("hex");
-        const tokenHash = createHash("sha256").update(token).digest("hex");
-        const role = str(args.role, "MEMBER") as "ADMIN" | "MEMBER" | "GUEST";
-
         return withMutationGuard(
           "invite_member",
-          {
-            email,
-            role,
-            teamId: team.id,
-          },
+          { email, role, teamId: team.id, designation },
           ctx,
           async () => {
-            await prisma.workspaceInvitation.create({
-              data: { workspaceId: ctx.workspaceId, email, role, teamId: team.id, tokenHash, invitedById: ctx.userId, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
+            // Routed through the real invitation service — the previous raw-Prisma version
+            // bypassed Free-plan seat capacity enforcement and never sent the invitation
+            // email, leaving invitees with no way to know they'd been invited except by
+            // checking the app's pending-invites list themselves.
+            const [inviter, workspace] = await Promise.all([
+              prisma.user.findUnique({ where: { id: ctx.userId }, select: { name: true } }),
+              prisma.workspace.findUnique({ where: { id: ctx.workspaceId }, select: { name: true } }),
+            ]);
+
+            const invitation = await createInvitation({
+              workspaceId: ctx.workspaceId,
+              email,
+              role: role as "ADMIN" | "MEMBER" | "GUEST",
+              designation,
+              teamId: team.id,
+              invitedById: ctx.userId,
+              inviterName: inviter?.name ?? "A workspace admin",
+              workspaceName: workspace?.name ?? "the workspace",
             });
 
             await recordAiMutationActivity({
@@ -2272,6 +2329,7 @@ async function executeToolLegacy(
                 email,
                 role,
                 teamId: team.id,
+                invitationId: invitation.id,
               },
             });
 
@@ -3024,6 +3082,9 @@ async function executeToolLegacy(
       }
 
       case "list_documents": {
+        // Document list routes require MEMBER+ (access-control-current-state.md); the mutation
+        // tools in this family already gate on isAdmin, but the list tools had no gate at all.
+        if (ctx.userRole === "GUEST") return { success: false, data: null, error: "Guests cannot view documents" };
         const scopeType = str(args.scopeType).toUpperCase();
         const query = {
           ...(args.folderId !== undefined ? { folderId: str(args.folderId) || null } : {}),
@@ -3036,6 +3097,7 @@ async function executeToolLegacy(
       }
 
       case "list_document_folders": {
+        if (ctx.userRole === "GUEST") return { success: false, data: null, error: "Guests cannot view documents" };
         const scopeType = str(args.scopeType).toUpperCase();
         const query = { ...(args.parentId !== undefined ? { parentId: str(args.parentId) || null } : {}) };
         if (scopeType === "WORKSPACE") return { success: true, data: await listWorkspaceFolders(ctx.workspaceId, query as any) };
@@ -3167,6 +3229,9 @@ async function executeToolLegacy(
       }
 
       case "list_roadmap": {
+        // GET /roadmap requires MEMBER+ (stricter than GET /roadmap/projects/:projectId, which
+        // legitimately allows GUEST — that's get_project_roadmap, left unchanged).
+        if (ctx.userRole === "GUEST") return { success: false, data: null, error: "Guests cannot view the roadmap" };
         const data = await listRoadmap(ctx.workspaceId, workspaceRole(ctx), ctx.userId, {
           ...(args.teamId ? { teamId: str(args.teamId) } : {}),
           ...(args.departmentId ? { departmentId: str(args.departmentId) } : {}),
@@ -3329,6 +3394,12 @@ async function executeToolLegacy(
       case "resolve_roadmap_dependency": {
         const dependencyId = str(args.dependencyId);
         if (!dependencyId) return { success: false, data: null, error: "dependencyId is required" };
+        // The route-level equivalent gates this with hasDependencyManageAccess (only privileged
+        // roles or the lead of either project/team involved); requireConfirmedHighImpact below
+        // is a UX confirmation step, not an authorization check, so without this any MEMBER
+        // could resolve dependencies on projects they don't lead.
+        const dependencyAllowed = await hasDependencyManageAccess(ctx.workspaceId, ctx.userId, workspaceRole(ctx), dependencyId);
+        if (!dependencyAllowed) return { success: false, data: null, error: "You do not have permission to manage this roadmap dependency" };
         const confirmationError = requireConfirmedHighImpact(
           ctx,
           "resolve_roadmap_dependency",
@@ -3355,6 +3426,8 @@ async function executeToolLegacy(
       case "cancel_roadmap_dependency": {
         const dependencyId = str(args.dependencyId);
         if (!dependencyId) return { success: false, data: null, error: "dependencyId is required" };
+        const dependencyAllowed = await hasDependencyManageAccess(ctx.workspaceId, ctx.userId, workspaceRole(ctx), dependencyId);
+        if (!dependencyAllowed) return { success: false, data: null, error: "You do not have permission to manage this roadmap dependency" };
         const confirmationError = requireConfirmedHighImpact(
           ctx,
           "cancel_roadmap_dependency",
@@ -3825,7 +3898,7 @@ async function executeToolLegacy(
             type: true,
             targetType: true,
             targetId: true,
-            message: true,
+            description: true,
             createdAt: true,
           },
           orderBy: { createdAt: "desc" },
@@ -3839,7 +3912,7 @@ async function executeToolLegacy(
             type: item.type,
             targetType: item.targetType,
             targetId: item.targetId,
-            message: item.message,
+            message: item.description,
             createdAt: item.createdAt.toISOString(),
           })),
         };

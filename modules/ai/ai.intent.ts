@@ -2,6 +2,7 @@ import { callAI, CHAT_MODEL_DEFAULT } from "./ai.provider.js";
 import { buildCapabilityCandidate, getCapabilityForIntent, type AiEntityType, type AiIntent, type CapabilityCandidate } from "./ai.capabilities.js";
 import { incrementAiMetricCounter, logAiInfo, logAiWarn } from "./ai.observability.js";
 import { normalizeUnicodeText } from "./ai.text-normalization.js";
+import type { ToolDomain } from "./tools/tool-definitions.js";
 
 export type IntentClassifierSource = "deterministic" | "model" | "fallback";
 export type AnalyticsScopeKind = "workspace" | "project" | "team" | "member" | "cycle";
@@ -25,9 +26,14 @@ type HybridClassifierOptions = {
   modelClassifier?: ((message: string, normalized: string) => Promise<Partial<IntentClassification> | null>) | undefined;
 };
 
+// Mirrors ai.memory.ts's REFERENCE_PRONOUN_PATTERN. Not imported directly — ai.memory.ts pulls
+// in ai.action-state.ts, which imports this module, so importing across that edge would create
+// a circular dependency for what is otherwise a one-line regex literal.
+const BACK_REFERENCE_PATTERN = /\b(it|that|this|them|those|these)\b/i;
+
 const ROLE_VARIANTS = ["role", "rle", "roles", "permission", "permissions", "access", "allowed"];
 const REPORT_VARIANTS = ["report", "status", "progress", "health", "shape", "track", "risk", "doing", "summary", "performance"];
-const OVERLOAD_VARIANTS = ["overloaded", "overload", "heavy workload", "too much work", "who needs help", "blocked", "bottleneck"];
+const OVERLOAD_VARIANTS = ["overloaded", "overload", "heavy workload", "too much work", "who needs help", "blocked", "bottleneck", "stressed", "stress", "burned out", "burnt out", "burnout", "under pressure", "swamped"];
 const GREETING_VARIANTS = ["hi", "hello", "hey", "salam", "how are you", "thanks", "thank you"];
 const BUSINESS_INTENTS = new Set<AiIntent>([
   "PROJECT_HEALTH",
@@ -162,6 +168,32 @@ function inferPreferredScope(normalized: string): AnalyticsScopeKind | undefined
   return undefined;
 }
 
+const TOOL_DOMAIN_PATTERNS: Array<{ domain: ToolDomain; pattern: RegExp }> = [
+  { domain: "issues", pattern: /\b(issue(s)?|task(s)?|bug(s)?|subtask(s)?|watcher(s)?|dependenc(y|ies)|label(s)?)\b/ },
+  { domain: "projects", pattern: /\bproject(s)?\b/ },
+  { domain: "teams", pattern: /\bteam(s)?\b/ },
+  { domain: "departments", pattern: /\bdepartment(s)?\b/ },
+  { domain: "workspace", pattern: /\b(workspace(s)?|member(s)?|role(s)?|invite(s)?|invitation(s)?)\b/ },
+  { domain: "cycles", pattern: /\b(cycle(s)?|sprint(s)?)\b/ },
+  { domain: "templates", pattern: /\btemplate(s)?\b/ },
+  { domain: "notifications", pattern: /\bnotification(s)?\b/ },
+  { domain: "documents", pattern: /\b(document(s)?|doc(s)?|folder(s)?)\b/ },
+  { domain: "roadmap", pattern: /\b(roadmap(s)?|milestone(s)?)\b/ },
+  { domain: "integrations", pattern: /\b(api key|integration(s)?|slack|github|discord|figma)\b/ },
+  { domain: "analytics", pattern: /\b(analytics?|report(s)?|performance|workload|velocity|overloaded|progress|health|burndown|priorit\w*)\b/ },
+];
+
+/**
+ * Keyword-based domain detection used to scope which tool schemas get sent to the model
+ * (see getScopedToolDefinitions). Scans the current message plus recent conversation text
+ * so a bare follow-up like "yes" still inherits the domain of what it's confirming — the
+ * current message alone often has no domain keywords at all.
+ */
+export function detectToolDomains(...texts: string[]): ToolDomain[] {
+  const normalized = normalizeInput(texts.join(" "));
+  return TOOL_DOMAIN_PATTERNS.filter(({ pattern }) => pattern.test(normalized)).map(({ domain }) => domain);
+}
+
 function capability(intent: AiIntent, confidence: number, reason: string, source: IntentClassifierSource, extras?: {
   overlappingBusinessIntent?: boolean | undefined;
   preferredScopeKind?: AnalyticsScopeKind | undefined;
@@ -288,7 +320,20 @@ function classifyDeterministicBusiness(normalized: string): IntentClassification
   ) {
     return ambiguousBusinessForScope("project", "A broad entity-health question likely refers to a project and needs semantic classification before execution.");
   }
-  if (looksLikeEntityBriefingRequest(normalized)) {
+  // A bare back-reference ("tell me about them/it/that/detail") with no explicit scope keyword
+  // and no report-ish wording is much more likely a conversational follow-up pointing at
+  // something already surfaced this conversation (e.g. issues just listed) than a fresh
+  // analytics/report request. Forcing these into a report-scope clarification produced
+  // out-of-nowhere "which report?" replies on plain follow-ups — defer to the free-form loop
+  // instead, which already has full conversation history (including prior tool results) to
+  // resolve the reference correctly.
+  const isBareBackReference =
+    BACK_REFERENCE_PATTERN.test(normalized) &&
+    !preferredScopeKind &&
+    !hasVariant(normalized, REPORT_VARIANTS) &&
+    !/\banalytics?\b/.test(normalized);
+
+  if (looksLikeEntityBriefingRequest(normalized) && !isBareBackReference) {
     return ambiguousBusinessForScope(preferredScopeKind ?? "project", "A broad entity summary request likely refers to a scoped business report and needs semantic classification before execution.");
   }
   if (

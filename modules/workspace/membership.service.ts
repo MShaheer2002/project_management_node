@@ -257,6 +257,13 @@ export async function changeMemberRole(
   targetUserId: string,
   newRole: Exclude<WorkspaceRole, "OWNER">,
 ) {
+  // Runtime backstop — the `Exclude<WorkspaceRole, "OWNER">` param type is compile-time only,
+  // and this service has no way to know every caller (route, AI tool, future consumer) actually
+  // validated the value first. Reject OWNER explicitly rather than trusting the type system.
+  if ((newRole as WorkspaceRole) === "OWNER") {
+    throw new AppError(403, ERROR_CODES.FORBIDDEN, "Cannot assign the OWNER role — workspaces have exactly one owner");
+  }
+
   // Find the membership
   const membership = await prisma.workspaceMembership.findUnique({
     where: { userId_workspaceId: { userId: targetUserId, workspaceId } },

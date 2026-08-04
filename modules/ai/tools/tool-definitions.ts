@@ -319,7 +319,7 @@ export const AI_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "create_project",
-      description: "Create a new project. Requires ADMIN or OWNER role.",
+      description: "Create a new project. Requires MEMBER role or higher.",
       parameters: {
         type: "object",
         properties: {
@@ -787,15 +787,16 @@ export const AI_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "invite_member",
-      description: "Send a workspace invitation. Requires ADMIN or OWNER role.",
+      description: "Send a workspace invitation. Requires ADMIN or OWNER role. Never invite as OWNER — a workspace has exactly one owner.",
       parameters: {
         type: "object",
         properties: {
           email: { type: "string", description: "Email to invite" },
-          role: { type: "string", description: "Role to assign", enum: ["ADMIN", "MEMBER", "GUEST"] },
+          role: { type: "string", description: "Role to assign — never OWNER", enum: ["ADMIN", "MEMBER", "GUEST"] },
+          designation: { type: "string", description: "Their job title/role label, e.g. \"Frontend Engineer\"" },
           teamId: { type: "string", description: "Team to add them to" },
         },
-        required: ["email", "role", "teamId"],
+        required: ["email", "role", "designation", "teamId"],
       },
     },
   },
@@ -1623,4 +1624,95 @@ export const AI_TOOLS: ToolDefinition[] = [
 
 export function getToolDefinitions(): ToolDefinition[] {
   return AI_TOOLS;
+}
+
+// The free-form tool-calling loop previously sent all ~100 tool schemas on every call,
+// which alone can consume the majority of MAX_TOKENS_PER_TURN before the model does any
+// real work (see ai.chat.ts). This groups tools by domain so a turn can request only the
+// domains it actually needs. CORE_TOOL_NAMES covers the highest-frequency actions and is
+// always included so a domain-detection miss degrades gracefully instead of breaking.
+export type ToolDomain =
+  | "issues"
+  | "projects"
+  | "teams"
+  | "departments"
+  | "workspace"
+  | "cycles"
+  | "templates"
+  | "notifications"
+  | "documents"
+  | "roadmap"
+  | "integrations"
+  | "analytics";
+
+export const ALL_TOOL_DOMAINS: ToolDomain[] = [
+  "issues", "projects", "teams", "departments", "workspace", "cycles",
+  "templates", "notifications", "documents", "roadmap", "integrations", "analytics",
+];
+
+const CORE_TOOL_NAMES: string[] = [
+  "list_issues", "get_issue", "search_issues", "add_comment",
+  "update_issue_status", "assign_issue", "list_projects", "list_members",
+];
+
+const TOOL_DOMAIN_MAP: Record<ToolDomain, string[]> = {
+  issues: [
+    "create_issue", "update_issue", "add_label_to_issue", "create_subtask", "update_subtask",
+    "reorder_subtasks", "add_issue_watchers", "list_issue_watchers", "add_issue_dependency",
+    "update_issue_integration_ref", "list_labels",
+  ],
+  projects: [
+    "get_project_summary", "create_project", "list_project_members", "add_project_members",
+    "remove_project_member", "update_project",
+  ],
+  teams: [
+    "list_teams", "get_team", "create_team", "update_team", "add_team_members",
+    "remove_team_member", "list_team_members", "get_team_workload",
+  ],
+  departments: [
+    "list_departments", "get_department", "create_department", "update_department",
+    "add_department_members", "remove_department_member", "list_department_members",
+  ],
+  workspace: [
+    "get_workspace", "update_workspace", "list_workspace_members", "change_workspace_member_role",
+    "remove_workspace_member", "update_workspace_statuses", "list_user_workspaces",
+    "get_workspace_access_summary", "list_pending_workspace_invites", "accept_workspace_invite",
+    "list_workspace_invitations", "invite_member",
+  ],
+  cycles: [
+    "get_cycle", "create_cycle", "update_cycle", "complete_cycle", "reopen_cycle",
+    "carry_over_cycle", "list_cycles", "get_cycle_progress", "get_current_cycle_for_team",
+  ],
+  templates: [
+    "list_active_templates", "list_templates", "get_template", "create_template",
+    "update_template", "duplicate_template", "activate_template", "deactivate_template",
+  ],
+  notifications: ["list_notifications", "mark_notification_read", "mark_all_notifications_read"],
+  documents: [
+    "create_document", "list_documents", "list_document_folders", "create_document_folder",
+    "rename_document_folder", "move_document_folder", "move_document", "update_document",
+  ],
+  roadmap: [
+    "list_roadmap", "get_project_roadmap", "update_project_schedule", "create_milestone",
+    "update_milestone", "create_roadmap_dependency", "reorder_milestones",
+    "resolve_roadmap_dependency", "cancel_roadmap_dependency",
+  ],
+  integrations: ["list_api_keys", "create_api_key", "get_api_key", "list_integrations", "get_integration_status"],
+  analytics: [
+    "get_workspace_analytics", "get_project_analytics", "get_team_analytics",
+    "get_member_analytics", "get_cycle_analytics", "export_analytics_report",
+  ],
+};
+
+/**
+ * Returns only the tools needed for the given domains (plus the always-included core set).
+ * Callers should fall back to getToolDefinitions() when domain detection finds no signal at
+ * all, rather than risk under-provisioning a legitimately domain-spanning request.
+ */
+export function getScopedToolDefinitions(domains: ToolDomain[]): ToolDefinition[] {
+  const names = new Set(CORE_TOOL_NAMES);
+  for (const domain of domains) {
+    for (const name of TOOL_DOMAIN_MAP[domain] ?? []) names.add(name);
+  }
+  return AI_TOOLS.filter((tool) => names.has(tool.function.name));
 }
