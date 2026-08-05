@@ -342,6 +342,19 @@ const resolveDueDate = (input: string): Date | null => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+/**
+ * Collapses markdown/whitespace and truncates on a word boundary, so list rows
+ * carry enough meaning to answer from without bloating the payload.
+ */
+function summarizeText(value: string | null | undefined, maxLength: number): string | null {
+  if (!value) return null;
+  const flattened = value.replace(/\s+/g, " ").trim();
+  if (flattened.length <= maxLength) return flattened;
+  const cut = flattened.slice(0, maxLength);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${lastSpace > maxLength * 0.6 ? cut.slice(0, lastSpace) : cut}…`;
+}
+
 const issueVisibilityWhere = (ctx: ToolContext): Record<string, unknown> =>
   isAdmin(ctx)
     ? {}
@@ -770,6 +783,11 @@ async function executeToolLegacy(
           select: {
             id: true,
             title: true,
+            // Included so "tell me about my issues" can be answered from this one
+            // call. Without it the model had to follow up with get_issue per row,
+            // and since the whole tool payload is re-sent on every round-trip,
+            // those follow-ups dominated the cost of a turn.
+            description: true,
             status: true,
             priority: true,
             type: true,
@@ -787,6 +805,9 @@ async function executeToolLegacy(
           data: issues.map((i) => ({
             id: i.id,
             title: i.title,
+            // Trimmed: enough for the model to summarize an issue without a
+            // second call, short enough that a list of 25 stays cheap.
+            summary: summarizeText(i.description, 240),
             status: i.status,
             priority: i.priority,
             type: i.type,

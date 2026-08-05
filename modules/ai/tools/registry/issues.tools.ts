@@ -30,7 +30,9 @@ export const issuesSearch: ConsolidatedTool = {
   readOnly: true,
   description:
     "Find, count or group issues. Covers my issues, overdue, blocked, workload by person " +
-    "(groupBy=assignee) and what to work on next (sort=priority).",
+    "(groupBy=assignee) and what to work on next (sort=priority). Each result already includes a " +
+    "summary, status, priority, assignee, project and due date — enough to describe an issue without " +
+    "a further lookup. Use issues_get when you need the full description, labels or comments.",
   parameters: {
     type: "object",
     properties: {
