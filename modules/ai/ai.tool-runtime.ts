@@ -13,7 +13,14 @@ export interface AiToolRuntimeMessage {
 export interface AiToolRuntimeResult {
   content: string | null;
   toolCalls: Array<{ id: string; function: { name: string; arguments: string } }> | null;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    /** Prompt tokens served from the provider's cache, billed at a large discount. */
+    cachedInputTokens: number;
+    /** Provider-reported cost in USD, when available. */
+    costUsd: number | null;
+  };
 }
 
 /** Thrown when the caller aborts (user pressed stop) rather than the request timing out. */
@@ -70,6 +77,11 @@ export async function callAIWithTools(
         tools,
         max_tokens: 1800,
         temperature: 0.3,
+        // Returns cached-token counts and real cost alongside raw usage. Raw
+        // prompt_tokens counts cached tokens at full weight, so without this the
+        // reported figure badly overstates what a turn actually costs on a
+        // provider that caches the stable prefix.
+        usage: { include: true },
       }),
       signal: controller.signal,
     });
@@ -84,7 +96,11 @@ export async function callAIWithTools(
   }
 
   if (response.status === 429) {
-    return { content: null, toolCalls: null, usage: { inputTokens: 0, outputTokens: 0 } };
+    return {
+      content: null,
+      toolCalls: null,
+      usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, costUsd: null },
+    };
   }
 
   if (!response.ok) {
@@ -99,7 +115,12 @@ export async function callAIWithTools(
         tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
       };
     }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      cost?: number;
+      prompt_tokens_details?: { cached_tokens?: number };
+    };
   };
 
   const choice = data.choices?.[0]?.message;
@@ -115,6 +136,8 @@ export async function callAIWithTools(
     usage: {
       inputTokens: data.usage?.prompt_tokens ?? 0,
       outputTokens: data.usage?.completion_tokens ?? 0,
+      cachedInputTokens: data.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      costUsd: typeof data.usage?.cost === "number" ? data.usage.cost : null,
     },
   };
 }

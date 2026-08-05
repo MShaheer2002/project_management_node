@@ -36,9 +36,8 @@ export const analyticsReport: ConsolidatedTool = {
   domain: "analytics",
   readOnly: true,
   description:
-    "Get performance metrics for the whole workspace, a project, a team, a person, or a cycle — completion " +
-    "rates, velocity, workload, overdue work and trends. Workspace-wide figures require admin or owner access; " +
-    "a regular member can only see their own metrics and scopes they belong to.",
+    "Performance metrics for a workspace, project, team, person or cycle: completion, velocity, " +
+    "workload, overdue, trends. Workspace-wide requires admin.",
   parameters: {
     type: "object",
     properties: {
@@ -120,8 +119,7 @@ export const workspaceGet: ConsolidatedTool = {
   domain: "workspace",
   readOnly: true,
   description:
-    "Get the current workspace's settings and the calling user's own access level — their role and what they " +
-    "are allowed to do. Use this when someone asks about their permissions.",
+    "Workspace settings, and the current user's role and permissions.",
   parameters: {
     type: "object",
     properties: {
@@ -170,8 +168,7 @@ export const workspaceInvitations: ConsolidatedTool = {
   domain: "workspace",
   readOnly: false,
   description:
-    "Invite someone to the workspace by email, list outstanding invitations, or accept one addressed to the " +
-    "current user. Inviting requires admin or owner access.",
+    "Invite someone by email, list invitations, or accept one. Inviting requires admin.",
   parameters: {
     type: "object",
     properties: {
@@ -414,8 +411,7 @@ export const apiKeysManage: ConsolidatedTool = {
   domain: "integrations",
   readOnly: false,
   description:
-    "List or create API keys for programmatic access. Requires admin or owner access. Keys cannot be revoked " +
-    "through chat — do that in workspace settings.",
+    "List or create API keys. Admin only. Revoking must be done in workspace settings.",
   parameters: {
     type: "object",
     properties: {
@@ -460,9 +456,8 @@ export const askUserToClarify: ConsolidatedTool = {
   domain: "meta",
   readOnly: true,
   description:
-    "Ask the user one specific question when you genuinely cannot proceed — for example when a name matches " +
-    "several things, or a required detail is missing and cannot be looked up. Search first; only ask when " +
-    "looking it up will not resolve it. Ask one question, not several.",
+    "Ask one specific question when you truly cannot proceed — an ambiguous name, or a missing detail " +
+    "no lookup can resolve. Search first. One question only.",
   parameters: {
     type: "object",
     properties: {
@@ -501,8 +496,8 @@ export const appHelp: ConsolidatedTool = {
   domain: "meta",
   readOnly: true,
   description:
-    "Explain how to do something in Trussen, or where to find a feature. Use for 'how do I…' and 'where is…' " +
-    "questions about the app itself rather than about workspace data.",
+    "Explain how to do something in Trussen, or where a feature lives. For questions about the app, " +
+    "not about workspace data.",
   parameters: {
     type: "object",
     properties: { topic: { type: "string", description: "What the user is trying to do." } },

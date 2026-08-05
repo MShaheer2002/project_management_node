@@ -19,7 +19,6 @@ import {
   ok,
   okWithMutation,
   optionalStr,
-  responseFormatParam,
   str,
   strArray,
   type ConsolidatedTool,
@@ -30,9 +29,8 @@ export const issuesSearch: ConsolidatedTool = {
   domain: "issues",
   readOnly: true,
   description:
-    "Find issues with any combination of filters, and optionally group them. Use this for 'my issues', " +
-    "'overdue work', 'who is overloaded' (group_by assignee), 'what should I do next' (sort by priority), " +
-    "'blocked work', and any issue listing or counting question.",
+    "Find, count or group issues. Covers my issues, overdue, blocked, workload by person " +
+    "(groupBy=assignee) and what to work on next (sort=priority).",
   parameters: {
     type: "object",
     properties: {
@@ -59,7 +57,6 @@ export const issuesSearch: ConsolidatedTool = {
         enum: ["updated", "priority", "dueDate"],
       },
       limit: limitParam,
-      responseFormat: responseFormatParam,
     },
   },
   handler: async (args, ctx) => {
@@ -136,8 +133,7 @@ export const issuesCreate: ConsolidatedTool = {
   domain: "issues",
   readOnly: false,
   description:
-    "Create a new issue. Requires a project. Always write a meaningful description, even a short one, " +
-    "rather than leaving it empty.",
+    "Create an issue. Requires a project. Always write a real description.",
   parameters: {
     type: "object",
     properties: {
@@ -193,8 +189,8 @@ export const issuesUpdate: ConsolidatedTool = {
   domain: "issues",
   readOnly: false,
   description:
-    "Change one or more fields on an existing issue — title, description, status, priority, type, assignee " +
-    "or due date. Set several at once rather than calling this repeatedly.",
+    "Change issue fields: title, description, status, priority, type, assignee, due date, labels. " +
+    "Set several at once rather than calling repeatedly.",
   parameters: {
     type: "object",
     properties: {
@@ -415,8 +411,7 @@ export const issuesLinks: ConsolidatedTool = {
   domain: "issues",
   readOnly: false,
   description:
-    "Link an issue to something else: another issue it depends on, or an external reference such as a " +
-    "GitHub pull request or Slack thread.",
+    "Link an issue to another it depends on, or to an external URL (GitHub PR, Slack thread).",
   parameters: {
     type: "object",
     properties: {

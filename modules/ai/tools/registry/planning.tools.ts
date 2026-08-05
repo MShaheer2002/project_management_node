@@ -17,8 +17,7 @@ export const cyclesSearch: ConsolidatedTool = {
   domain: "cycles",
   readOnly: true,
   description:
-    "List cycles (sprints), or find the one currently running for a team. Use this for 'current sprint', " +
-    "'upcoming cycles', or 'past sprints'.",
+    "List cycles (sprints), or find a team's currently running one.",
   parameters: {
     type: "object",
     properties: {
@@ -121,8 +120,7 @@ export const cyclesUpdate: ConsolidatedTool = {
   domain: "cycles",
   readOnly: false,
   description:
-    "Change a cycle's details, or move it through its lifecycle: complete it, reopen it (admin/owner only), " +
-    "or carry unfinished work over to the next one.",
+    "Change a cycle, or complete / reopen (admin only) / carry over its unfinished work.",
   parameters: {
     type: "object",
     properties: {
@@ -213,8 +211,7 @@ export const templatesManage: ConsolidatedTool = {
   domain: "templates",
   readOnly: false,
   description:
-    "Create, update, duplicate, activate or deactivate an issue template. Requires admin or owner access. " +
-    "Templates are deactivated rather than deleted.",
+    "Create, update, duplicate, activate or deactivate an issue template. Admin only.",
   parameters: {
     type: "object",
     properties: {
@@ -398,8 +395,7 @@ export const roadmapDependencies: ConsolidatedTool = {
   domain: "roadmap",
   readOnly: false,
   description:
-    "Create a dependency between two projects, or mark an existing one resolved or cancelled. Only the lead " +
-    "of one of the projects involved (or an admin) can manage these.",
+    "Create a project dependency, or resolve / cancel one. Requires being a lead of a project involved.",
   parameters: {
     type: "object",
     properties: {

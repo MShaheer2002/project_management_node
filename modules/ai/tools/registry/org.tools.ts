@@ -116,8 +116,7 @@ export const projectsUpdate: ConsolidatedTool = {
   domain: "projects",
   readOnly: false,
   description:
-    "Change a project's name, description, status or lead. Use status to archive or complete a project — " +
-    "projects are never deleted.",
+    "Change a project's name, description, status or lead. Use status to archive or complete it.",
   parameters: {
     type: "object",
     properties: {
@@ -440,8 +439,8 @@ export const membersManage: ConsolidatedTool = {
   domain: "members",
   readOnly: false,
   description:
-    "List, add or remove people in a project, team, department, or the workspace itself. Also changes a " +
-    "workspace member's role. Removing someone revokes their access; it never deletes their account or work.",
+    "List, add or remove people in a project, team, department or the workspace, and change workspace " +
+    "roles. Removing revokes access; it never deletes an account or their work.",
   parameters: {
     type: "object",
     properties: {

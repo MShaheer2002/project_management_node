@@ -84,6 +84,12 @@ export interface AgentTurnResult {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  /** Prompt tokens served from the provider cache — the gap between raw and billed usage. */
+  cachedInputTokens: number;
+  /** Provider-reported cost for the whole turn, when available. */
+  costUsd: number | null;
+  /** Number of provider round-trips. The dominant cost driver, since tools re-send each time. */
+  modelCalls: number;
   toolCalls: AgentToolCallRecord[];
   mutationIds: string[];
   interrupted: boolean;
@@ -129,7 +135,12 @@ export type AgentModelCaller = (
 ) => Promise<{
   content: string | null;
   toolCalls: Array<{ id: string; function: { name: string; arguments: string } }> | null;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens?: number | undefined;
+    costUsd?: number | null | undefined;
+  };
 }>;
 
 /** Mutation recorder. Injected for the same reason. Returns the record id, or null if recording failed. */
@@ -186,14 +197,28 @@ export async function* runAgentTurn(
   let currentModel = input.models[0] ?? "";
   let inputTokens = 0;
   let outputTokens = 0;
+  let cachedInputTokens = 0;
+  let costUsd: number | null = null;
+  let modelCalls = 0;
   let finalContent = "";
   let stopReason: AgentTurnResult["stopReason"] = "completed";
+
+  const accrueUsage = (usage: Awaited<ReturnType<AgentModelCaller>>["usage"]) => {
+    modelCalls += 1;
+    inputTokens += usage.inputTokens;
+    outputTokens += usage.outputTokens;
+    cachedInputTokens += usage.cachedInputTokens ?? 0;
+    if (typeof usage.costUsd === "number") costUsd = (costUsd ?? 0) + usage.costUsd;
+  };
 
   const buildResult = (): AgentTurnResult => ({
     content: finalContent,
     model: currentModel,
     inputTokens,
     outputTokens,
+    cachedInputTokens,
+    costUsd,
+    modelCalls,
     toolCalls,
     mutationIds,
     interrupted: stopReason === "interrupted",
@@ -228,8 +253,7 @@ export async function* runAgentTurn(
       throw error;
     }
 
-    inputTokens += response.usage.inputTokens;
-    outputTokens += response.usage.outputTokens;
+    accrueUsage(response.usage);
 
     const requestedCalls = response.toolCalls ?? [];
 
@@ -357,8 +381,7 @@ export async function* runAgentTurn(
     if (summary) {
       finalContent = summary.content;
       currentModel = summary.model;
-      inputTokens += summary.inputTokens;
-      outputTokens += summary.outputTokens;
+      accrueUsage(summary.usage);
       yield {
         type: "message",
         data: { content: finalContent, model: currentModel, tokensUsed: inputTokens + outputTokens },
@@ -377,7 +400,17 @@ export async function* runAgentTurn(
     totalTokens: inputTokens + outputTokens,
     success: true,
     toolCount: toolCalls.length,
-    metadata: { stopReason, mutationCount: mutationIds.length },
+    metadata: {
+      stopReason,
+      mutationCount: mutationIds.length,
+      modelCalls,
+      cachedInputTokens,
+      // Share of prompt tokens served from cache. Low values here mean the
+      // stable prefix is being invalidated and the tool schemas are being
+      // re-billed in full on every round-trip.
+      cacheHitRate: inputTokens > 0 ? Number((cachedInputTokens / inputTokens).toFixed(3)) : 0,
+      costUsd,
+    },
   });
 
   return buildResult();
@@ -491,12 +524,7 @@ async function summarizeWithoutTools(input: {
     callModel: input.callModel,
   });
 
-  return {
-    content: result.content?.trim() ?? "",
-    model,
-    inputTokens: result.usage.inputTokens,
-    outputTokens: result.usage.outputTokens,
-  };
+  return { content: result.content?.trim() ?? "", model, usage: result.usage };
 }
 
 function parseToolArgs(raw: string): Record<string, unknown> {

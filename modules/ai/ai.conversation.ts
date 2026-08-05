@@ -184,6 +184,11 @@ export async function* processConversationTurn(
       interrupted: result.interrupted,
       mutationCount: result.mutationIds.length,
       accessPlan: access.accessPlan,
+      modelCalls: result.modelCalls,
+      cachedInputTokens: result.cachedInputTokens,
+      cacheHitRate:
+        result.inputTokens > 0 ? Number((result.cachedInputTokens / result.inputTokens).toFixed(3)) : 0,
+      costUsd: result.costUsd,
     },
   });
 
@@ -211,6 +216,10 @@ const STABLE_SYSTEM_PROMPT = [
   "HOW TO WORK:",
   "- Use tools to get real data. Never guess at workspace contents, names, or numbers.",
   "- Chain tools when a request needs several steps. Do the work rather than describing what you would do.",
+  "- Request every tool you need at once when they do not depend on each other. Each extra round-trip",
+  "  re-sends the whole conversation, so batching independent calls is materially cheaper and faster.",
+  "- Reuse what is already in this conversation. If an earlier tool result already answered part of the",
+  "  request, do not re-fetch it.",
   "- Prefer looking something up over asking. Search first; ask only when a lookup genuinely cannot resolve it.",
   "- When you do need to ask, call ask_user_to_clarify with one specific question and concrete options.",
   "- Answer in the language the user wrote in. Tool arguments always stay in their canonical English form.",
