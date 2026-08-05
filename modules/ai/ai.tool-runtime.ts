@@ -16,17 +16,43 @@ export interface AiToolRuntimeResult {
   usage: { inputTokens: number; outputTokens: number };
 }
 
+/** Thrown when the caller aborts (user pressed stop) rather than the request timing out. */
+export class AiCallAbortedError extends Error {
+  constructor() {
+    super("AI request aborted by caller");
+    this.name = "AiCallAbortedError";
+  }
+}
+
 export async function callAIWithTools(
   messages: AiToolRuntimeMessage[],
   model: string,
   tools: ToolDefinition[],
+  options: { signal?: AbortSignal | undefined } = {},
 ): Promise<AiToolRuntimeResult> {
   if (!env.OPENROUTER_API_KEY) {
     throw new AppError(500, ERROR_CODES.AI_NOT_CONFIGURED, "AI is not configured");
   }
 
+  if (options.signal?.aborted) {
+    throw new AiCallAbortedError();
+  }
+
+  // Two abort sources share one signal: our own timeout, and the caller's stop
+  // request. `abortedByCaller` distinguishes them so a user-initiated stop is not
+  // reported to the user as a provider timeout.
   const controller = new AbortController();
+  let abortedByCaller = false;
+  const onCallerAbort = () => {
+    abortedByCaller = true;
+    controller.abort();
+  };
+  options.signal?.addEventListener("abort", onCallerAbort, { once: true });
   const timeoutId = setTimeout(() => controller.abort(), 60_000);
+  const cleanup = () => {
+    clearTimeout(timeoutId);
+    options.signal?.removeEventListener("abort", onCallerAbort);
+  };
 
   let response: Response;
   try {
@@ -48,13 +74,13 @@ export async function callAIWithTools(
       signal: controller.signal,
     });
   } catch (error) {
-    clearTimeout(timeoutId);
     if (error instanceof DOMException && error.name === "AbortError") {
+      if (abortedByCaller) throw new AiCallAbortedError();
       throw new AppError(504, ERROR_CODES.AI_PROVIDER_ERROR, "AI request timed out");
     }
     throw new AppError(502, ERROR_CODES.AI_PROVIDER_ERROR, "Failed to reach AI provider");
   } finally {
-    clearTimeout(timeoutId);
+    cleanup();
   }
 
   if (response.status === 429) {

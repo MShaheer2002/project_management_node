@@ -400,6 +400,7 @@ model User {
   aiConversations       AiConversation[] // Trussen AI chat conversations
   aiUserUsageDaily      AiUserUsageDaily[] // Daily AI usage rollups per workspace
   aiToolExecutions      AiToolExecution[] // Recent AI mutation executions for duplicate protection
+  aiMutationRecords     AiMutationRecord[] // Reviewable AI changes (accept/reject)
   aiResolverSnapshots   AiResolverSnapshot[] // Entity-resolution audit snapshots
   createdAiSuggestions  AiSuggestion[] @relation("AiSuggestionCreatedBy")
   acceptedAiSuggestions AiSuggestion[] @relation("AiSuggestionAcceptedBy")
@@ -468,6 +469,7 @@ model Workspace {
   aiWorkspaceUsageDaily AiWorkspaceUsageDaily[]
   aiUserUsageDaily      AiUserUsageDaily[]
   aiToolExecutions      AiToolExecution[]
+  aiMutationRecords     AiMutationRecord[]
   aiSuggestions         AiSuggestion[]
   aiEmbeddings          AiEmbedding[]
   entityAliases         EntityAlias[]
@@ -1662,6 +1664,7 @@ model AiConversation {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   messages  AiMessage[]
   toolExecutions AiToolExecution[]
+  mutationRecords AiMutationRecord[]
 
   @@index([userId, workspaceId])
   @@index([updatedAt])
@@ -1727,6 +1730,68 @@ enum AiMessageRole {
   ASSISTANT
   TOOL_CALL
   TOOL_RESULT
+}
+
+/// AiMutationRecord — one reviewable record per workspace change made by AI.
+///
+/// Powers the accept/reject affordance in the chat panel. Because AI can never
+/// delete, nearly every AI change is reversible, so the product leans on
+/// "execute then offer undo" rather than "confirm before every action" —
+/// confirmation fatigue is a well-documented failure mode.
+///
+/// `beforeState` holds only the fields this mutation actually changed, with
+/// their prior values, so a revert restores exactly what was touched and
+/// nothing else (no last-write-wins clobbering of concurrent edits).
+///
+/// Revertability by kind:
+///   UPDATE — fully revertible; prior field values are restored via the domain service.
+///   CREATE — NOT auto-revertible. AI must never delete, and that rule holds for
+///            reverts too. Rejecting a create marks the record REJECTED and points
+///            the user at the entity to remove manually through the normal UI.
+model AiMutationRecord {
+  id             String                 @id @default(uuid())
+  workspaceId    String
+  userId         String // Actor the AI operated on behalf of
+  conversationId String?
+  messageId      String? // Assistant message this change belongs to, for in-chat anchoring
+  toolName       String
+  kind           AiMutationKind
+  status         AiMutationStatus       @default(PENDING)
+  targetType     String // "ISSUE" | "PROJECT" | "TEAM" | ...
+  targetId       String
+  targetLabel    String // Human-readable, e.g. "TRU-1 — Login crash on Safari"
+  summary        String // One line describing the change, rendered in the chat card
+  beforeState    Json? // Changed fields only, prior values (null for CREATE)
+  afterState     Json?
+  revertable     Boolean                @default(true)
+  revertError    String?
+  resolvedAt     DateTime?
+  resolvedById   String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  // -- Relations --
+  workspace    Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation AiConversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([messageId])
+  @@index([workspaceId, targetType, targetId])
+}
+
+enum AiMutationKind {
+  CREATE
+  UPDATE
+}
+
+enum AiMutationStatus {
+  PENDING
+  ACCEPTED
+  REVERTED
+  REJECTED // Create-kind change the user rejected but which cannot be auto-removed
+  EXPIRED
 }
 
 enum AiSuggestionType {
