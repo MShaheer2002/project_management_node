@@ -18,6 +18,7 @@ import type { ToolDefinition } from "../tool-definitions.js";
 import { issueTools } from "./issues.tools.js";
 import { orgTools } from "./org.tools.js";
 import { planningTools } from "./planning.tools.js";
+import { TOOL_NOT_IN_SCOPE } from "./scope.js";
 import { toDefinition, type ConsolidatedTool, type RegistryContext, type ToolDomain } from "./types.js";
 import { workspaceTools } from "./workspace.tools.js";
 
@@ -69,18 +70,27 @@ export function getConsolidatedTool(name: string): ConsolidatedTool | undefined 
  * Builds the executor the agent runtime calls. Unknown names are returned as a
  * tool-level failure rather than thrown, so a model hallucinating a tool gets a
  * correctable error instead of crashing the turn.
+ *
+ * `offeredTools` narrows the callable set to what was actually sent to the model
+ * this turn (see selectToolsForTurn). That case is reported distinctly from a
+ * genuinely unknown tool, because it is recoverable: the agent loop retries with
+ * the full toolset rather than telling the user a capability does not exist.
  */
-export function createRegistryExecutor(surface: AgentSurface) {
-  const allowed = new Set(getToolsForSurface(surface).map((tool) => tool.name));
+export function createRegistryExecutor(surface: AgentSurface, offeredTools?: Set<string>) {
+  const permitted = new Set(getToolsForSurface(surface).map((tool) => tool.name));
 
   return async (toolName: string, args: Record<string, unknown>, ctx: RegistryContext) => {
     const tool = TOOL_BY_NAME.get(toolName);
 
-    if (!tool || !allowed.has(toolName)) {
+    if (!tool || !permitted.has(toolName)) {
+      return { success: false, payload: null, error: `Unknown or unavailable tool: ${toolName}` };
+    }
+
+    if (offeredTools && !offeredTools.has(toolName)) {
       return {
         success: false,
         payload: null,
-        error: `Unknown or unavailable tool: ${toolName}`,
+        error: `${TOOL_NOT_IN_SCOPE}: ${toolName} was not loaded for this turn.`,
       };
     }
 
@@ -101,4 +111,5 @@ export function getRegistryStats() {
   };
 }
 
+export { selectToolsForTurn, isOutOfScopeError, TOOL_NOT_IN_SCOPE, type ToolScopeResult } from "./scope.js";
 export type { ConsolidatedTool, RegistryContext, ToolDomain } from "./types.js";

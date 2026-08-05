@@ -31,6 +31,7 @@ import {
   MAX_BULK_MUTATION_TARGETS,
 } from "./ai.boundary.js";
 import { logAiInfo, logAiWarn } from "./ai.observability.js";
+import { isOutOfScopeError } from "./tools/registry/scope.js";
 import { AiCallAbortedError, callAIWithTools, type AiToolRuntimeMessage } from "./ai.tool-runtime.js";
 import { recordAiMutation } from "./ai.mutations.js";
 import type { ToolDefinition } from "./tools/tool-definitions.js";
@@ -171,6 +172,13 @@ export interface RunAgentTurnInput {
   callModel?: AgentModelCaller | undefined;
   /** Defaults to persisting an AiMutationRecord. */
   recordMutation?: AgentMutationRecorder | undefined;
+  /**
+   * Supplies the complete toolset when a scoped-out tool is requested. Scoping
+   * trades tokens for a small chance of under-provisioning; this makes that
+   * trade safe by turning a miss into one extra round-trip instead of a wrong
+   * "that isn't possible" answer.
+   */
+  expandToolset?: (() => ToolDefinition[]) | undefined;
 }
 
 // ─── Runtime ────────────────────────────────────────────────────────────────
@@ -190,6 +198,9 @@ export async function* runAgentTurn(
   const maxToolCalls = input.maxToolCalls ?? MAX_TOOL_CALLS_PER_TURN;
   const callModel = input.callModel ?? callAIWithTools;
   const recordMutation = input.recordMutation ?? recordAiMutation;
+
+  let activeTools = input.tools;
+  let toolsExpanded = false;
 
   const toolCalls: AgentToolCallRecord[] = [];
   const mutationIds: string[] = [];
@@ -236,7 +247,7 @@ export async function* runAgentTurn(
     try {
       const call = await callModelWithFallback({
         messages,
-        tools: input.tools,
+        tools: activeTools,
         models: input.models,
         ...(input.signal ? { signal: input.signal } : {}),
         ctx: input.ctx,
@@ -288,12 +299,36 @@ export async function* runAgentTurn(
       const args = parseToolArgs(call.function.arguments);
       yield { type: "tool_call", data: { id: call.id, tool: call.function.name, args } };
 
-      const execution = await runSingleTool({
+      let execution = await runSingleTool({
         toolName: call.function.name,
         args,
         ctx: input.ctx,
         executeTool: input.executeTool,
       });
+
+      // The model asked for a real tool that scoping withheld. Load the full
+      // set and let it try again on the next iteration, rather than reporting a
+      // capability as unavailable when it exists.
+      if (!execution.success && isOutOfScopeError(execution.error) && !toolsExpanded && input.expandToolset) {
+        activeTools = input.expandToolset();
+        toolsExpanded = true;
+
+        logAiInfo("agent_toolset_expanded", {
+          workspaceId: input.ctx.workspaceId,
+          userId: input.ctx.userId,
+          conversationId: input.ctx.conversationId,
+          feature: "chat",
+          toolName: call.function.name,
+          success: true,
+          metadata: { toolCount: activeTools.length },
+        });
+
+        execution = {
+          success: false,
+          payload: null,
+          error: `${call.function.name} is now available. Call it again to continue.`,
+        };
+      }
 
       const record: AgentToolCallRecord = {
         id: call.id,
@@ -404,6 +439,8 @@ export async function* runAgentTurn(
       stopReason,
       mutationCount: mutationIds.length,
       modelCalls,
+      toolsOffered: activeTools.length,
+      toolsExpanded,
       cachedInputTokens,
       // Share of prompt tokens served from cache. Low values here mean the
       // stable prefix is being invalidated and the tool schemas are being

@@ -25,7 +25,13 @@ import { logAiError, logAiInfo } from "./ai.observability.js";
 import { CHAT_MODEL_DEFAULT, fallbackChainForPrimary } from "./ai.provider.js";
 import type { AiToolRuntimeMessage } from "./ai.tool-runtime.js";
 import { recordAiDailyUsage } from "./ai.usage.js";
-import { createRegistryExecutor, getToolDefinitionsForSurface, type AgentSurface } from "./tools/registry/index.js";
+import {
+  createRegistryExecutor,
+  getToolDefinitionsForSurface,
+  getToolsForSurface,
+  selectToolsForTurn,
+  type AgentSurface,
+} from "./tools/registry/index.js";
 
 const MAX_HISTORY_MESSAGES = 30;
 const MAX_MESSAGE_LENGTH = 5_000;
@@ -103,10 +109,20 @@ export async function* processConversationTurn(
     currentMessage: sanitized,
   });
 
+  // Scope the toolset to what this conversation is about. Tool schemas are re-sent
+  // on every round-trip and dominate token cost, so this is the highest-leverage
+  // reduction available. Detection reads recent turns as well as the current
+  // message, so a bare follow-up still resolves the established domain.
+  const scope = selectToolsForTurn(
+    getToolsForSurface(surface),
+    [...history.slice(-6).map((message) => message.content), sanitized].join("\n"),
+  );
+  const offeredToolNames = new Set(scope.tools.map((tool) => tool.name));
+
   const startedAt = Date.now();
   const turn = runAgentTurn({
     messages,
-    tools: getToolDefinitionsForSurface(surface),
+    tools: scope.definitions,
     models: fallbackChainForPrimary(CHAT_MODEL_DEFAULT),
     ctx: {
       workspaceId: input.workspaceId,
@@ -114,7 +130,17 @@ export async function* processConversationTurn(
       userRole: input.userRole,
       conversationId,
     },
-    executeTool: createRegistryExecutor(surface),
+    executeTool: createRegistryExecutor(surface, offeredToolNames),
+    // Escape hatch: if the model needs something scoping withheld, hand over
+    // everything rather than claiming the capability does not exist.
+    ...(scope.isFullToolset
+      ? {}
+      : {
+          expandToolset: () => {
+            for (const tool of getToolsForSurface(surface)) offeredToolNames.add(tool.name);
+            return getToolDefinitionsForSurface(surface);
+          },
+        }),
     ...(input.signal ? { signal: input.signal } : {}),
   });
 
@@ -185,6 +211,8 @@ export async function* processConversationTurn(
       mutationCount: result.mutationIds.length,
       accessPlan: access.accessPlan,
       modelCalls: result.modelCalls,
+      toolDomains: scope.domains,
+      toolsOffered: scope.definitions.length,
       cachedInputTokens: result.cachedInputTokens,
       cacheHitRate:
         result.inputTokens > 0 ? Number((result.cachedInputTokens / result.inputTokens).toFixed(3)) : 0,
