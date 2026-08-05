@@ -9,6 +9,8 @@ import type { RequestHandler } from "express";
 import * as aiService from "./ai.service.js";
 import * as aiAssist from "./ai.assist.js";
 import * as aiChat from "./ai.chat.js";
+import * as aiConversation from "./ai.conversation.js";
+import * as aiMutations from "./ai.mutations.js";
 import * as aiUsage from "./ai.usage.js";
 import * as aiSuggestions from "./ai.suggestions.js";
 import { sendSuccess } from "../../shared/utils/api-response.js";
@@ -109,41 +111,94 @@ export const assist: RequestHandler = async (req, res, next) => {
  * The AI can call tools (create issues, query data, etc.) during the conversation.
  */
 export const chat: RequestHandler = async (req, res, next) => {
+  // Aborting the client request is how "stop" works: pressing Escape in the
+  // panel closes the EventSource, Express emits "close", and this signal
+  // propagates into the agent loop and the in-flight provider call. Without it
+  // the turn would keep running (and keep costing money) after the user left.
+  const abortController = new AbortController();
+  req.on("close", () => abortController.abort());
+
   try {
     const { conversationId, message } = req.body as ChatInput;
-    const userId = req.user!.id;
-    const workspaceId = req.workspace!.id;
-    const userRole = req.workspace!.role;
 
-    // Set SSE headers
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no"); // Disable nginx buffering
     res.flushHeaders();
 
-    // Stream events from the chat processor
-    for await (const event of aiChat.processChat({
+    for await (const event of aiConversation.processConversationTurn({
       conversationId,
       message,
-      userId,
-      workspaceId,
-      userRole,
+      userId: req.user!.id,
+      workspaceId: req.workspace!.id,
+      userRole: req.workspace!.role,
+      signal: abortController.signal,
     })) {
+      // Once the client is gone, keep consuming so the generator can finish its
+      // persistence work, but stop writing to a dead socket.
+      if (res.writableEnded) continue;
       res.write(`event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`);
     }
 
-    res.write("event: close\ndata: {}\n\n");
-    res.end();
-  } catch (error) {
-    // If headers already sent (SSE started), send error event
-    if (res.headersSent) {
-      const msg = error instanceof Error ? error.message : "Chat failed";
-      res.write(`event: error\ndata: ${JSON.stringify({ message: msg })}\n\n`);
+    if (!res.writableEnded) {
+      res.write("event: close\ndata: {}\n\n");
       res.end();
+    }
+  } catch (error) {
+    if (res.headersSent) {
+      if (!res.writableEnded) {
+        const msg = error instanceof Error ? error.message : "Chat failed";
+        res.write(`event: error\ndata: ${JSON.stringify({ message: msg })}\n\n`);
+        res.end();
+      }
     } else {
       next(error);
     }
+  }
+};
+
+// ─── Reviewable AI changes ──────────────────────────────────────────────────
+
+/** GET /ai/conversations/:id/mutations — changes the AI made in this conversation */
+export const listConversationMutations: RequestHandler = async (req, res, next) => {
+  try {
+    const mutations = await aiMutations.listMutationsForConversation(
+      req.params.id as string,
+      req.workspace!.id,
+    );
+    sendSuccess(res, 200, mutations);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** POST /ai/mutations/:id/accept — keep a change */
+export const acceptMutation: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await aiMutations.acceptMutation({
+      mutationId: req.params.id as string,
+      workspaceId: req.workspace!.id,
+      userId: req.user!.id,
+    });
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** POST /ai/mutations/:id/revert — undo a change, restoring its previous values */
+export const revertMutation: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await aiMutations.revertMutation({
+      mutationId: req.params.id as string,
+      workspaceId: req.workspace!.id,
+      userId: req.user!.id,
+      userRole: req.workspace!.role,
+    });
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
   }
 };
 

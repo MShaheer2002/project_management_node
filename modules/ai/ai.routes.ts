@@ -11,6 +11,9 @@
  *   GET  /conversations             — List user's conversations
  *   GET  /conversations/:id/messages — Get conversation messages
  *   DELETE /conversations/:id       — Delete a conversation
+ *   GET  /conversations/:id/mutations — Reviewable AI changes in a conversation
+ *   POST /mutations/:id/accept      — Keep an AI change
+ *   POST /mutations/:id/revert      — Undo an AI change
  */
 
 import { Router } from "express";
@@ -30,6 +33,7 @@ import {
   draftSuggestionsSchema,
   generateIssueSchema,
   listSuggestionsSchema,
+  mutationParamsSchema,
   runSuggestionsSchema,
 } from "./ai.schemas.js";
 
@@ -122,6 +126,35 @@ router.delete(
   requireWorkspace,
   validate(conversationParamsSchema),
   controller.deleteConversation,
+);
+
+// ── Reviewable AI changes (accept / undo) ───────────────────────────────────
+//
+// Authorization for the underlying revert is enforced in the domain services the
+// revert routes through, exactly as it would be for a manual edit.
+
+router.get(
+  "/conversations/:id/mutations",
+  authenticate,
+  requireWorkspace,
+  validate(conversationParamsSchema),
+  controller.listConversationMutations,
+);
+
+router.post(
+  "/mutations/:id/accept",
+  authenticate,
+  requireWorkspace,
+  validate(mutationParamsSchema),
+  controller.acceptMutation,
+);
+
+router.post(
+  "/mutations/:id/revert",
+  authenticate,
+  requireWorkspace,
+  validate(mutationParamsSchema),
+  controller.revertMutation,
 );
 
 router.get(

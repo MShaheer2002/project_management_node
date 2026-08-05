@@ -68,6 +68,13 @@ export const conversationParamsSchema = {
   }),
 };
 
+/** /ai/mutations/:id — accept or revert a reviewable AI change */
+export const mutationParamsSchema = {
+  params: z.object({
+    id: z.string().uuid("Mutation ID must be a valid UUID"),
+  }),
+};
+
 /** /ai/suggestions/:id scoped operations */
 export const suggestionParamsSchema = {
   params: z.object({
@@ -202,6 +209,7 @@ export type ChatInput = z.infer<typeof chatSchema.body>;
 export type AssistInput = z.infer<typeof assistSchema.body>;
 export type ConversationParamsInput = z.infer<typeof conversationParamsSchema.params>;
 export type SuggestionParamsInput = z.infer<typeof suggestionParamsSchema.params>;
+export type MutationParamsInput = z.infer<typeof mutationParamsSchema.params>;
 export type ListSuggestionsInput = z.infer<typeof listSuggestionsSchema.query>;
 export type AcceptSuggestionInput = z.infer<typeof acceptSuggestionSchema.body>;
 export type DismissSuggestionInput = z.infer<typeof dismissSuggestionSchema.body>;
