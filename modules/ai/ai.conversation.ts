@@ -428,6 +428,65 @@ async function updateConversationStats(input: {
   });
 }
 
+// ─── Conversation CRUD ──────────────────────────────────────────────────────
+// Moved from the retired ai.chat.ts (Phase 20N cleanup) — everything else in
+// that module was the old keyword-router pipeline this file replaced, but
+// these three had no relation to it and are still the live read/delete paths.
+
+export async function listConversations(userId: string, workspaceId: string) {
+  return prisma.aiConversation.findMany({
+    where: { userId, workspaceId },
+    select: {
+      id: true,
+      title: true,
+      requestCount: true,
+      totalInputTokens: true,
+      totalOutputTokens: true,
+      totalTokens: true,
+      lastModelUsed: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+    orderBy: { updatedAt: "desc" },
+    take: 50,
+  });
+}
+
+export async function getConversationMessages(conversationId: string, userId: string, workspaceId: string) {
+  // Verify ownership — user must own the conversation
+  const conv = await prisma.aiConversation.findFirst({
+    where: { id: conversationId, userId, workspaceId },
+    select: { id: true },
+  });
+  if (!conv) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Conversation not found");
+
+  return prisma.aiMessage.findMany({
+    where: { conversationId },
+    select: {
+      id: true,
+      role: true,
+      content: true,
+      toolCalls: true,
+      toolResults: true,
+      tokenCount: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+}
+
+export async function deleteConversation(conversationId: string, userId: string, workspaceId: string) {
+  // Verify ownership
+  const conv = await prisma.aiConversation.findFirst({
+    where: { id: conversationId, userId, workspaceId },
+    select: { id: true },
+  });
+  if (!conv) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Conversation not found");
+
+  // Cascade delete — messages are deleted automatically via onDelete: Cascade
+  await prisma.aiConversation.delete({ where: { id: conversationId } });
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function sanitizeUserMessage(message: string): string {

@@ -20,7 +20,6 @@ import { triggerIssueBackgroundJobs } from "../ai.background.js";
 import { upsertEntityAliases } from "../ai.entity-aliases.js";
 import { enqueueEmbedding } from "../ai.jobs.js";
 import { logAiError, logAiInfo, logAiWarn } from "../ai.observability.js";
-import type { ExecutorResult } from "../ai.planner.js";
 import { Prisma, type WorkspaceRole } from "../../../app/generated/prisma/client.js";
 import type { IssuePriority } from "../../../app/generated/prisma/enums.js";
 import {
@@ -193,7 +192,14 @@ type LegacyToolResult = {
   nextSuggestions?: string[];
 };
 
-export type ToolExecutorResult = ExecutorResult;
+export type ToolExecutorResult = {
+  success: boolean;
+  payload: unknown | null;
+  warnings: string[];
+  nextSuggestions: string[];
+  error?: string | undefined;
+  meta?: Record<string, unknown> | undefined;
+};
 
 type MutationGuardOptions = {
   persistResult?: (result: LegacyToolResult) => LegacyToolResult;

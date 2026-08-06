@@ -1,8 +1,7 @@
 import { z } from "zod/v4";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getToolDefinitions } from "../modules/ai/tools/tool-definitions.js";
-import { executeTool } from "../modules/ai/tools/tool-executor.js";
-import type { ExecutorResult } from "../modules/ai/ai.planner.js";
+import { executeTool, type ToolExecutorResult as ExecutorResult } from "../modules/ai/tools/tool-executor.js";
 import { logAiError, logAiInfo } from "../modules/ai/ai.observability.js";
 import { recordAiConnectionSessionStep } from "../modules/ai-connection/ai-connection.service.js";
 import type { McpSessionContext } from "./mcp.auth.js";

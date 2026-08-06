@@ -1628,7 +1628,7 @@ export function getToolDefinitions(): ToolDefinition[] {
 
 // The free-form tool-calling loop previously sent all ~100 tool schemas on every call,
 // which alone can consume the majority of MAX_TOKENS_PER_TURN before the model does any
-// real work (see ai.chat.ts). This groups tools by domain so a turn can request only the
+// real work. This groups tools by domain so a turn can request only the
 // domains it actually needs. CORE_TOOL_NAMES covers the highest-frequency actions and is
 // always included so a domain-detection miss degrades gracefully instead of breaking.
 export type ToolDomain =

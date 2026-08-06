@@ -8,7 +8,6 @@
 import type { RequestHandler } from "express";
 import * as aiService from "./ai.service.js";
 import * as aiAssist from "./ai.assist.js";
-import * as aiChat from "./ai.chat.js";
 import * as aiConversation from "./ai.conversation.js";
 import * as aiMutations from "./ai.mutations.js";
 import * as aiUsage from "./ai.usage.js";
@@ -207,7 +206,7 @@ export const revertMutation: RequestHandler = async (req, res, next) => {
  */
 export const listConversations: RequestHandler = async (req, res, next) => {
   try {
-    const conversations = await aiChat.listConversations(req.user!.id, req.workspace!.id);
+    const conversations = await aiConversation.listConversations(req.user!.id, req.workspace!.id);
     sendSuccess(res, 200, conversations);
   } catch (error) {
     next(error);
@@ -246,7 +245,7 @@ export const getUserUsage: RequestHandler = async (req, res, next) => {
 export const getConversationMessages: RequestHandler = async (req, res, next) => {
   try {
     const { id } = req.params as ConversationParamsInput;
-    const messages = await aiChat.getConversationMessages(id, req.user!.id, req.workspace!.id);
+    const messages = await aiConversation.getConversationMessages(id, req.user!.id, req.workspace!.id);
     sendSuccess(res, 200, messages);
   } catch (error) {
     next(error);
@@ -259,7 +258,7 @@ export const getConversationMessages: RequestHandler = async (req, res, next) =>
 export const deleteConversation: RequestHandler = async (req, res, next) => {
   try {
     const { id } = req.params as ConversationParamsInput;
-    await aiChat.deleteConversation(id, req.user!.id, req.workspace!.id);
+    await aiConversation.deleteConversation(id, req.user!.id, req.workspace!.id);
     res.status(204).send();
   } catch (error) {
     next(error);
