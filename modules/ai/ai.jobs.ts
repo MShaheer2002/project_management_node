@@ -19,7 +19,10 @@ export type IssueIntelligenceJob = {
 
 export type EmbeddingJob = {
   workspaceId: string;
-  entityType: "ISSUE" | "PROJECT" | "TEAM" | "DEPARTMENT" | "MEMBER" | "CYCLE";
+  // Mirrors AiEmbeddingEntityType. COMMENT and DOCUMENT were declared in the
+  // schema but missing here and in the worker, so they could never be indexed
+  // even though the enum implied otherwise.
+  entityType: "ISSUE" | "COMMENT" | "DOCUMENT" | "PROJECT" | "TEAM" | "DEPARTMENT" | "MEMBER" | "CYCLE";
   entityId: string;
   triggeredByUserId?: string | undefined;
   reason: "created" | "updated" | "manual";

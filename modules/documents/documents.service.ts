@@ -16,6 +16,7 @@ import type {
   UpdateDocumentInput,
 } from "./documents.schemas.js";
 import { validateDocumentRef } from "./documents.storage.js";
+import { indexEntity } from "../ai/ai.indexer.js";
 
 const documentSelect = {
   id: true,
@@ -354,6 +355,18 @@ async function createDocument(
     },
   });
 
+
+  // Every scoped wrapper (workspace/team/project) funnels through here, so one hook
+  // covers all of them. Only document metadata is indexed — the file bytes live in
+  // object storage and would need a per-mime-type extraction pipeline.
+  await indexEntity({
+    workspaceId,
+    entityType: "DOCUMENT",
+    entityId: created.id,
+    reason: "created",
+    triggeredByUserId: userId,
+  });
+
   return mapDocument(created);
 }
 
@@ -393,6 +406,16 @@ async function updateDocument(workspaceId: string, documentId: string, userId: s
       teamId: updated.teamId,
       projectId: updated.projectId,
     },
+  });
+
+
+  // Document metadata changed; rebuild its vector.
+  await indexEntity({
+    workspaceId,
+    entityType: "DOCUMENT",
+    entityId: updated.id,
+    reason: "updated",
+    triggeredByUserId: userId,
   });
 
   return mapDocument(updated);
@@ -814,6 +837,17 @@ export async function moveDocument(
     where: { id: documentId },
     data: { folderId: input.folderId },
     select: documentSelect,
+  });
+
+
+  // Moving a document changes its team/project, which is part of its embedded
+  // content, so the vector has to be rebuilt.
+  await indexEntity({
+    workspaceId,
+    entityType: "DOCUMENT",
+    entityId: updated.id,
+    reason: "updated",
+    triggeredByUserId: _actorId,
   });
 
   return mapDocument(updated);

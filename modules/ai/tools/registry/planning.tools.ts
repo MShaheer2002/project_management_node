@@ -7,7 +7,10 @@
  * creating one does not, because that check lives in the service, not the tool name.
  */
 
+import { listCycles } from "../../../cycle/cycle.service.js";
+import { hybridListSearch } from "./hybrid.js";
 import { callLegacy } from "./shared.js";
+import type { RegistryContext } from "./types.js";
 import { fail, limitParam, num, ok, okWithMutation, optionalStr, str, strArray, type ConsolidatedTool } from "./types.js";
 
 // ─── Cycles ─────────────────────────────────────────────────────────────────
@@ -17,10 +20,11 @@ export const cyclesSearch: ConsolidatedTool = {
   domain: "cycles",
   readOnly: true,
   description:
-    "List cycles (sprints), or find a team's currently running one.",
+    "List cycles (sprints), find a team's currently running one, or search by goal — e.g. 'the cycle focused on auth work'.",
   parameters: {
     type: "object",
     properties: {
+      query: { type: "string", description: "Match a cycle's name or goal by meaning, not just literal text." },
       teamId: { type: "string", description: "Restrict to one team's cycles." },
       status: { type: "string", description: "Lifecycle filter.", enum: ["upcoming", "current", "completed"] },
       currentOnly: { type: "boolean", description: "Return only the team's active cycle." },
@@ -29,10 +33,17 @@ export const cyclesSearch: ConsolidatedTool = {
   },
   handler: async (args, ctx) => {
     const teamId = optionalStr(args.teamId);
+    const query = optionalStr(args.query);
+    const limit = Math.min(num(args.limit, 20), 50);
 
     if (args.currentOnly === true) {
       if (!teamId) return fail("teamId is required to find the current cycle");
       return callLegacy("get_current_cycle_for_team", { teamId }, ctx);
+    }
+
+    if (query) {
+      const semantic = await runHybridCycleSearch(query, args, ctx, limit);
+      if (semantic) return semantic;
     }
 
     return callLegacy(
@@ -40,12 +51,30 @@ export const cyclesSearch: ConsolidatedTool = {
       {
         ...(teamId ? { teamId } : {}),
         ...(optionalStr(args.status) ? { status: str(args.status) } : {}),
-        limit: Math.min(num(args.limit, 20), 50),
+        limit,
       },
       ctx,
     );
   },
 };
+
+// See `hybridListSearch` (hybrid.ts) for the shared shape this and the
+// equivalent project/team/department helpers in org.tools.ts all follow.
+function runHybridCycleSearch(query: string, args: Record<string, unknown>, ctx: RegistryContext, limit: number) {
+  return hybridListSearch<{ id: string }>(
+    "CYCLE",
+    query,
+    ctx,
+    limit,
+    (ids) =>
+      listCycles(ctx.workspaceId, {
+        ids,
+        limit,
+        ...(optionalStr(args.teamId) ? { teamId: str(args.teamId) } : {}),
+        ...(optionalStr(args.status) ? { status: str(args.status) as never } : {}),
+      } as never),
+  );
+}
 
 export const cyclesGet: ConsolidatedTool = {
   name: "cycles_get",

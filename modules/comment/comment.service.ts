@@ -11,6 +11,7 @@ import { validateAttachmentRefs } from "../issue/issue-attachment.service.js";
 import { incrementStorageUsage, decrementStorageUsage } from "../billing/billing.service.js";
 import { createNotification } from "../notification/notification.service.js";
 import type { CreateCommentInput, ListCommentsQuery, UpdateCommentInput } from "./comment.schemas.js";
+import { indexEntity } from "../ai/ai.indexer.js";
 
 function mapComment(comment: any) {
   const attachments = (comment.attachments ?? []).map((attachment: any) => ({
@@ -271,6 +272,17 @@ export async function createComment(workspaceId: string, issueId: string, userId
     });
   }
 
+
+  // Comments carry much of a project's real diagnosis, so they are indexed for
+  // semantic search. Scope comes from the parent issue's workspace.
+  await indexEntity({
+    workspaceId,
+    entityType: "COMMENT",
+    entityId: created.id,
+    reason: "created",
+    triggeredByUserId: userId,
+  });
+
   return mapped;
 }
 
@@ -397,6 +409,17 @@ export async function updateComment(workspaceId: string, commentId: string, user
       full: mapped,
     });
   }
+
+
+  // Comments carry much of a project's real diagnosis, so they are indexed for
+  // semantic search. Scope comes from the parent issue's workspace.
+  await indexEntity({
+    workspaceId,
+    entityType: "COMMENT",
+    entityId: commentId,
+    reason: "updated",
+    triggeredByUserId: userId,
+  });
 
   return mapped;
 }

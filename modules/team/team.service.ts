@@ -15,6 +15,7 @@ import type {
   ListTeamsQuery,
   UpdateTeamInput,
 } from "./team.schemas.js";
+import { indexEntity } from "../ai/ai.indexer.js";
 
 const teamSummarySelect = {
   id: true,
@@ -100,11 +101,12 @@ function mapTeam(record: TeamSummaryRecord, includeIssueCount: boolean) {
 function buildTeamWhere(
   workspaceId: string,
   workspaceRole: WorkspaceRole,
-  query: ListTeamsQuery,
+  query: ListTeamsFilters,
 ): Prisma.TeamWhereInput {
   return {
     workspaceId,
     ...(workspaceRole === "GUEST" ? { visibility: "PUBLIC" } : {}),
+    ...(query.ids ? { id: { in: [...query.ids] } } : {}),
     ...(query.departmentId ? { departmentId: query.departmentId } : {}),
     ...(query.leadId ? { leadId: query.leadId } : {}),
     ...(query.visibility ? { visibility: query.visibility } : {}),
@@ -286,10 +288,28 @@ export async function createTeam(workspaceId: string, actorUserId: string, input
     return created;
   });
 
+  // Index after commit, never before: a job queued inside the transaction could
+  // outlive a rollback and point at a row that never existed.
+  await indexEntity({
+    workspaceId,
+    entityType: "TEAM",
+    entityId: team.id,
+    reason: "created",
+    triggeredByUserId: actorUserId,
+  });
+
   return getTeamById(workspaceId, "MEMBER", team.id);
 }
 
-export async function listTeams(workspaceId: string, workspaceRole: WorkspaceRole, query: ListTeamsQuery) {
+/**
+ * `ids` is an internal narrowing used by AI semantic search, which resolves
+ * candidate ids by relevance and then re-reads them through this service so
+ * visibility rules stay in one place. It is deliberately not part of the HTTP
+ * query schema.
+ */
+type ListTeamsFilters = ListTeamsQuery & { ids?: readonly string[] };
+
+export async function listTeams(workspaceId: string, workspaceRole: WorkspaceRole, query: ListTeamsFilters) {
   const limit = clampListLimit(query.limit);
   const where = buildTeamWhere(workspaceId, workspaceRole, query);
   const orderBy = getTeamOrderBy(query.sort);
@@ -422,6 +442,16 @@ export async function updateTeam(workspaceId: string, teamId: string, input: Upd
       metadata: { teamId, roleBefore: current.leadId, roleAfter: input.leadId ?? null },
     });
   }
+
+  // Index after commit, never before: a job queued inside the transaction could
+  // outlive a rollback and point at a row that never existed.
+  await indexEntity({
+    workspaceId,
+    entityType: "TEAM",
+    entityId: teamId,
+    reason: "updated",
+    triggeredByUserId: undefined,
+  });
 
   return getTeamById(workspaceId, "MEMBER", teamId);
 }

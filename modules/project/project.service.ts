@@ -14,6 +14,7 @@ import type {
   ListProjectsQuery,
   UpdateProjectInput,
 } from "./project.schemas.js";
+import { indexEntity } from "../ai/ai.indexer.js";
 
 const projectFullSelect = {
   id: true,
@@ -183,11 +184,18 @@ function getProjectOrderBy(sort: ListProjectsQuery["sort"]) {
   }
 }
 
+/**
+ * `ids` is an internal narrowing used by AI semantic search, which resolves
+ * candidate ids by relevance and then re-reads them through this service so
+ * visibility rules stay in one place. Not part of the HTTP query schema.
+ */
+type ListProjectsFilters = ListProjectsQuery & { ids?: readonly string[] };
+
 function buildProjectWhere(
   workspaceId: string,
   workspaceRole: WorkspaceRole,
   userId: string,
-  query: ListProjectsQuery,
+  query: ListProjectsFilters,
 ): any {
   const and: any[] = [];
 
@@ -213,6 +221,7 @@ function buildProjectWhere(
 
   return {
     workspaceId,
+    ...(query.ids ? { id: { in: [...query.ids] } } : {}),
     ...(query.teamId ? { teamId: query.teamId } : {}),
     ...(query.departmentId ? { departmentId: query.departmentId } : {}),
     ...(query.leadId ? { leadId: query.leadId } : {}),
@@ -392,6 +401,16 @@ export async function createProject(workspaceId: string, actorUserId: string, in
     action: "added",
   })));
 
+  // Index after commit, never before: a job queued inside the transaction could
+  // outlive a rollback and point at a row that never existed.
+  await indexEntity({
+    workspaceId,
+    entityType: "PROJECT",
+    entityId: created.id,
+    reason: "created",
+    triggeredByUserId: actorUserId,
+  });
+
   return mapProject(created);
 }
 
@@ -399,7 +418,7 @@ export async function listProjects(
   workspaceId: string,
   workspaceRole: WorkspaceRole,
   userId: string,
-  query: ListProjectsQuery,
+  query: ListProjectsFilters,
 ) {
   const limit = clampListLimit(query.limit);
   const where = buildProjectWhere(workspaceId, workspaceRole, userId, query);
@@ -653,6 +672,16 @@ export async function updateProject(workspaceId: string, projectId: string, acto
       },
     }).catch(() => {});
   }
+
+  // Index after commit, never before: a job queued inside the transaction could
+  // outlive a rollback and point at a row that never existed.
+  await indexEntity({
+    workspaceId,
+    entityType: "PROJECT",
+    entityId: projectId,
+    reason: "updated",
+    triggeredByUserId: actorUserId,
+  });
 
   return mapProject(updated);
 }

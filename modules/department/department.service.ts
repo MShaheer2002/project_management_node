@@ -18,6 +18,7 @@ import type {
   ListDepartmentsQuery,
   UpdateDepartmentInput,
 } from "./department.schemas.js";
+import { indexEntity } from "../ai/ai.indexer.js";
 
 const departmentSummarySelect = {
   id: true,
@@ -256,11 +257,12 @@ function buildDepartmentAnalytics(
 function buildDepartmentWhere(
   workspaceId: string,
   workspaceRole: WorkspaceRole,
-  query: ListDepartmentsQuery,
+  query: ListDepartmentsFilters,
 ): Prisma.DepartmentWhereInput {
   return {
     workspaceId,
     ...(workspaceRole === "GUEST" ? { visibility: "PUBLIC" } : {}),
+    ...(query.ids ? { id: { in: [...query.ids] } } : {}),
     ...(query.visibility ? { visibility: query.visibility } : {}),
     ...(query.headId ? { headId: query.headId } : {}),
     ...(query.q
@@ -432,10 +434,26 @@ export async function createDepartment(workspaceId: string, input: CreateDepartm
     return created;
   });
 
+  // Index after commit, never before: a job queued inside the transaction could
+  // outlive a rollback and point at a row that never existed.
+  await indexEntity({
+    workspaceId,
+    entityType: "DEPARTMENT",
+    entityId: department.id,
+    reason: "created",
+    triggeredByUserId: undefined,
+  });
+
   return getDepartmentById(workspaceId, "MEMBER", department.id);
 }
 
-export async function listDepartments(workspaceId: string, workspaceRole: WorkspaceRole, query: ListDepartmentsQuery) {
+/**
+ * `ids` is an internal narrowing used by AI semantic search — see the note on
+ * `listTeams`. Not part of the HTTP query schema.
+ */
+type ListDepartmentsFilters = ListDepartmentsQuery & { ids?: readonly string[] };
+
+export async function listDepartments(workspaceId: string, workspaceRole: WorkspaceRole, query: ListDepartmentsFilters) {
   const limit = clampListLimit(query.limit);
   const where = buildDepartmentWhere(workspaceId, workspaceRole, query);
   const orderBy = getDepartmentOrderBy(query.sort);
@@ -594,6 +612,16 @@ export async function updateDepartment(
         skipDuplicates: true,
       });
     }
+  });
+
+  // Index after commit, never before: a job queued inside the transaction could
+  // outlive a rollback and point at a row that never existed.
+  await indexEntity({
+    workspaceId,
+    entityType: "DEPARTMENT",
+    entityId: departmentId,
+    reason: "updated",
+    triggeredByUserId: undefined,
   });
 
   return getDepartmentById(workspaceId, "MEMBER", departmentId);

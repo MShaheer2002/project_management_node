@@ -11,7 +11,9 @@
  * service, which still narrows by role and membership.
  */
 
+import { filterVisibleHits, searchWorkspace } from "../../ai.search.js";
 import { callLegacy } from "./shared.js";
+import type { IndexableEntityType } from "../../ai.embedding-content.js";
 import { fail, limitParam, num, ok, optionalStr, str, type ConsolidatedTool } from "./types.js";
 
 // ─── Analytics ──────────────────────────────────────────────────────────────
@@ -506,9 +508,73 @@ export const appHelp: ConsolidatedTool = {
   handler: async (args, ctx) => callLegacy("app_help", { prompt: str(args.topic) }, ctx),
 };
 
+
+export const workspaceSearch: ConsolidatedTool = {
+  name: "workspace_search",
+  domain: "workspace",
+  readOnly: true,
+  description:
+    "Search across everything in the workspace by meaning — issues, comments, documents, projects, teams, " +
+    "people and cycles. Use when the user is looking for something but you do not know where it lives, or " +
+    "asks about a topic rather than a specific record. Matches ideas, not just exact words.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "What to look for, in the user's own words." },
+      entityTypes: {
+        type: "string",
+        description:
+          "Optional comma-separated filter, e.g. \"ISSUE,COMMENT\". Omit to search everything.",
+      },
+      limit: limitParam,
+    },
+    required: ["query"],
+  },
+  handler: async (args, ctx) => {
+    const query = optionalStr(args.query);
+    if (!query) return fail("query is required");
+
+    const requestedTypes = optionalStr(args.entityTypes)
+      ?.split(",")
+      .map((entry) => entry.trim().toUpperCase())
+      .filter(Boolean) as IndexableEntityType[] | undefined;
+
+    const result = await searchWorkspace({
+      workspaceId: ctx.workspaceId,
+      query,
+      ...(requestedTypes?.length ? { entityTypes: requestedTypes } : {}),
+      limit: Math.min(num(args.limit, 10), 25),
+    });
+
+    // Hits are candidates, not authorization — the embeddings table has no
+    // notion of private projects or team membership, so every hit is narrowed
+    // to what this user can actually see, whatever type it is, before
+    // anything is returned.
+    const visible = await filterVisibleHits(result.hits, {
+      workspaceId: ctx.workspaceId,
+      userId: ctx.userId,
+      role: ctx.userRole,
+    });
+
+    return ok(
+      visible.map((hit) => ({
+        type: hit.entityType,
+        id: hit.entityId,
+        label: hit.label,
+      })),
+      {
+        count: visible.length,
+        strategies: result.strategies,
+        semanticSearchDegraded: result.degraded,
+      },
+    );
+  },
+};
+
 export const workspaceTools: ConsolidatedTool[] = [
   analyticsReport,
   analyticsExport,
+  workspaceSearch,
   workspaceGet,
   workspaceUpdate,
   workspaceListMine,

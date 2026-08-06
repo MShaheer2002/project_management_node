@@ -28,6 +28,7 @@ import type {
   PlanCycleIssuesInput,
   UpdateCycleInput,
 } from "./cycle.schemas.js";
+import { indexEntity } from "../ai/ai.indexer.js";
 
 const issueStatusFromDb: Record<string, "backlog" | "todo" | "in-progress" | "review" | "done"> = {
   BACKLOG: "backlog",
@@ -441,13 +442,30 @@ export async function createCycle(workspaceId: string, userId: string, role: Wor
     reason: "created",
   });
 
+  // Index after commit, never before: a job queued inside the transaction could
+  // outlive a rollback and point at a row that never existed.
+  await indexEntity({
+    workspaceId,
+    entityType: "CYCLE",
+    entityId: cycle.id,
+    reason: "created",
+    triggeredByUserId: userId,
+  });
+
   return mapCycleSummary(cycle, computed.stats);
 }
 
-export async function listCycles(workspaceId: string, query: ListCyclesQuery) {
+/**
+ * `ids` is an internal narrowing used by AI semantic search — see the note on
+ * `listTeams`. Not part of the HTTP query schema.
+ */
+type ListCyclesFilters = ListCyclesQuery & { ids?: readonly string[] };
+
+export async function listCycles(workspaceId: string, query: ListCyclesFilters) {
   const limit = clampListLimit(query.limit, 30);
   const where: any = {
     workspaceId,
+    ...(query.ids ? { id: { in: [...query.ids] } } : {}),
     ...(query.teamId ? { teamId: query.teamId } : {}),
     ...(query.status ? { status: query.status } : {}),
     ...(query.from || query.to
@@ -629,6 +647,17 @@ export async function updateCycle(workspaceId: string, cycleId: string, userId: 
       },
     }).catch(() => {});
   }
+
+  // Index after commit, never before: a job queued inside the transaction could
+  // outlive a rollback and point at a row that never existed.
+  await indexEntity({
+    workspaceId,
+    entityType: "CYCLE",
+    entityId: cycleId,
+    reason: "updated",
+    triggeredByUserId: userId,
+  });
+
   return mapCycleSummary(updated, computed.stats);
 }
 

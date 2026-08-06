@@ -21,6 +21,7 @@ import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import type { Prisma, WorkspaceRole } from "../../app/generated/prisma/client.js";
 import type { ListWorkspaceMembersQuery } from "./workspace.schemas.js";
 import { syncPaidSeatQuantityBestEffort } from "../billing/billing.service.js";
+import { indexEntity } from "../ai/ai.indexer.js";
 
 /**
  * Invite a user to a workspace by email.
@@ -76,6 +77,13 @@ export async function inviteMember(
     targetId: user.id,
     message: `${membership.user.name} joined workspace`,
     metadata: { member: { id: membership.user.id, name: membership.user.name, email: membership.user.email }, roleAfter: membership.role },
+  });
+
+  await indexEntity({
+    workspaceId,
+    entityType: "MEMBER",
+    entityId: user.id,
+    reason: "created",
   });
 
   return {
@@ -288,6 +296,15 @@ export async function changeMemberRole(
         select: { id: true, email: true, name: true, avatar: true },
       },
     },
+  });
+
+  // Role and designation are part of a member's embedded description, which is
+  // what makes "who are the admins" or "who is a frontend engineer" resolvable.
+  await indexEntity({
+    workspaceId,
+    entityType: "MEMBER",
+    entityId: targetUserId,
+    reason: "updated",
   });
 
   return {

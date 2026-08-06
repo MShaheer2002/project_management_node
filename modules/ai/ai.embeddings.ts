@@ -5,7 +5,15 @@ import { createEmbedding } from "./ai.provider.js";
 import { recordAiDailyUsage } from "./ai.usage.js";
 
 const EMBEDDING_SIMILARITY_THRESHOLD = 0.85;
-type SupportedEmbeddingEntityType = "ISSUE" | "PROJECT" | "TEAM" | "DEPARTMENT" | "MEMBER" | "CYCLE";
+type SupportedEmbeddingEntityType =
+  | "ISSUE"
+  | "COMMENT"
+  | "DOCUMENT"
+  | "PROJECT"
+  | "TEAM"
+  | "DEPARTMENT"
+  | "MEMBER"
+  | "CYCLE";
 
 function normalizeWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -28,23 +36,6 @@ function vectorLiteral(embedding: number[]) {
   return `[${embedding.map((value) => Number.isFinite(value) ? value : 0).join(",")}]`;
 }
 
-function normalizeEmbeddingContent(parts: Array<string | null | undefined>) {
-  return normalizeWhitespace(parts.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join("\n\n")).slice(0, 12_000);
-}
-
-export function buildEntityEmbeddingContent(input: {
-  entityType: SupportedEmbeddingEntityType;
-  name: string;
-  description?: string | null | undefined;
-  extraParts?: Array<string | null | undefined>;
-}) {
-  const heading = `${input.entityType}: ${input.name}`;
-  return normalizeEmbeddingContent([
-    heading,
-    input.description ?? "",
-    ...(input.extraParts ?? []),
-  ]);
-}
 
 async function generateAndStoreEmbedding(input: {
   workspaceId: string;
@@ -108,6 +99,27 @@ async function generateAndStoreEmbedding(input: {
   return { model: result.model, contentHash, usage: result.usage, embedding: result.embedding };
 }
 
+/**
+ * Stores an embedding for content the caller has already rendered.
+ *
+ * Exists so the queue worker and the backfill job can both go through
+ * ai.embedding-content.ts rather than each deciding for themselves what text
+ * represents an entity — two vectors built from differently-shaped text are not
+ * comparable, which corrupts similarity in ways that are very hard to notice.
+ *
+ * Returns null when there is nothing to embed. When the content hash is
+ * unchanged the stored vector is left alone and no provider call is made.
+ */
+export async function storeEntityEmbedding(input: {
+  workspaceId: string;
+  entityType: SupportedEmbeddingEntityType;
+  entityId: string;
+  content: string;
+  triggeredByUserId?: string | undefined;
+}) {
+  return generateAndStoreEmbedding(input);
+}
+
 export async function generateAndStoreIssueEmbedding(input: {
   workspaceId: string;
   issueId: string;
@@ -120,31 +132,6 @@ export async function generateAndStoreIssueEmbedding(input: {
     workspaceId: input.workspaceId,
     entityType: "ISSUE",
     entityId: input.issueId,
-    content,
-    triggeredByUserId: input.triggeredByUserId,
-  });
-}
-
-export async function generateAndStoreNamedEntityEmbedding(input: {
-  workspaceId: string;
-  entityType: Exclude<SupportedEmbeddingEntityType, "ISSUE">;
-  entityId: string;
-  name: string;
-  description?: string | null | undefined;
-  extraParts?: Array<string | null | undefined>;
-  triggeredByUserId?: string | undefined;
-}) {
-  const content = buildEntityEmbeddingContent({
-    entityType: input.entityType,
-    name: input.name,
-    ...(input.description !== undefined ? { description: input.description } : {}),
-    ...(input.extraParts !== undefined ? { extraParts: input.extraParts } : {}),
-  });
-
-  return generateAndStoreEmbedding({
-    workspaceId: input.workspaceId,
-    entityType: input.entityType,
-    entityId: input.entityId,
     content,
     triggeredByUserId: input.triggeredByUserId,
   });

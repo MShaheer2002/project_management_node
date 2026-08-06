@@ -26,10 +26,11 @@ import {
   type StaleScanJob,
   type WeeklyDigestJob,
 } from "./ai.jobs.js";
+import { buildEmbeddingContent } from "./ai.embedding-content.js";
 import {
   findSimilarIssueEmbeddings,
   findSimilarIssuesByText,
-  generateAndStoreNamedEntityEmbedding,
+  storeEntityEmbedding,
   generateAndStoreIssueEmbedding,
 } from "./ai.embeddings.js";
 
@@ -117,25 +118,6 @@ async function markSuggestionsSuperseded(workspaceId: string, targetType: string
       status: "SUPERSEDED",
     },
   });
-}
-
-async function loadEntityAliasEmbeddingParts(workspaceId: string, entityType: "PROJECT" | "TEAM" | "DEPARTMENT" | "MEMBER" | "CYCLE", entityId: string) {
-  const rows = await (prisma as any).entityAlias.findMany({
-    where: {
-      workspaceId,
-      entityType,
-      entityId,
-    },
-    select: {
-      alias: true,
-      locale: true,
-    },
-    orderBy: { createdAt: "asc" },
-    take: 20,
-  }).catch(() => []);
-
-  return (rows as Array<{ alias: string; locale: string | null }>)
-    .flatMap((row) => row.locale ? [row.alias, `alias:${row.locale}:${row.alias}`] : [row.alias]);
 }
 
 async function upsertSuggestion(input: {
@@ -819,6 +801,15 @@ export async function processIssueIntelligenceJob(payload: IssueIntelligenceJob,
   }
 }
 
+/**
+ * Indexes one entity for semantic search, and — for issues only — checks it
+ * against existing work for possible duplicates.
+ *
+ * Content rendering is delegated to ai.embedding-content.ts so this worker and
+ * the backfill job embed identical text for the same entity. They previously
+ * diverged: the content shape lived inline here, which meant any other path
+ * producing embeddings could quietly build vectors that were not comparable.
+ */
 export async function processEmbeddingJob(payload: EmbeddingJob, jobMeta?: { jobId?: string }) {
   const run = await createJobRun({
     workspaceId: payload.workspaceId,
@@ -829,257 +820,45 @@ export async function processEmbeddingJob(payload: EmbeddingJob, jobMeta?: { job
   });
 
   try {
-    if (payload.entityType === "PROJECT") {
-      const project = await prisma.project.findFirst({
-        where: { id: payload.entityId, workspaceId: payload.workspaceId },
-        select: {
-          id: true,
-          name: true,
-          description: true,
-          status: true,
-          team: { select: { name: true } },
-          department: { select: { name: true } },
-        },
-      });
+    const built = await buildEmbeddingContent(
+      payload.entityType,
+      payload.entityId,
+      payload.workspaceId,
+    );
 
-      if (!project) {
-        await finishJobRun(run.id, "SKIPPED", { reason: "Project not found" });
-        return;
-      }
-
-      const aliases = await loadEntityAliasEmbeddingParts(payload.workspaceId, "PROJECT", project.id);
-      await generateAndStoreNamedEntityEmbedding({
-        workspaceId: payload.workspaceId,
-        entityType: "PROJECT",
-        entityId: project.id,
-        name: project.name,
-        description: project.description,
-        extraParts: [project.status, project.team?.name, project.department?.name, ...aliases],
-        triggeredByUserId: payload.triggeredByUserId,
+    // Entities are routinely deleted between a job being queued and run, and an
+    // entity can legitimately have nothing worth embedding (an empty comment).
+    // Neither is an error.
+    if (!built || !built.content) {
+      await finishJobRun(run.id, "SKIPPED", {
+        reason: built ? "No embeddable content" : "Entity not found",
+        entityType: payload.entityType,
+        entityId: payload.entityId,
       });
-      await upsertEntityAliases({
-        workspaceId: payload.workspaceId,
-        entityType: "PROJECT",
-        entityId: project.id,
-        aliases: [project.name],
-      });
-
-      await finishJobRun(run.id, "SUCCEEDED", { entityType: payload.entityType, entityId: payload.entityId });
       return;
     }
 
-    if (payload.entityType === "TEAM") {
-      const team = await prisma.team.findFirst({
-        where: { id: payload.entityId, workspaceId: payload.workspaceId },
-        select: {
-          id: true,
-          name: true,
-          description: true,
-          visibility: true,
-          department: { select: { name: true } },
-          projects: { select: { name: true }, orderBy: { name: "asc" }, take: 20 },
-        },
-      });
-
-      if (!team) {
-        await finishJobRun(run.id, "SKIPPED", { reason: "Team not found" });
-        return;
-      }
-
-      const aliases = await loadEntityAliasEmbeddingParts(payload.workspaceId, "TEAM", team.id);
-      await generateAndStoreNamedEntityEmbedding({
-        workspaceId: payload.workspaceId,
-        entityType: "TEAM",
-        entityId: team.id,
-        name: team.name,
-        description: team.description,
-        extraParts: [team.visibility, team.department?.name, ...team.projects.map((project) => project.name), ...aliases],
-        triggeredByUserId: payload.triggeredByUserId,
-      });
-      await upsertEntityAliases({
-        workspaceId: payload.workspaceId,
-        entityType: "TEAM",
-        entityId: team.id,
-        aliases: [team.name],
-      });
-
-      await finishJobRun(run.id, "SUCCEEDED", { entityType: payload.entityType, entityId: payload.entityId });
-      return;
-    }
-
-    if (payload.entityType === "DEPARTMENT") {
-      const department = await prisma.department.findFirst({
-        where: { id: payload.entityId, workspaceId: payload.workspaceId },
-        select: { id: true, name: true, description: true, visibility: true },
-      });
-
-      if (!department) {
-        await finishJobRun(run.id, "SKIPPED", { reason: "Department not found" });
-        return;
-      }
-
-      const aliases = await loadEntityAliasEmbeddingParts(payload.workspaceId, "DEPARTMENT", department.id);
-      await generateAndStoreNamedEntityEmbedding({
-        workspaceId: payload.workspaceId,
-        entityType: "DEPARTMENT",
-        entityId: department.id,
-        name: department.name,
-        description: department.description,
-        extraParts: [department.visibility, ...aliases],
-        triggeredByUserId: payload.triggeredByUserId,
-      });
-      await upsertEntityAliases({
-        workspaceId: payload.workspaceId,
-        entityType: "DEPARTMENT",
-        entityId: department.id,
-        aliases: [department.name],
-      });
-
-      await finishJobRun(run.id, "SUCCEEDED", { entityType: payload.entityType, entityId: payload.entityId });
-      return;
-    }
-
-    if (payload.entityType === "MEMBER") {
-      const member = await prisma.workspaceMembership.findFirst({
-        where: {
-          workspaceId: payload.workspaceId,
-          userId: payload.entityId,
-        },
-        select: {
-          role: true,
-          user: { select: { id: true, name: true, email: true } },
-          workspace: { select: { id: true } },
-        },
-      });
-
-      if (!member?.user) {
-        await finishJobRun(run.id, "SKIPPED", { reason: "Member not found" });
-        return;
-      }
-
-      const [aliases, teamMemberships, departmentMemberships] = await Promise.all([
-        loadEntityAliasEmbeddingParts(payload.workspaceId, "MEMBER", member.user.id),
-        prisma.teamMembership.findMany({
-          where: { userId: member.user.id, team: { workspaceId: payload.workspaceId } },
-          select: { team: { select: { name: true } } },
-          orderBy: { teamId: "asc" },
-          take: 20,
-        }),
-        prisma.departmentMembership.findMany({
-          where: { userId: member.user.id, department: { workspaceId: payload.workspaceId } },
-          select: { department: { select: { name: true } } },
-          orderBy: { departmentId: "asc" },
-          take: 20,
-        }),
-      ]);
-      await generateAndStoreNamedEntityEmbedding({
-        workspaceId: payload.workspaceId,
-        entityType: "MEMBER",
-        entityId: member.user.id,
-        name: member.user.name,
-        description: member.user.email,
-        extraParts: [
-          member.role,
-          ...teamMemberships.map((entry) => entry.team.name),
-          ...departmentMemberships.map((entry) => entry.department.name),
-          ...aliases,
-        ],
-        triggeredByUserId: payload.triggeredByUserId,
-      });
-      await upsertEntityAliases({
-        workspaceId: payload.workspaceId,
-        entityType: "MEMBER",
-        entityId: member.user.id,
-        aliases: [member.user.name, member.user.email],
-      });
-
-      await finishJobRun(run.id, "SUCCEEDED", { entityType: payload.entityType, entityId: payload.entityId });
-      return;
-    }
-
-    if (payload.entityType === "CYCLE") {
-      const cycle = await (prisma as any).cycle.findFirst({
-        where: { id: payload.entityId, workspaceId: payload.workspaceId },
-        select: {
-          id: true,
-          name: true,
-          description: true,
-          goal: true,
-          status: true,
-          team: { select: { name: true } },
-        },
-      });
-
-      if (!cycle) {
-        await finishJobRun(run.id, "SKIPPED", { reason: "Cycle not found" });
-        return;
-      }
-
-      const aliases = await loadEntityAliasEmbeddingParts(payload.workspaceId, "CYCLE", cycle.id);
-      await generateAndStoreNamedEntityEmbedding({
-        workspaceId: payload.workspaceId,
-        entityType: "CYCLE",
-        entityId: cycle.id,
-        name: cycle.name,
-        description: cycle.description,
-        extraParts: [cycle.goal, cycle.status, cycle.team?.name, ...aliases],
-        triggeredByUserId: payload.triggeredByUserId,
-      });
-      await upsertEntityAliases({
-        workspaceId: payload.workspaceId,
-        entityType: "CYCLE",
-        entityId: cycle.id,
-        aliases: [cycle.name],
-      });
-
-      await finishJobRun(run.id, "SUCCEEDED", { entityType: payload.entityType, entityId: payload.entityId });
-      return;
-    }
-
-    const issue = await prisma.issue.findFirst({
-      where: { id: payload.entityId, workspaceId: payload.workspaceId },
-      select: { id: true, internalId: true, title: true, description: true, updatedAt: true },
-    });
-
-    if (!issue) {
-      await finishJobRun(run.id, "SKIPPED", { reason: "Issue not found" });
-      return;
-    }
-
-    const suggestion = await suggestDuplicatesByEmbedding({
+    await storeEntityEmbedding({
       workspaceId: payload.workspaceId,
-      issueId: issue.id,
-      title: issue.title,
-      description: issue.description,
-      updatedAt: issue.updatedAt,
-      createdByUserId: payload.triggeredByUserId,
+      entityType: payload.entityType,
+      entityId: payload.entityId,
+      content: built.content,
       triggeredByUserId: payload.triggeredByUserId,
     });
 
-    if (suggestion) {
-      const recipients = await getIssueSuggestionRecipients(payload.workspaceId, issue.id);
-      await notifySuggestionRecipientsIfRelevant({
-        workspaceId: payload.workspaceId,
-        suggestionId: suggestion.id,
-        suggestionType: suggestion.type,
-        title: suggestion.title,
-        message: suggestion.message,
-        targetType: "issue",
-        targetId: issue.id,
-        targetPublicId: issue.internalId ?? issue.id,
-        targetUrl: `/issues/${issue.internalId ?? issue.id}`,
-        recipientUserIds: recipients,
-        metadata: {
-          issueId: issue.id,
-          suggestionType: suggestion.type,
-          strategy: "embedding",
-        },
-      });
-    }
+    // Named entities also feed the alias table, which entity resolution uses for
+    // exact and fuzzy name lookups independently of vector search.
+    await syncEntityAliasesForIndexedEntity(payload, built.label);
+
+    // Duplicate detection is issue-specific and depends on the embedding that
+    // was just written, so it runs after the store rather than alongside it.
+    const duplicateSuggestionCreated =
+      payload.entityType === "ISSUE" ? await runIssueDuplicateDetection(payload) : false;
 
     await finishJobRun(run.id, "SUCCEEDED", {
-      issueId: payload.entityId,
-      duplicateSuggestionCreated: Boolean(suggestion),
+      entityType: payload.entityType,
+      entityId: payload.entityId,
+      ...(payload.entityType === "ISSUE" ? { duplicateSuggestionCreated } : {}),
     });
   } catch (error) {
     logAiWarn("ai_embedding_job_failed", {
@@ -1088,11 +867,65 @@ export async function processEmbeddingJob(payload: EmbeddingJob, jobMeta?: { job
       success: false,
       errorCode: "EMBEDDING_JOB_FAILED",
       errorMessage: summarizeError(error),
-      metadata: { entityId: payload.entityId },
+      metadata: { entityType: payload.entityType, entityId: payload.entityId },
     });
     await finishJobRun(run.id, "FAILED", undefined, "EMBEDDING_JOB_FAILED", summarizeError(error));
     throw error;
   }
+}
+
+/** Entity kinds that participate in name-based resolution. */
+const ALIASED_ENTITY_TYPES = new Set(["PROJECT", "TEAM", "DEPARTMENT", "MEMBER", "CYCLE"]);
+
+async function syncEntityAliasesForIndexedEntity(payload: EmbeddingJob, label: string) {
+  if (!ALIASED_ENTITY_TYPES.has(payload.entityType) || !label) return;
+
+  await upsertEntityAliases({
+    workspaceId: payload.workspaceId,
+    entityType: payload.entityType as "PROJECT" | "TEAM" | "DEPARTMENT" | "MEMBER" | "CYCLE",
+    entityId: payload.entityId,
+    aliases: [label],
+  }).catch(() => {
+    // Alias upkeep is an optimization for resolution; the embedding itself is
+    // already stored and must not be rolled back because this failed.
+  });
+}
+
+async function runIssueDuplicateDetection(payload: EmbeddingJob): Promise<boolean> {
+  const issue = await prisma.issue.findFirst({
+    where: { id: payload.entityId, workspaceId: payload.workspaceId },
+    select: { id: true, internalId: true, title: true, description: true, updatedAt: true },
+  });
+  if (!issue) return false;
+
+  const suggestion = await suggestDuplicatesByEmbedding({
+    workspaceId: payload.workspaceId,
+    issueId: issue.id,
+    title: issue.title,
+    description: issue.description,
+    updatedAt: issue.updatedAt,
+    createdByUserId: payload.triggeredByUserId,
+    triggeredByUserId: payload.triggeredByUserId,
+  });
+
+  if (!suggestion) return false;
+
+  const recipients = await getIssueSuggestionRecipients(payload.workspaceId, issue.id);
+  await notifySuggestionRecipientsIfRelevant({
+    workspaceId: payload.workspaceId,
+    suggestionId: suggestion.id,
+    suggestionType: suggestion.type,
+    title: suggestion.title,
+    message: suggestion.message,
+    targetType: "issue",
+    targetId: issue.id,
+    targetPublicId: issue.internalId ?? issue.id,
+    targetUrl: `/issues/${issue.internalId ?? issue.id}`,
+    recipientUserIds: recipients,
+    metadata: { issueId: issue.id, suggestionType: suggestion.type, strategy: "embedding" },
+  });
+
+  return true;
 }
 
 export async function processStaleScanJob(payload: StaleScanJob, jobMeta?: { jobId?: string }) {

@@ -11,8 +11,14 @@
  * checks still resolve per container inside the executor.
  */
 
+import { listProjects } from "../../../project/project.service.js";
+import { listTeams } from "../../../team/team.service.js";
+import { listDepartments } from "../../../department/department.service.js";
+import type { WorkspaceRole } from "../../../../app/generated/prisma/client.js";
 import { captureBeforeState, describeChange } from "./capture.js";
+import { hybridListSearch } from "./hybrid.js";
 import { callLegacy } from "./shared.js";
+import type { RegistryContext } from "./types.js";
 import {
   fail,
   limitParam,
@@ -35,23 +41,37 @@ export const projectsSearch: ConsolidatedTool = {
   parameters: {
     type: "object",
     properties: {
-      query: { type: "string", description: "Filter by project name." },
+      query: {
+        type: "string",
+        description: "Name, or a description of what the project is about — matches meaning, not just literal text.",
+      },
       teamId: { type: "string", description: "Restrict to projects owned by one team." },
       status: { type: "string", description: "Lifecycle filter.", enum: ["active", "archived", "completed"] },
       limit: limitParam,
     },
   },
-  handler: async (args, ctx) =>
-    callLegacy(
+  handler: async (args, ctx) => {
+    const query = optionalStr(args.query);
+    const limit = Math.min(num(args.limit, 20), 50);
+
+    if (query) {
+      const semantic = await runHybridProjectSearch(query, args, ctx, limit);
+      if (semantic) return semantic;
+      // Fall through to substring matching if hybrid found nothing at all,
+      // rather than reporting no results while a literal match exists.
+    }
+
+    return callLegacy(
       "list_projects",
       {
-        ...(optionalStr(args.query) ? { q: str(args.query) } : {}),
+        ...(query ? { q: query } : {}),
         ...(optionalStr(args.teamId) ? { teamId: str(args.teamId) } : {}),
         ...(optionalStr(args.status) ? { status: str(args.status).toUpperCase() } : {}),
-        limit: Math.min(num(args.limit, 20), 50),
+        limit,
       },
       ctx,
-    ),
+    );
+  },
 };
 
 export const projectsGet: ConsolidatedTool = {
@@ -164,23 +184,26 @@ export const teamsSearch: ConsolidatedTool = {
   name: "teams_search",
   domain: "teams",
   readOnly: true,
-  description: "List or search teams in the workspace.",
+  description:
+    "List or search teams in the workspace. Query matches meaning, e.g. 'who works on frontend' finds teams by what they do, not just their name.",
   parameters: {
     type: "object",
     properties: {
-      query: { type: "string", description: "Filter by team name." },
+      query: { type: "string", description: "Team name, or what the team works on." },
       limit: limitParam,
     },
   },
-  handler: async (args, ctx) =>
-    callLegacy(
-      "list_teams",
-      {
-        ...(optionalStr(args.query) ? { q: str(args.query) } : {}),
-        limit: Math.min(num(args.limit, 20), 50),
-      },
-      ctx,
-    ),
+  handler: async (args, ctx) => {
+    const query = optionalStr(args.query);
+    const limit = Math.min(num(args.limit, 20), 50);
+
+    if (query) {
+      const semantic = await runHybridTeamSearch(query, ctx, limit);
+      if (semantic) return semantic;
+    }
+
+    return callLegacy("list_teams", { ...(query ? { q: query } : {}), limit }, ctx);
+  },
 };
 
 export const teamsGet: ConsolidatedTool = {
@@ -306,19 +329,21 @@ export const departmentsSearch: ConsolidatedTool = {
   parameters: {
     type: "object",
     properties: {
-      query: { type: "string", description: "Filter by department name." },
+      query: { type: "string", description: "Department name, or what it covers." },
       limit: limitParam,
     },
   },
-  handler: async (args, ctx) =>
-    callLegacy(
-      "list_departments",
-      {
-        ...(optionalStr(args.query) ? { q: str(args.query) } : {}),
-        limit: Math.min(num(args.limit, 20), 50),
-      },
-      ctx,
-    ),
+  handler: async (args, ctx) => {
+    const query = optionalStr(args.query);
+    const limit = Math.min(num(args.limit, 20), 50);
+
+    if (query) {
+      const semantic = await runHybridDepartmentSearch(query, ctx, limit);
+      if (semantic) return semantic;
+    }
+
+    return callLegacy("list_departments", { ...(query ? { q: query } : {}), limit }, ctx);
+  },
 };
 
 export const departmentsGet: ConsolidatedTool = {
@@ -518,6 +543,69 @@ export const membersManage: ConsolidatedTool = {
     }
   },
 };
+
+// ─── Hybrid search ──────────────────────────────────────────────────────────
+//
+// Each of these resolves a free-text query through the vector+keyword index,
+// then re-reads the matched rows through the entity's own service so its
+// visibility clause, mapping and pagination stay authoritative. Returns null
+// when hybrid search finds nothing, so the caller falls back to substring
+// matching rather than reporting an empty result when a literal match exists.
+// See `hybridListSearch` for the shared shape all of these follow.
+
+interface ProjectSearchRow {
+  id: string;
+  name: string;
+  status: string;
+  lead: { name: string } | null;
+  team: { name: string } | null;
+  stats: { issueCount: number };
+}
+
+function runHybridProjectSearch(query: string, args: Record<string, unknown>, ctx: RegistryContext, limit: number) {
+  return hybridListSearch(
+    "PROJECT",
+    query,
+    ctx,
+    limit,
+    (ids) =>
+      listProjects(ctx.workspaceId, ctx.userRole as WorkspaceRole, ctx.userId, {
+        ids,
+        view: "full",
+        limit,
+        ...(optionalStr(args.teamId) ? { teamId: str(args.teamId) } : {}),
+        ...(optionalStr(args.status) ? { status: str(args.status).toUpperCase() } : {}),
+      } as never) as Promise<{ items: ProjectSearchRow[] }>,
+    (project) => ({
+      id: project.id,
+      name: project.name,
+      status: project.status,
+      team: project.team?.name ?? "—",
+      lead: project.lead?.name ?? "Unassigned",
+      issueCount: project.stats.issueCount,
+    }),
+  );
+}
+
+function runHybridTeamSearch(query: string, ctx: RegistryContext, limit: number) {
+  return hybridListSearch<{ id: string }>(
+    "TEAM",
+    query,
+    ctx,
+    limit,
+    (ids) => listTeams(ctx.workspaceId, ctx.userRole as WorkspaceRole, { ids, limit } as never),
+  );
+}
+
+function runHybridDepartmentSearch(query: string, ctx: RegistryContext, limit: number) {
+  return hybridListSearch<{ id: string }>(
+    "DEPARTMENT",
+    query,
+    ctx,
+    limit,
+    (ids) => listDepartments(ctx.workspaceId, ctx.userRole as WorkspaceRole, { ids, limit } as never),
+  );
+}
 
 export const orgTools: ConsolidatedTool[] = [
   projectsSearch,

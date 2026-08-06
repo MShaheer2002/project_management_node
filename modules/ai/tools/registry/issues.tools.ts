@@ -8,6 +8,8 @@
  * hardcoded keyword rule to reach it).
  */
 
+import { prisma } from "../../../../shared/utils/prisma.js";
+import { filterVisibleHits, searchWorkspace } from "../../ai.search.js";
 import { captureBeforeState, describeChange } from "./capture.js";
 import { callLegacy } from "./shared.js";
 import {
@@ -22,6 +24,7 @@ import {
   str,
   strArray,
   type ConsolidatedTool,
+  type RegistryContext,
 } from "./types.js";
 
 export const issuesSearch: ConsolidatedTool = {
@@ -78,10 +81,22 @@ export const issuesSearch: ConsolidatedTool = {
         : fail(result.error ?? "Could not load workload");
     }
 
+    // A free-text query goes through hybrid retrieval so wording that shares no
+    // substring with the issue still matches — "login broken" finding "Auth
+    // fails on OAuth callback". Structured filters keep the plain path, since
+    // "my urgent bugs" is a filter, not a search.
+    const searchQuery = optionalStr(args.query);
+    if (searchQuery) {
+      const semantic = await runHybridIssueSearch(searchQuery, args, ctx);
+      if (semantic) return semantic;
+      // Fall through to substring matching if hybrid found nothing at all,
+      // rather than reporting no results while a literal match exists.
+    }
+
     const result = await callLegacy(
       "list_issues",
       {
-        ...(optionalStr(args.query) ? { q: str(args.query) } : {}),
+        ...(searchQuery ? { q: searchQuery } : {}),
         ...(optionalStr(args.assignee) ? { assigneeId: str(args.assignee) } : {}),
         ...(optionalStr(args.status) ? { status: str(args.status) } : {}),
         ...(optionalStr(args.priority) ? { priority: str(args.priority) } : {}),
@@ -449,6 +464,97 @@ export const issuesLinks: ConsolidatedTool = {
     return result.success ? ok(result.payload) : fail(result.error ?? "Could not add the link");
   },
 };
+
+
+/**
+ * Resolves a free-text issue query through hybrid search, then re-reads the
+ * matched issues so filters, permissions and the standard result shape all still
+ * apply.
+ *
+ * Search returns candidates, never authorization: the embeddings table stores
+ * text and knows nothing about private projects, so hits are filtered by
+ * visibility before anything is returned.
+ *
+ * Returns null when hybrid finds nothing, letting the caller fall back to plain
+ * substring matching rather than reporting an empty result.
+ */
+async function runHybridIssueSearch(
+  query: string,
+  args: Record<string, unknown>,
+  ctx: RegistryContext,
+) {
+  const limit = Math.min(num(args.limit, 20), 50);
+
+  const search = await searchWorkspace({
+    workspaceId: ctx.workspaceId,
+    query,
+    entityTypes: ["ISSUE"],
+    limit: limit * 2, // over-fetch: filters below will remove some
+  }).catch(() => null);
+
+  if (!search || search.hits.length === 0) return null;
+
+  const visible = await filterVisibleHits(search.hits, {
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    role: ctx.userRole,
+  });
+  if (visible.length === 0) return null;
+
+  const rankedIds = visible.map((hit) => hit.entityId);
+
+  const issues = await prisma.issue.findMany({
+    where: {
+      id: { in: rankedIds },
+      workspaceId: ctx.workspaceId,
+      ...(optionalStr(args.status) ? { status: str(args.status) } : {}),
+      ...(optionalStr(args.priority) ? { priority: str(args.priority).toUpperCase() as never } : {}),
+      ...(optionalStr(args.type) ? { type: str(args.type).toUpperCase() as never } : {}),
+      ...(optionalStr(args.projectId) ? { projectId: str(args.projectId) } : {}),
+      ...(optionalStr(args.teamId) ? { teamId: str(args.teamId) } : {}),
+    },
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      status: true,
+      priority: true,
+      type: true,
+      dueDate: true,
+      assignee: { select: { name: true } },
+      project: { select: { name: true } },
+    },
+    take: limit,
+  });
+
+  if (issues.length === 0) return null;
+
+  // Restore relevance order — findMany returns rows in database order, which
+  // would discard the ranking the whole hybrid search exists to produce.
+  const rankPosition = new Map(rankedIds.map((id, index) => [id, index]));
+  issues.sort((a, b) => (rankPosition.get(a.id) ?? 0) - (rankPosition.get(b.id) ?? 0));
+
+  return ok(
+    issues.map((issue) => ({
+      id: issue.id,
+      title: issue.title,
+      summary: issue.description ? issue.description.replace(/\s+/g, " ").trim().slice(0, 240) : null,
+      status: issue.status,
+      priority: issue.priority,
+      type: issue.type,
+      assignee: issue.assignee?.name ?? "Unassigned",
+      project: issue.project?.name ?? "—",
+      dueDate: issue.dueDate?.toISOString() ?? null,
+    })),
+    {
+      count: issues.length,
+      searchStrategies: search.strategies,
+      // Surfaced so the model can say results may be incomplete rather than
+      // presenting degraded recall as definitive.
+      semanticSearchDegraded: search.degraded,
+    },
+  );
+}
 
 export const issueTools: ConsolidatedTool[] = [
   issuesSearch,

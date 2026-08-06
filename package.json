@@ -14,7 +14,8 @@
     "worker": "node dist/workers/ai-background.worker.js",
     "scheduler": "node dist/workers/ai-background.scheduler.js",
     "worker:dev": "tsx workers/ai-background.worker.ts",
-    "scheduler:dev": "tsx workers/ai-background.scheduler.ts"
+    "scheduler:dev": "tsx workers/ai-background.scheduler.ts",
+    "backfill:embeddings": "tsx workers/embedding-backfill.ts"
   },
   "repository": {
     "type": "git",

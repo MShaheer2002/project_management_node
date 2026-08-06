@@ -13,6 +13,7 @@ import type {
   AddTeamMembersInput,
   ListTeamMembersQuery,
 } from "./team.schemas.js";
+import { indexEntities, indexEntity } from "../ai/ai.indexer.js";
 
 function getMemberOrderBy(
   sort: ListTeamMembersQuery["sort"],
@@ -267,6 +268,18 @@ export async function addTeamMembers(workspaceId: string, teamId: string, actorU
     },
     eventId: `team-member:${added.teamId}:added:${memberId}`,
   })));
+
+  // A member's team list is embedded in their description, so joining a team
+  // changes what they match on.
+  await indexEntities(
+    added.userIds.map((memberId) => ({
+      workspaceId,
+      entityType: "MEMBER" as const,
+      entityId: memberId,
+      reason: "updated" as const,
+      triggeredByUserId: actorUserId,
+    })),
+  );
 
   return { added: added.userIds };
 }
