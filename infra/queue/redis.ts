@@ -13,6 +13,7 @@ const RedisCtor = RedisModule as unknown as new (
 ) => RedisConnection;
 
 let sharedConnection: RedisConnection | null = null;
+let sharedWorkerConnection: RedisConnection | null = null;
 let warnedMissingRedis = false;
 
 export function isQueueInfrastructureEnabled() {
@@ -38,15 +39,26 @@ export function getSharedQueueConnection(): RedisConnection | null {
   return sharedConnection;
 }
 
+/**
+ * One Redis connection per worker *process*, shared by every BullMQ Worker
+ * in it. Previously each of the 6 queues opened its own connection via a
+ * non-singleton version of this function — 6 connections per process, which
+ * multiplies with every horizontally-scaled replica for no benefit; BullMQ's
+ * own docs recommend sharing one connection across Workers in a process.
+ */
 export function createWorkerQueueConnection() {
   if (!env.REDIS_URL) {
     return null;
   }
 
-  return new RedisCtor(env.REDIS_URL, {
-    maxRetriesPerRequest: null,
-    enableReadyCheck: true,
-  });
+  if (!sharedWorkerConnection) {
+    sharedWorkerConnection = new RedisCtor(env.REDIS_URL, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: true,
+    });
+  }
+
+  return sharedWorkerConnection;
 }
 
 export async function closeSharedQueueConnection() {
@@ -56,4 +68,13 @@ export async function closeSharedQueueConnection() {
     sharedConnection?.disconnect();
   });
   sharedConnection = null;
+}
+
+export async function closeSharedWorkerConnection() {
+  if (!sharedWorkerConnection) return;
+
+  await sharedWorkerConnection.quit().catch(async () => {
+    sharedWorkerConnection?.disconnect();
+  });
+  sharedWorkerConnection = null;
 }

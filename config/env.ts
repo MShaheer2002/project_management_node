@@ -118,6 +118,24 @@ const envSchema = z.object({
   AI_STALE_ISSUE_DAYS: z.coerce.number().int().min(1).max(180).default(7),
   AI_BACKGROUND_ASSIGNEE_CANDIDATE_LIMIT: z.coerce.number().int().min(1).max(10).default(3),
 
+  // Worker tuning — see redis-bullmq-production-readiness-review.md
+  AI_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(2),
+  // Embeddings call an external, rate-limited API, so it gets its own
+  // concurrency and a request-rate cap independent of the other 5 queues.
+  AI_EMBEDDINGS_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(2),
+  AI_EMBEDDINGS_RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(1000).default(10),
+  AI_EMBEDDINGS_RATE_LIMIT_DURATION_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
+  AI_WORKER_HEALTH_PORT: z.coerce.number().int().min(0).max(65_535).default(9201),
+  // Coalesces bursts of writes to the same project/team/cycle into one
+  // health-summary job instead of one per write.
+  AI_PROACTIVE_SUMMARY_DEBOUNCE_MS: z.coerce.number().int().min(0).max(300_000).default(30_000),
+
+  // Bull Board — off by default, exposes job data across every workspace
+  BULL_BOARD_ENABLED: stringBoolean.default(false),
+  BULL_BOARD_PORT: z.coerce.number().int().min(1).max(65_535).default(9202),
+  BULL_BOARD_USERNAME: z.preprocess(emptyStringToUndefined, z.string().min(1).optional()),
+  BULL_BOARD_PASSWORD: z.preprocess(emptyStringToUndefined, z.string().min(8).optional()),
+
   // MCP Server — external AI transport (Phase 20E)
   TRUSSEN_MCP_API_KEY: z.preprocess(emptyStringToUndefined, z.string().optional()),
   MCP_API_KEY: z.preprocess(emptyStringToUndefined, z.string().optional()),

@@ -1,3 +1,4 @@
+import { env } from "../../config/env.js";
 import { getQueue } from "../../infra/queue/queues.js";
 import { logAiWarn } from "./ai.observability.js";
 
@@ -55,7 +56,12 @@ export type ProactiveSummaryJob = {
   reason: "created" | "updated" | "manual";
 };
 
-async function enqueue<T>(queueName: string, name: string, payload: T) {
+async function enqueue<T>(
+  queueName: string,
+  name: string,
+  payload: T,
+  options?: { jobId?: string; delay?: number },
+) {
   const queue = getQueue(queueName);
   if (!queue) {
     logAiWarn("ai_queue_unavailable", {
@@ -67,7 +73,7 @@ async function enqueue<T>(queueName: string, name: string, payload: T) {
   }
 
   try {
-    return await queue.add(name, payload);
+    return await queue.add(name, payload, options);
   } catch (error) {
     logAiWarn("ai_queue_enqueue_failed", {
       feature: "background",
@@ -100,6 +106,19 @@ export async function enqueueSprintPlanning(payload: SprintPlanningJob) {
   return enqueue(AI_QUEUE_NAMES.sprintPlanning, "sprint-planning", payload);
 }
 
+/**
+ * Debounced: a rapid burst of writes to the same target (e.g. many issue
+ * updates in one project within a minute) previously enqueued a full
+ * health-summary rebuild job per write. A deterministic jobId plus a short
+ * delay collapses that into one job — BullMQ silently keeps the first add's
+ * data and drops later adds with the same jobId while it's still delayed
+ * (verified directly against this BullMQ version, not assumed from docs),
+ * which is safe here because the job recomputes live state at run time; it
+ * never depends on which specific trigger's payload "won".
+ */
 export async function enqueueProactiveSummary(payload: ProactiveSummaryJob) {
-  return enqueue(AI_QUEUE_NAMES.proactiveSummary, "proactive-summary", payload);
+  return enqueue(AI_QUEUE_NAMES.proactiveSummary, "proactive-summary", payload, {
+    jobId: `proactive-summary:${payload.scope}:${payload.scopeId}`,
+    delay: env.AI_PROACTIVE_SUMMARY_DEBOUNCE_MS,
+  });
 }

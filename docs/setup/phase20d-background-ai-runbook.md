@@ -3,6 +3,16 @@
 > This document explains the full Phase 20D implementation in simple words.
 > It also explains how to run it in development and what changes in production.
 
+>
+> **Update:** the standalone `scheduler` process this doc describes
+> (`npm run scheduler` / `ai.scheduler.ts` / `ai-background.scheduler.ts`) has
+> been retired — see [redis-bullmq-production-readiness-review.md](./redis-bullmq-production-readiness-review.md)
+> and [redis-bullmq-fixes-report.md](./redis-bullmq-fixes-report.md) for why.
+> The `npm run worker` process now registers the daily stale-scan and weekly
+> digest triggers itself, as BullMQ job schedulers, at startup — controlled
+> by the same `AI_BACKGROUND_SCHEDULER_ENABLED` flag. There is no separate
+> scheduler command or file anymore; every mention of one below is historical.
+
 ---
 
 ## 1. What Phase 20D Is

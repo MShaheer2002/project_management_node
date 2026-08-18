@@ -928,6 +928,87 @@ async function runIssueDuplicateDetection(payload: EmbeddingJob): Promise<boolea
   return true;
 }
 
+const STALE_SCAN_PAGE_SIZE = 250;
+
+/**
+ * Cursor-paginates every workspace, or yields the single requested one.
+ *
+ * Previously a single `take: 500` — workspace 501 onward was silently never
+ * scanned, with no error pointing at it. This has no upper bound.
+ */
+async function* paginateWorkspaces(workspaceId?: string): AsyncGenerator<{ id: string }> {
+  if (workspaceId) {
+    yield { id: workspaceId };
+    return;
+  }
+
+  let cursor: string | null = null;
+  for (;;) {
+    const pageArgs: Parameters<typeof prisma.workspace.findMany>[0] = {
+      select: { id: true },
+      orderBy: { id: "asc" },
+      take: STALE_SCAN_PAGE_SIZE,
+    };
+    if (cursor) {
+      pageArgs.cursor = { id: cursor };
+      pageArgs.skip = 1;
+    }
+    const page: Array<{ id: string }> = await prisma.workspace.findMany(pageArgs);
+    if (page.length === 0) return;
+    yield* page;
+    if (page.length < STALE_SCAN_PAGE_SIZE) return;
+    cursor = page[page.length - 1]!.id;
+  }
+}
+
+/**
+ * Cursor-paginates a workspace's in-progress/review issues, one page at a
+ * time, rather than the previous single `take: 250` that silently dropped
+ * everything past the 250th active issue.
+ */
+type StaleIssueCandidate = {
+  id: string;
+  internalId: string | null;
+  title: string;
+  assigneeId: string | null;
+  updatedAt: Date;
+  project: { leadId: string | null };
+  team: { leadId: string | null };
+};
+
+async function* paginateStaleIssueCandidates(workspaceId: string): AsyncGenerator<StaleIssueCandidate[]> {
+  let cursor: string | null = null;
+  for (;;) {
+    const pageArgs: Parameters<typeof prisma.issue.findMany>[0] = {
+      where: {
+        workspaceId,
+        status: { in: ["in-progress", "review"] as any },
+        completedAt: null,
+      },
+      select: {
+        id: true,
+        internalId: true,
+        title: true,
+        assigneeId: true,
+        updatedAt: true,
+        project: { select: { leadId: true } },
+        team: { select: { leadId: true } },
+      },
+      orderBy: { id: "asc" },
+      take: STALE_SCAN_PAGE_SIZE,
+    };
+    if (cursor) {
+      pageArgs.cursor = { id: cursor };
+      pageArgs.skip = 1;
+    }
+    const page = (await prisma.issue.findMany(pageArgs)) as unknown as StaleIssueCandidate[];
+    if (page.length === 0) return;
+    yield page;
+    if (page.length < STALE_SCAN_PAGE_SIZE) return;
+    cursor = page[page.length - 1]!.id;
+  }
+}
+
 export async function processStaleScanJob(payload: StaleScanJob, jobMeta?: { jobId?: string }) {
   const run = await createJobRun({
     workspaceId: payload.workspaceId,
@@ -940,111 +1021,94 @@ export async function processStaleScanJob(payload: StaleScanJob, jobMeta?: { job
   try {
     const staleCutoff = new Date(Date.now() - env.AI_STALE_ISSUE_DAYS * 24 * 60 * 60 * 1000);
     const staleCooldownWindow = getWindowKey(new Date(), STALE_SUGGESTION_COOLDOWN_DAYS);
-    const workspaces = payload.workspaceId
-      ? [{ id: payload.workspaceId }]
-      : await prisma.workspace.findMany({ select: { id: true }, take: 500 });
 
     let suggestionsCreated = 0;
+    let workspaceCount = 0;
 
-    for (const workspace of workspaces) {
+    for await (const workspace of paginateWorkspaces(payload.workspaceId)) {
+      workspaceCount += 1;
       await runOverdueIssueAutomation(workspace.id);
 
-      const issues = await prisma.issue.findMany({
-        where: {
-          workspaceId: workspace.id,
-          status: { in: ["in-progress", "review"] as any },
-          completedAt: null,
-        },
-        select: {
-          id: true,
-          internalId: true,
-          title: true,
-          assigneeId: true,
-          updatedAt: true,
-          project: { select: { leadId: true } },
-          team: { select: { leadId: true } },
-        },
-        take: 250,
-      });
+      for await (const issuePage of paginateStaleIssueCandidates(workspace.id)) {
+        const issueIds = issuePage.map((issue) => issue.id);
+        const [comments, activities] = await Promise.all([
+          issueIds.length > 0
+            ? prisma.comment.groupBy({
+                by: ["issueId"],
+                where: { issueId: { in: issueIds } },
+                _max: { updatedAt: true },
+              })
+            : Promise.resolve([]),
+          issueIds.length > 0
+            ? prisma.activity.groupBy({
+                by: ["targetId"],
+                where: {
+                  workspaceId: workspace.id,
+                  targetType: "ISSUE" as any,
+                  targetId: { in: issueIds },
+                },
+                _max: { createdAt: true },
+              })
+            : Promise.resolve([]),
+        ]);
 
-      const issueIds = issues.map((issue) => issue.id);
-      const [comments, activities] = await Promise.all([
-        issueIds.length > 0
-          ? prisma.comment.groupBy({
-              by: ["issueId"],
-              where: { issueId: { in: issueIds } },
-              _max: { updatedAt: true },
-            })
-          : Promise.resolve([]),
-        issueIds.length > 0
-          ? prisma.activity.groupBy({
-              by: ["targetId"],
-              where: {
-                workspaceId: workspace.id,
-                targetType: "ISSUE" as any,
-                targetId: { in: issueIds },
-              },
-              _max: { createdAt: true },
-            })
-          : Promise.resolve([]),
-      ]);
+        const commentMap = new Map(comments.map((row) => [row.issueId, row._max.updatedAt ?? null]));
+        const activityMap = new Map(activities.map((row) => [row.targetId, row._max.createdAt ?? null]));
 
-      const commentMap = new Map(comments.map((row) => [row.issueId, row._max.updatedAt ?? null]));
-      const activityMap = new Map(activities.map((row) => [row.targetId, row._max.createdAt ?? null]));
+        for (const issue of issuePage) {
+          const lastTouch = [issue.updatedAt, commentMap.get(issue.id), activityMap.get(issue.id)]
+            .filter((value): value is Date => value instanceof Date)
+            .sort((a, b) => b.getTime() - a.getTime())[0] ?? issue.updatedAt;
 
-      for (const issue of issues) {
-        const lastTouch = [issue.updatedAt, commentMap.get(issue.id), activityMap.get(issue.id)]
-          .filter((value): value is Date => value instanceof Date)
-          .sort((a, b) => b.getTime() - a.getTime())[0] ?? issue.updatedAt;
+          if (lastTouch > staleCutoff) {
+            continue;
+          }
 
-        if (lastTouch > staleCutoff) {
-          continue;
-        }
+          const suggestion = await upsertSuggestion({
+            workspaceId: workspace.id,
+            type: "STALE_ISSUE",
+            source: "SQL",
+            targetType: "issue",
+            targetId: issue.id,
+            title: "Stale issue detected",
+            message: `This issue has not been updated for at least ${env.AI_STALE_ISSUE_DAYS} days.`,
+            confidence: 0.75,
+            reason: "Issue remained in an active workflow state without recent updates.",
+            payload: {
+              issueId: issue.id,
+              staleDays: env.AI_STALE_ISSUE_DAYS,
+              lastActivityAt: lastTouch,
+            },
+            dedupeKey: `stale:issue:${issue.id}:window:${staleCooldownWindow}`,
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          });
 
-        const suggestion = await upsertSuggestion({
-          workspaceId: workspace.id,
-          type: "STALE_ISSUE",
-          source: "SQL",
-          targetType: "issue",
-          targetId: issue.id,
-          title: "Stale issue detected",
-          message: `This issue has not been updated for at least ${env.AI_STALE_ISSUE_DAYS} days.`,
-          confidence: 0.75,
-          reason: "Issue remained in an active workflow state without recent updates.",
-          payload: {
-            issueId: issue.id,
-            staleDays: env.AI_STALE_ISSUE_DAYS,
-            lastActivityAt: lastTouch,
-          },
-          dedupeKey: `stale:issue:${issue.id}:window:${staleCooldownWindow}`,
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        });
-
-        suggestionsCreated += 1;
-        await notifySuggestionRecipientsIfRelevant({
-          workspaceId: workspace.id,
-          suggestionId: suggestion.id,
-          suggestionType: suggestion.type,
-          title: suggestion.title,
-          message: suggestion.message,
-          targetType: "issue",
-          targetId: issue.id,
-          targetPublicId: issue.internalId ?? issue.id,
-          targetUrl: `/issues/${issue.internalId ?? issue.id}`,
-          recipientUserIds: [...new Set([
-            issue.assigneeId,
-            issue.project.leadId,
-            issue.team.leadId,
-          ].filter(Boolean) as string[])],
-          metadata: {
-            issueId: issue.id,
+          suggestionsCreated += 1;
+          await notifySuggestionRecipientsIfRelevant({
+            workspaceId: workspace.id,
+            suggestionId: suggestion.id,
             suggestionType: suggestion.type,
-          },
-        });
+            title: suggestion.title,
+            message: suggestion.message,
+            targetType: "issue",
+            targetId: issue.id,
+            targetPublicId: issue.internalId ?? issue.id,
+            targetUrl: `/issues/${issue.internalId ?? issue.id}`,
+            recipientUserIds: [...new Set([
+              issue.assigneeId,
+              issue.project.leadId,
+              issue.team.leadId,
+            ].filter(Boolean) as string[])],
+            metadata: {
+              issueId: issue.id,
+              suggestionType: suggestion.type,
+            },
+          });
+        }
       }
     }
 
-    await finishJobRun(run.id, "SUCCEEDED", { suggestionsCreated, workspaceCount: workspaces.length });
+    await finishJobRun(run.id, "SUCCEEDED", { suggestionsCreated, workspaceCount });
   } catch (error) {
     await finishJobRun(run.id, "FAILED", undefined, "STALE_SCAN_FAILED", summarizeError(error));
     throw error;
@@ -1062,11 +1126,10 @@ export async function processWeeklyDigestJob(payload: WeeklyDigestJob, jobMeta?:
 
   try {
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const workspaces = payload.workspaceId
-      ? [{ id: payload.workspaceId }]
-      : await prisma.workspace.findMany({ select: { id: true }, take: 500 });
+    let workspaceCount = 0;
 
-    for (const workspace of workspaces) {
+    for await (const workspace of paginateWorkspaces(payload.workspaceId)) {
+      workspaceCount += 1;
       const digest = await buildWorkspaceDigestPayload(workspace.id);
       await markSuggestionsSuperseded(workspace.id, "workspace", workspace.id, ["WEEKLY_DIGEST"]);
 
@@ -1101,7 +1164,7 @@ export async function processWeeklyDigestJob(payload: WeeklyDigestJob, jobMeta?:
       });
     }
 
-    await finishJobRun(run.id, "SUCCEEDED", { workspaceCount: workspaces.length });
+    await finishJobRun(run.id, "SUCCEEDED", { workspaceCount });
   } catch (error) {
     await finishJobRun(run.id, "FAILED", undefined, "WEEKLY_DIGEST_FAILED", summarizeError(error));
     throw error;

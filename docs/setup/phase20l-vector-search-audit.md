@@ -1,8 +1,9 @@
 # Phase 20L — Vector / Embedding Integration Audit
 
 > **Status: resolved.** Every finding below has been implemented — see
-> [phase20m-vector-search-implementation.md](./phase20m-vector-search-implementation.md).
-> Kept as the record of what was wrong and why, since the reasoning still explains the design.
+> [current-embedding-state.md](./current-embedding-state.md) for what's actually in
+> the database today. Kept as the record of what was wrong and why, since the
+> reasoning still explains the design.
 >
 > Verified against the running dev database and the current code, not inferred from docs.
 > Conclusion up front: the embedding *infrastructure* is sound. Its *integration* is not — embeddings are generated from the AI tool path rather than from the domain services, so most of the workspace was never embedded, and the chat panel's search never touches the vector index at all.

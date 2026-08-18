@@ -8,13 +8,14 @@
     "dev": "tsx watch app/server.ts",
     "build": "tsc",
     "test": "node --import tsx --test modules/**/*.test.ts",
+    "prestart": "npm run build",
     "start": "node dist/app/server.js",
+    "premcp": "npm run build",
     "mcp": "node dist/mcp/server.js",
     "mcp:dev": "tsx mcp/server.ts",
+    "preworker": "npm run build",
     "worker": "node dist/workers/ai-background.worker.js",
-    "scheduler": "node dist/workers/ai-background.scheduler.js",
     "worker:dev": "tsx workers/ai-background.worker.ts",
-    "scheduler:dev": "tsx workers/ai-background.scheduler.ts",
     "backfill:embeddings": "tsx workers/embedding-backfill.ts"
   },
   "repository": {
@@ -45,6 +46,8 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1052.0",
     "@aws-sdk/s3-request-presigner": "^3.1052.0",
+    "@bull-board/api": "^8.6.0",
+    "@bull-board/express": "^8.6.0",
     "@clerk/express": "^2.1.17",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/adapter-pg": "^7.8.0",
@@ -60,7 +63,6 @@
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.1",
     "multer": "^2.2.0",
-    "node-cron": "^4.5.0",
     "pdfkit": "^0.18.0",
     "prisma": "^7.8.0",
     "resend": "^6.12.3",
