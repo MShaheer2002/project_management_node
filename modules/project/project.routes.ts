@@ -4,6 +4,7 @@ import { Router } from "express";
 import { authenticateDual as authenticate } from "../../shared/middleware/authenticate-dual.js";
 import { requireOwnership } from "../../shared/middleware/require-ownership.js";
 import { requireRole } from "../../shared/middleware/require-role.js";
+import { requireScope } from "../../shared/middleware/require-scope.js";
 import { requireWorkspace } from "../../shared/middleware/require-workspace.js";
 import { validate } from "../../shared/middleware/validate.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
@@ -45,6 +46,7 @@ router.post(
   authenticate,
   validate(createProjectSchema),
   requireWorkspace,
+  requireScope("projects:write"),
   requireAdminOrOwnerForInitialDocuments,
   requireRole("MEMBER", "ADMIN", "OWNER"),
   controller.create,
@@ -55,6 +57,7 @@ router.get(
   authenticate,
   validate(listProjectsSchema),
   requireWorkspace,
+  requireScope("projects:read"),
   controller.list,
 );
 
@@ -63,6 +66,7 @@ router.get(
   authenticate,
   validate(projectIdParamsSchema),
   requireWorkspace,
+  requireScope("projects:read"),
   controller.getById,
 );
 
@@ -71,6 +75,7 @@ router.patch(
   authenticate,
   validate(updateProjectSchema),
   requireWorkspace,
+  requireScope("projects:write"),
   requireOwnership(
     (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
     {
@@ -87,6 +92,7 @@ router.delete(
   authenticate,
   validate(projectIdParamsSchema),
   requireWorkspace,
+  requireScope("projects:write"),
   requireOwnership(
     (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
     {
@@ -103,6 +109,7 @@ router.get(
   authenticate,
   validate(listProjectMembersSchema),
   requireWorkspace,
+  requireScope("projects:read"),
   controller.listMembers,
 );
 
@@ -111,6 +118,7 @@ router.post(
   authenticate,
   validate(addProjectMembersSchema),
   requireWorkspace,
+  requireScope("projects:write"),
   requireOwnership(
     (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
     {
@@ -127,6 +135,7 @@ router.delete(
   authenticate,
   validate(removeProjectMemberSchema),
   requireWorkspace,
+  requireScope("projects:write"),
   requireOwnership(
     (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
     {
@@ -146,6 +155,7 @@ router.get(
   authenticate,
   validate(getProjectWorkflowSchema),
   requireWorkspace,
+  requireScope("projects:read"),
   controller.getWorkflow,
 );
 
@@ -154,6 +164,7 @@ router.get(
   authenticate,
   validate(getProjectWorkflowStatusUsageSchema),
   requireWorkspace,
+  requireScope("projects:read"),
   controller.getWorkflowStatusUsage,
 );
 
@@ -162,6 +173,7 @@ router.post(
   authenticate,
   validate(mergeProjectWorkflowStatusSchema),
   requireWorkspace,
+  requireScope("projects:write"),
   requireOwnership(
     (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
     {
@@ -179,6 +191,7 @@ router.put(
   authenticate,
   validate(updateProjectWorkflowStatusesSchema),
   requireWorkspace,
+  requireScope("projects:write"),
   requireOwnership(
     (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
     {
@@ -196,6 +209,7 @@ router.delete(
   authenticate,
   validate(clearProjectWorkflowOverrideSchema),
   requireWorkspace,
+  requireScope("projects:write"),
   requireOwnership(
     (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
     {
@@ -212,6 +226,7 @@ router.put(
   authenticate,
   validate(updateProjectWorkflowAutomationSchema),
   requireWorkspace,
+  requireScope("projects:write"),
   requireOwnership(
     (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
     {

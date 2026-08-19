@@ -1,7 +1,19 @@
 import { z } from "zod/v4";
+import { ALL_SCOPES } from "./ai-connection.scopes.js";
 
-export const aiConnectionClientSchema = z.enum(["codex", "claude_desktop", "cursor", "generic_mcp"]);
+export const aiConnectionClientSchema = z.enum([
+  "codex",
+  "claude_desktop",
+  "claude_code",
+  "chatgpt",
+  "gemini_cli",
+  "windsurf",
+  "vscode",
+  "cursor",
+  "generic_mcp",
+]);
 export const aiConnectionAuthTypeSchema = z.enum(["pat", "oauth"]);
+export const aiConnectionScopeSchema = z.enum(ALL_SCOPES);
 
 export const createAiConnectionSchema = {
   body: z.object({
@@ -17,12 +29,22 @@ export const createAiConnectionSchema = {
       .optional(),
     primaryClient: aiConnectionClientSchema.optional(),
     authType: aiConnectionAuthTypeSchema.optional(),
+    scopes: aiConnectionScopeSchema.array().min(1, "Select at least one scope").optional(),
   }),
 };
 
 export const aiConnectionIdParamSchema = {
   params: z.object({
     id: z.string().uuid("Invalid AI connection ID"),
+  }),
+};
+
+export const updateAiConnectionScopesSchema = {
+  params: z.object({
+    id: z.string().uuid("Invalid AI connection ID"),
+  }),
+  body: z.object({
+    scopes: aiConnectionScopeSchema.array().min(1, "Select at least one scope"),
   }),
 };
 

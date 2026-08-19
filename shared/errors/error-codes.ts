@@ -228,6 +228,9 @@ export const ERROR_CODES = {
   AI_CONNECTION_NOT_FOUND: "AI_CONNECTION_NOT_FOUND",
   AI_CONNECTION_REVOKED: "AI_CONNECTION_REVOKED",
   AI_CONNECTION_EXPIRED: "AI_CONNECTION_EXPIRED",
+
+  // ─── Scopes (Phase 21) ─────────────────────────────────────────────────
+  INSUFFICIENT_SCOPE: "INSUFFICIENT_SCOPE",
 } as const;
 
 // Type-safe error code type (union of all values)

@@ -10,7 +10,7 @@ import {
 test("AI connection catalog exposes PAT as available and OAuth as planned", () => {
   const catalog = listAiConnectionCatalog();
 
-  assert.equal(catalog.clients.length, 4);
+  assert.equal(catalog.clients.length, 9);
   assert.equal(catalog.authMethods.some((method) => method.type === "pat" && method.implemented), true);
   assert.equal(catalog.authMethods.some((method) => method.type === "oauth" && !method.implemented), true);
 });

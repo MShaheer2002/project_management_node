@@ -52,6 +52,16 @@ function toClientEnum(client?: AiConnectionClientInput | null) {
       return AiConnectionClient.CODEX;
     case "claude_desktop":
       return AiConnectionClient.CLAUDE_DESKTOP;
+    case "claude_code":
+      return AiConnectionClient.CLAUDE_CODE;
+    case "chatgpt":
+      return AiConnectionClient.CHATGPT;
+    case "gemini_cli":
+      return AiConnectionClient.GEMINI_CLI;
+    case "windsurf":
+      return AiConnectionClient.WINDSURF;
+    case "vscode":
+      return AiConnectionClient.VSCODE;
     case "cursor":
       return AiConnectionClient.CURSOR;
     case "generic_mcp":
@@ -67,6 +77,16 @@ function toClientValue(client: AiConnectionClient): AiConnectionClientInput {
       return "codex";
     case AiConnectionClient.CLAUDE_DESKTOP:
       return "claude_desktop";
+    case AiConnectionClient.CLAUDE_CODE:
+      return "claude_code";
+    case AiConnectionClient.CHATGPT:
+      return "chatgpt";
+    case AiConnectionClient.GEMINI_CLI:
+      return "gemini_cli";
+    case AiConnectionClient.WINDSURF:
+      return "windsurf";
+    case AiConnectionClient.VSCODE:
+      return "vscode";
     case AiConnectionClient.CURSOR:
       return "cursor";
     case AiConnectionClient.GENERIC_MCP:
@@ -509,6 +529,76 @@ export function buildCursorConfig(token: string) {
   );
 }
 
+export function buildClaudeCodeConfig(token: string) {
+  return `claude mcp add --transport http trussen ${resolveMcpBaseUrl()} --header "Authorization: Bearer ${token}"`;
+}
+
+export function buildChatGptSetup(token: string) {
+  return {
+    endpoint: resolveMcpBaseUrl(),
+    authHeaderName: "Authorization",
+    authHeaderValue: `Bearer ${token}`,
+    steps: [
+      "In ChatGPT, go to Settings > Connectors > Advanced settings and turn on Developer mode.",
+      "Back in Connectors, click Create, name it Trussen, and paste the MCP server URL shown below.",
+      "Set Authentication to Custom Headers and add the header exactly as shown below.",
+      "Save, then enable the Trussen connector in a chat's tools/connectors menu.",
+    ],
+  };
+}
+
+export function buildGeminiCliConfig(token: string) {
+  return JSON.stringify(
+    {
+      mcpServers: {
+        trussen: {
+          httpUrl: resolveMcpBaseUrl(),
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
+export function buildWindsurfConfig(token: string) {
+  return JSON.stringify(
+    {
+      mcpServers: {
+        trussen: {
+          serverUrl: resolveMcpBaseUrl(),
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
+export function buildVsCodeConfig(token: string) {
+  return JSON.stringify(
+    {
+      servers: {
+        trussen: {
+          type: "http",
+          url: resolveMcpBaseUrl(),
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
 export function buildGenericSetup(token: string) {
   return {
     endpoint: resolveMcpBaseUrl(),
@@ -535,6 +625,36 @@ export function buildSetupArtifacts(token: string) {
       format: "json",
       title: "Claude Desktop Setup",
       config: buildClaudeDesktopConfig(token),
+    },
+    claudeCode: {
+      client: "claude_code",
+      format: "shell",
+      title: "Claude Code Setup",
+      config: buildClaudeCodeConfig(token),
+    },
+    chatgpt: {
+      client: "chatgpt",
+      format: "guide",
+      title: "ChatGPT Setup",
+      ...buildChatGptSetup(token),
+    },
+    geminiCli: {
+      client: "gemini_cli",
+      format: "json",
+      title: "Gemini CLI Setup",
+      config: buildGeminiCliConfig(token),
+    },
+    windsurf: {
+      client: "windsurf",
+      format: "json",
+      title: "Windsurf Setup",
+      config: buildWindsurfConfig(token),
+    },
+    vscode: {
+      client: "vscode",
+      format: "json",
+      title: "VS Code Setup",
+      config: buildVsCodeConfig(token),
     },
     cursor: {
       client: "cursor",
@@ -649,6 +769,7 @@ export async function createAiConnection(
 ) {
   const primaryClient = input.primaryClient ?? "generic_mcp";
   const authType = input.authType ?? "pat";
+  const scopes = input.scopes?.length ? input.scopes : ["admin"];
 
   assertAiConnectionAuthMethodSupported(primaryClient, authType);
 
@@ -666,7 +787,7 @@ export async function createAiConnection(
         label: input.name,
         client: toClientEnum(primaryClient),
         authType: AiConnectionAuthType.PAT,
-        scopes: AI_CONNECTION_SCOPES,
+        scopes,
       },
       include: {
         apiKey: {
@@ -1056,6 +1177,17 @@ export async function completeAiConnectionSession(input: {
       ...(input.errorMessage ? { lastErrorMessage: input.errorMessage } : {}),
     },
   }).catch(() => undefined);
+}
+
+export async function updateAiConnectionScopes(workspaceId: string, id: string, scopes: string[]) {
+  await getActiveAiConnectionRecord(workspaceId, id);
+
+  await prisma.aiConnection.update({
+    where: { id },
+    data: { scopes },
+  });
+
+  return toSummary(await getAiConnectionRecord(workspaceId, id));
 }
 
 export async function revokeAiConnection(workspaceId: string, id: string, actorId: string) {

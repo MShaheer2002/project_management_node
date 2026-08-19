@@ -305,6 +305,11 @@ enum DocumentScope {
 enum AiConnectionClient {
   CODEX
   CLAUDE_DESKTOP
+  CLAUDE_CODE
+  CHATGPT
+  GEMINI_CLI
+  WINDSURF
+  VSCODE
   CURSOR
   GENERIC_MCP
 }

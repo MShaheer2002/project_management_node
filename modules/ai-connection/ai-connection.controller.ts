@@ -60,6 +60,19 @@ export const create: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const updateScopes: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await aiConnectionService.updateAiConnectionScopes(
+      req.workspace!.id,
+      req.params.id as string,
+      req.body.scopes,
+    );
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const rotate: RequestHandler = async (req, res, next) => {
   try {
     const result = await aiConnectionService.rotateAiConnection(

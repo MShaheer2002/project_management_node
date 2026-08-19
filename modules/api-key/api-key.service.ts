@@ -250,6 +250,7 @@ export async function authenticateWithApiKey(rawKey: string) {
       workspaceId: true,
       createdById: true,
       expiresAt: true,
+      aiConnection: { select: { scopes: true } },
     },
   });
 
@@ -299,9 +300,13 @@ export async function authenticateWithApiKey(rawKey: string) {
       .catch(() => {}); // Fire-and-forget, non-critical
   }
 
+  const scopes = Array.isArray(apiKey.aiConnection?.scopes)
+    ? apiKey.aiConnection.scopes.filter((value): value is string => typeof value === "string")
+    : null;
+
   return {
     user: creator,
     workspace: { id: apiKey.workspaceId, role: membership.role },
-    apiKey: { id: apiKey.id, name: apiKey.name, workspaceId: apiKey.workspaceId },
+    apiKey: { id: apiKey.id, name: apiKey.name, workspaceId: apiKey.workspaceId, scopes },
   };
 }

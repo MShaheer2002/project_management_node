@@ -4,6 +4,8 @@ import { getToolDefinitions } from "../modules/ai/tools/tool-definitions.js";
 import { executeTool, type ToolExecutorResult as ExecutorResult } from "../modules/ai/tools/tool-executor.js";
 import { logAiError, logAiInfo } from "../modules/ai/ai.observability.js";
 import { recordAiConnectionSessionStep } from "../modules/ai-connection/ai-connection.service.js";
+import type { Scope } from "../modules/ai-connection/ai-connection.scopes.js";
+import { hasScope } from "../shared/utils/scopes.js";
 import type { McpSessionContext } from "./mcp.auth.js";
 
 const issueStatusSchema = z.enum(["backlog", "todo", "in-progress", "review", "done"]);
@@ -27,24 +29,13 @@ type McpToolSpec = {
   name: string;
   inputSchema: ToolInputShape;
   readOnly?: boolean | undefined;
+  scope: Scope;
 };
 
-export const V1_MCP_TOOL_NAMES = [
-  "list_issues",
-  "get_issue",
-  "create_issue",
-  "update_issue_status",
-  "assign_issue",
-  "add_comment",
-  "list_projects",
-  "list_cycles",
-  "list_members",
-  "search_issues",
-] as const;
-
-const MCP_TOOL_SPECS: McpToolSpec[] = [
+export const MCP_TOOL_SPECS: McpToolSpec[] = [
   {
     name: "list_issues",
+    scope: "issues:read",
     inputSchema: {
       status: issueStatusSchema.optional(),
       priority: issuePrioritySchema.optional(),
@@ -58,9 +49,10 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
     },
     readOnly: true,
   },
-  { name: "get_issue", inputSchema: { issueId: z.string().trim().min(1) }, readOnly: true },
+  { name: "get_issue", scope: "issues:read", inputSchema: { issueId: z.string().trim().min(1) }, readOnly: true },
   {
     name: "create_issue",
+    scope: "issues:write",
     inputSchema: {
       title: z.string().trim().min(1).max(500),
       type: issueTypeSchema,
@@ -74,6 +66,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "update_issue",
+    scope: "issues:write",
     inputSchema: {
       issueId: z.string().trim().min(1),
       title: optionalString(),
@@ -86,6 +79,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "update_issue_status",
+    scope: "issues:write",
     inputSchema: {
       issueId: z.string().trim().min(1),
       status: issueStatusSchema,
@@ -93,6 +87,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "assign_issue",
+    scope: "issues:write",
     inputSchema: {
       issueId: z.string().trim().min(1),
       assigneeId: z.string().trim(),
@@ -100,6 +95,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "add_comment",
+    scope: "issues:write",
     inputSchema: {
       issueId: z.string().trim().min(1),
       body: z.string().trim().min(1).max(50000),
@@ -107,6 +103,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "list_projects",
+    scope: "projects:read",
     inputSchema: {
       status: projectStatusSchema.optional(),
       teamId: optionalString(),
@@ -117,6 +114,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "get_project_summary",
+    scope: "projects:read",
     inputSchema: {
       projectId: z.string().trim().min(1),
     },
@@ -124,6 +122,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "create_project",
+    scope: "projects:write",
     inputSchema: {
       name: z.string().trim().min(1).max(255),
       teamId: z.string().trim().min(1),
@@ -132,6 +131,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "update_project",
+    scope: "projects:write",
     inputSchema: {
       projectId: z.string().trim().min(1),
       name: optionalString(),
@@ -139,9 +139,10 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
       status: projectStatusSchema.optional(),
     },
   },
-  { name: "list_teams", inputSchema: { q: optionalString() }, readOnly: true },
+  { name: "list_teams", scope: "teams:read", inputSchema: { q: optionalString() }, readOnly: true },
   {
     name: "create_team",
+    scope: "teams:write",
     inputSchema: {
       name: z.string().trim().min(1).max(255),
       leadId: z.string().trim().min(1),
@@ -153,6 +154,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "update_team",
+    scope: "teams:write",
     inputSchema: {
       teamId: z.string().trim().min(1),
       name: optionalString(),
@@ -164,12 +166,14 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "get_team_workload",
+    scope: "teams:read",
     inputSchema: { teamId: optionalString() },
     readOnly: true,
   },
-  { name: "list_departments", inputSchema: { q: optionalString() }, readOnly: true },
+  { name: "list_departments", scope: "departments:read", inputSchema: { q: optionalString() }, readOnly: true },
   {
     name: "create_department",
+    scope: "departments:write",
     inputSchema: {
       name: z.string().trim().min(1).max(255),
       headId: optionalString(),
@@ -182,6 +186,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "update_department",
+    scope: "departments:write",
     inputSchema: {
       departmentId: z.string().trim().min(1),
       name: optionalString(),
@@ -194,15 +199,17 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "list_cycles",
+    scope: "cycles:read",
     inputSchema: {
       teamId: optionalString(),
       status: cycleStatusSchema.optional(),
     },
     readOnly: true,
   },
-  { name: "list_members", inputSchema: { q: optionalString() }, readOnly: true },
+  { name: "list_members", scope: "members:read", inputSchema: { q: optionalString() }, readOnly: true },
   {
     name: "search_issues",
+    scope: "issues:read",
     inputSchema: {
       query: z.string().trim().min(1),
       limit: limitSchema,
@@ -211,6 +218,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "create_cycle",
+    scope: "cycles:write",
     inputSchema: {
       teamId: z.string().trim().min(1),
       name: z.string().trim().min(1).max(255),
@@ -223,6 +231,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "update_cycle",
+    scope: "cycles:write",
     inputSchema: {
       cycleId: z.string().trim().min(1),
       name: optionalString(),
@@ -235,6 +244,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "get_workspace_analytics",
+    scope: "analytics:read",
     inputSchema: {
       period: analyticsPeriodSchema.optional(),
       from: optionalString(),
@@ -244,6 +254,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "get_project_analytics",
+    scope: "analytics:read",
     inputSchema: {
       projectId: z.string().trim().min(1),
       period: analyticsPeriodSchema.optional(),
@@ -254,6 +265,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "get_team_analytics",
+    scope: "analytics:read",
     inputSchema: {
       teamId: z.string().trim().min(1),
       period: analyticsPeriodSchema.optional(),
@@ -264,6 +276,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "get_member_analytics",
+    scope: "analytics:read",
     inputSchema: {
       memberId: z.string().trim().min(1),
       period: analyticsPeriodSchema.optional(),
@@ -274,6 +287,7 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
   },
   {
     name: "get_cycle_analytics",
+    scope: "analytics:read",
     inputSchema: {
       cycleId: z.string().trim().min(1),
       period: analyticsPeriodSchema.optional(),
@@ -283,10 +297,6 @@ const MCP_TOOL_SPECS: McpToolSpec[] = [
     readOnly: true,
   },
 ];
-
-const ALLOWED_MCP_TOOL_NAME_SET = new Set<string>(V1_MCP_TOOL_NAMES);
-
-export const V1_MCP_TOOL_SPECS = MCP_TOOL_SPECS.filter((spec) => ALLOWED_MCP_TOOL_NAME_SET.has(spec.name));
 
 function summarizeResult(toolName: string, result: ExecutorResult) {
   return JSON.stringify(
@@ -322,7 +332,7 @@ function toStructuredContent(result: ExecutorResult) {
 }
 
 export function registerMcpTools(server: McpServer, session: McpSessionContext) {
-  for (const spec of V1_MCP_TOOL_SPECS) {
+  for (const spec of MCP_TOOL_SPECS) {
     const config = {
       description: toolDescriptions.get(spec.name) ?? `${spec.name} via Trussen`,
       inputSchema: spec.inputSchema,
@@ -333,6 +343,18 @@ export function registerMcpTools(server: McpServer, session: McpSessionContext) 
       spec.name,
       config,
       async (args) => {
+        if (!hasScope(session.scopes, spec.scope)) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Permission denied: this connection does not have the "${spec.scope}" scope required for ${spec.name}.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
         const result = await executeTool(
           spec.name,
           args,

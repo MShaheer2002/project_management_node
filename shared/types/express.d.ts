@@ -48,6 +48,7 @@ declare global {
         id: string; // ApiKey UUID
         name: string; // Human-readable label
         workspaceId: string; // Workspace this key is scoped to
+        scopes: string[] | null; // Linked AiConnection's scopes, if any — null for a bare key with no AI connection
       };
     }
   }

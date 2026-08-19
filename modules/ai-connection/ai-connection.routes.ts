@@ -9,6 +9,7 @@ import {
   aiConnectionIdParamSchema,
   aiConnectionSessionListQuerySchema,
   createAiConnectionSchema,
+  updateAiConnectionScopesSchema,
 } from "./ai-connection.schemas.js";
 
 const router = Router();
@@ -56,6 +57,15 @@ router.post(
   strictRateLimiter,
   validate(createAiConnectionSchema),
   controller.create,
+);
+
+router.patch(
+  "/:id/scopes",
+  authenticate,
+  validate(updateAiConnectionScopesSchema),
+  requireWorkspace,
+  requireRole("ADMIN", "OWNER"),
+  controller.updateScopes,
 );
 
 router.post(
