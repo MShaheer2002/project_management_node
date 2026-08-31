@@ -60,6 +60,19 @@ export const create: RequestHandler = async (req, res, next) => {
   }
 };
 
+export const completeOAuthSetup: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await aiConnectionService.completeOAuthSetup(
+      req.workspace!.id,
+      req.user!.id,
+      req.body,
+    );
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const updateScopes: RequestHandler = async (req, res, next) => {
   try {
     const result = await aiConnectionService.updateAiConnectionScopes(

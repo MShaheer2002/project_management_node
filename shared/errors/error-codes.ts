@@ -231,6 +231,9 @@ export const ERROR_CODES = {
 
   // ─── Scopes (Phase 21) ─────────────────────────────────────────────────
   INSUFFICIENT_SCOPE: "INSUFFICIENT_SCOPE",
+
+  // ─── AI Connection OAuth (Phase 22) ─────────────────────────────────────
+  AI_CONNECTION_OAUTH_SETUP_REQUIRED: "AI_CONNECTION_OAUTH_SETUP_REQUIRED",
 } as const;
 
 // Type-safe error code type (union of all values)

@@ -316,6 +316,7 @@ enum AiConnectionClient {
 
 enum AiConnectionAuthType {
   PAT
+  OAUTH
 }
 
 enum AiConnectionStatus {
@@ -1423,6 +1424,7 @@ model AiConnection {
   workspaceId String
   userId      String
   apiKeyId    String?              @unique
+  oauthClientId String?
   label       String
   client      AiConnectionClient
   authType    AiConnectionAuthType @default(PAT)
@@ -1444,6 +1446,7 @@ model AiConnection {
   apiKey    ApiKey?   @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
   sessions  AiConnectionSession[]
 
+  @@unique([userId, oauthClientId])
   @@index([workspaceId, userId, createdAt])
   @@index([workspaceId, client, status])
 }

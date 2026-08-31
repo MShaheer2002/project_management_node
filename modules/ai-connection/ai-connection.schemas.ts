@@ -54,6 +54,20 @@ export const aiConnectionSessionListQuerySchema = {
   }),
 };
 
+export const completeOAuthSetupSchema = {
+  body: z.object({
+    clientId: z.string().trim().min(1, "Missing OAuth client ID"),
+    name: z
+      .string()
+      .trim()
+      .min(1, "Connection name is required")
+      .max(100, "Connection name must be at most 100 characters"),
+    primaryClient: aiConnectionClientSchema.optional(),
+    scopes: aiConnectionScopeSchema.array().min(1, "Select at least one scope"),
+  }),
+};
+
 export type CreateAiConnectionInput = z.infer<typeof createAiConnectionSchema.body>;
 export type AiConnectionClientInput = z.infer<typeof aiConnectionClientSchema>;
 export type AiConnectionAuthTypeInput = z.infer<typeof aiConnectionAuthTypeSchema>;
+export type CompleteOAuthSetupInput = z.infer<typeof completeOAuthSetupSchema.body>;

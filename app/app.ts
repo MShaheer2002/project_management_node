@@ -23,6 +23,10 @@ import helmet from "helmet";
 
 import swaggerUi from "swagger-ui-express";
 import { clerkMiddleware } from "@clerk/express";
+import {
+  authServerMetadataHandlerClerk,
+  protectedResourceHandlerClerk,
+} from "@clerk/mcp-tools/express";
 
 import { corsConfig } from "../config/cors.js";
 import { requestLogger } from "../shared/middleware/request-logger.js";
@@ -181,6 +185,17 @@ app.use(roadmapRoutes);
 app.use(documentsRoutes);
 app.use("/api-keys", apiKeyRoutes);
 app.use("/ai-connections", aiConnectionRoutes);
+
+// OAuth discovery metadata for the MCP server, hosted entirely by Clerk (the
+// OAuth 2.1 authorization server) — must stay public, no auth middleware.
+// See docs/setup/mcp-oauth-connections-review.md for the full design.
+app.get("/.well-known/oauth-protected-resource", protectedResourceHandlerClerk());
+app.get(
+  "/.well-known/oauth-protected-resource/mcp",
+  protectedResourceHandlerClerk({ scopes_supported: ["email", "profile"] }),
+);
+app.get("/.well-known/oauth-authorization-server", authServerMetadataHandlerClerk);
+
 app.use("/mcp", mcpHttpRoutes);
 app.use("/integrations", integrationRoutes);
 app.use("/webhooks", webhookRoutes);

@@ -8,6 +8,7 @@ import * as controller from "./ai-connection.controller.js";
 import {
   aiConnectionIdParamSchema,
   aiConnectionSessionListQuerySchema,
+  completeOAuthSetupSchema,
   createAiConnectionSchema,
   updateAiConnectionScopesSchema,
 } from "./ai-connection.schemas.js";
@@ -57,6 +58,16 @@ router.post(
   strictRateLimiter,
   validate(createAiConnectionSchema),
   controller.create,
+);
+
+router.post(
+  "/oauth/complete",
+  authenticate,
+  requireWorkspace,
+  requireRole("GUEST", "MEMBER", "ADMIN", "OWNER"),
+  strictRateLimiter,
+  validate(completeOAuthSetupSchema),
+  controller.completeOAuthSetup,
 );
 
 router.patch(

@@ -1,6 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { extractBearerToken, extractMcpAccessToken, extractMcpLogicalSessionHint } from "./mcp.auth.js";
+import {
+  extractBearerToken,
+  extractMcpAccessToken,
+  extractMcpLogicalSessionHint,
+  toClientValue,
+} from "./mcp.auth.js";
+
+test("toClientValue maps every AiConnectionClient enum value", () => {
+  assert.equal(toClientValue("CODEX"), "codex");
+  assert.equal(toClientValue("CLAUDE_DESKTOP"), "claude_desktop");
+  assert.equal(toClientValue("CLAUDE_CODE"), "claude_code");
+  assert.equal(toClientValue("CHATGPT"), "chatgpt");
+  assert.equal(toClientValue("GEMINI_CLI"), "gemini_cli");
+  assert.equal(toClientValue("WINDSURF"), "windsurf");
+  assert.equal(toClientValue("VSCODE"), "vscode");
+  assert.equal(toClientValue("CURSOR"), "cursor");
+  assert.equal(toClientValue("GENERIC_MCP"), "generic_mcp");
+});
+
+test("toClientValue falls back to generic_mcp for unknown or missing input", () => {
+  assert.equal(toClientValue(undefined), "generic_mcp");
+  assert.equal(toClientValue(null), "generic_mcp");
+  assert.equal(toClientValue("SOMETHING_NEW"), "generic_mcp");
+});
 
 test("extractBearerToken returns the bearer token value", () => {
   assert.equal(extractBearerToken("Bearer lin_test_abc123"), "lin_test_abc123");

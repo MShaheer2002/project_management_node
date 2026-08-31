@@ -39,4 +39,12 @@ export const corsConfig: CorsOptions = {
 
   // Headers the client is allowed to send
   allowedHeaders: ["Content-Type", "Authorization", "X-Workspace-Id","ngrok-skip-browser-warning"],
+
+  // Headers the browser is allowed to let JS read from the response.
+  // WWW-Authenticate carries the OAuth discovery URL on a 401 — without this,
+  // browser-based MCP clients (Claude.ai web, etc.) can't see it and can't
+  // discover OAuth at all, even though the header is sent correctly. CLI
+  // clients (curl, Claude Code) aren't affected — CORS is a browser-only
+  // restriction — which is why this didn't show up in local testing.
+  exposedHeaders: ["WWW-Authenticate"],
 };

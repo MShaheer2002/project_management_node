@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod/v4";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { UrlElicitationRequiredError } from "@modelcontextprotocol/sdk/types.js";
 import { getToolDefinitions } from "../modules/ai/tools/tool-definitions.js";
 import { executeTool, type ToolExecutorResult as ExecutorResult } from "../modules/ai/tools/tool-executor.js";
 import { logAiError, logAiInfo } from "../modules/ai/ai.observability.js";
@@ -343,6 +345,17 @@ export function registerMcpTools(server: McpServer, session: McpSessionContext) 
       spec.name,
       config,
       async (args) => {
+        if (session.pendingSetupUrl) {
+          throw new UrlElicitationRequiredError([
+            {
+              mode: "url",
+              message: "Finish connecting this AI client to a Trussen workspace to use its tools.",
+              url: session.pendingSetupUrl,
+              elicitationId: randomUUID(),
+            },
+          ]);
+        }
+
         if (!hasScope(session.scopes, spec.scope)) {
           return {
             content: [

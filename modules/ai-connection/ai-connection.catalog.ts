@@ -154,13 +154,12 @@ const PLATFORM_AUTH_METHODS = [
   {
     type: "oauth" as const,
     label: "OAuth",
-    status: "planned" as const,
-    implemented: false,
-    summary: "Planned for clients that support remote user-authorized Trussen connections.",
+    status: "available" as const,
+    implemented: true,
+    summary: "Sign-in-based connection, no token to copy. Start it from your AI client, not from this form — it will open a Trussen login/consent screen for you.",
     requirements: [
-      "Hosted MCP or AI Gateway endpoint reachable from the client.",
-      "OAuth client registration, redirect URIs, and consent flow design.",
-      "Per-user identity binding so each employee acts as themselves.",
+      "The AI client must support OAuth for remote MCP servers (Claude, Codex, ChatGPT, Cursor, and others documented in the setup guides all do).",
+      "You'll pick a workspace and access scopes the first time you connect, at connect-ai.",
     ],
   },
 ];
@@ -189,9 +188,9 @@ export function assertAiConnectionAuthMethodSupported(
   if (!clientConfig.availableAuthMethods.includes(authType)) {
     if (authType === "oauth") {
       throw new AppError(
-        501,
-        ERROR_CODES.AI_CONNECTION_AUTH_NOT_IMPLEMENTED,
-        "OAuth AI connections are planned but not available in this version.",
+        400,
+        ERROR_CODES.AI_CONNECTION_AUTH_UNSUPPORTED,
+        "OAuth connections aren't created through this form — start the connection from your AI client instead. It will open a Trussen sign-in and consent screen.",
       );
     }
 

@@ -470,7 +470,9 @@ async function getAiConnectionRecord(workspaceId: string, id: string) {
 
 async function getActiveAiConnectionRecord(workspaceId: string, id: string) {
   const connection = await getAiConnectionRecord(workspaceId, id);
-  if (connection.status === AiConnectionStatus.REVOKED || !connection.apiKeyId) {
+  // `status` is the sole source of truth for "revoked" — OAuth connections have
+  // no apiKeyId by design, so checking it here would wrongly flag them as revoked.
+  if (connection.status === AiConnectionStatus.REVOKED) {
     throw new AppError(409, ERROR_CODES.AI_CONNECTION_REVOKED, "This AI connection has already been revoked.");
   }
   return connection;
@@ -892,6 +894,108 @@ export async function rotateAiConnection(workspaceId: string, id: string, actorI
   };
 }
 
+/**
+ * Resolves an OAuth-authenticated MCP session to its Trussen connection.
+ * Returns null only when no connection exists yet for this (userId, clientId)
+ * pair — the caller turns that into a "finish setup" prompt. Throws for every
+ * other non-usable state, mirroring authenticateWithApiKey's defensive checks.
+ */
+export async function resolveOAuthConnection(userId: string, clientId: string) {
+  const connection = await prisma.aiConnection.findFirst({
+    where: { userId, oauthClientId: clientId },
+    select: {
+      id: true,
+      workspaceId: true,
+      userId: true,
+      client: true,
+      status: true,
+      scopes: true,
+      label: true,
+    },
+  });
+
+  if (!connection) {
+    return null;
+  }
+
+  if (connection.status === AiConnectionStatus.REVOKED) {
+    throw new AppError(401, ERROR_CODES.AI_CONNECTION_REVOKED, "This Trussen AI connection has been revoked.");
+  }
+
+  const membership = await prisma.workspaceMembership.findUnique({
+    where: {
+      userId_workspaceId: {
+        userId: connection.userId,
+        workspaceId: connection.workspaceId,
+      },
+    },
+    select: { role: true },
+  });
+
+  if (!membership) {
+    throw new AppError(
+      401,
+      ERROR_CODES.AI_CONNECTION_REVOKED,
+      "This AI connection's owner is no longer a member of the workspace.",
+    );
+  }
+
+  return {
+    id: connection.id,
+    workspaceId: connection.workspaceId,
+    userId: connection.userId,
+    userRole: membership.role,
+    client: connection.client,
+    scopes: connection.scopes,
+    label: connection.label,
+  };
+}
+
+/**
+ * Creates or reactivates the AiConnection an OAuth (Clerk) session resolves
+ * to, keyed by (userId, clientId). Upsert on the compound unique index keeps
+ * a reconnect idempotent — no duplicate rows, session/usage history intact.
+ */
+export async function completeOAuthSetup(
+  workspaceId: string,
+  userId: string,
+  input: {
+    clientId: string;
+    name: string;
+    primaryClient?: AiConnectionClientInput;
+    scopes: string[];
+  },
+) {
+  const primaryClient = input.primaryClient ?? "generic_mcp";
+  const scopes = input.scopes.length ? input.scopes : ["admin"];
+
+  const connection = await prisma.aiConnection.upsert({
+    where: { userId_oauthClientId: { userId, oauthClientId: input.clientId } },
+    create: {
+      workspaceId,
+      userId,
+      oauthClientId: input.clientId,
+      label: input.name,
+      client: toClientEnum(primaryClient),
+      authType: AiConnectionAuthType.OAUTH,
+      status: AiConnectionStatus.ACTIVE,
+      scopes,
+    },
+    update: {
+      workspaceId,
+      label: input.name,
+      client: toClientEnum(primaryClient),
+      status: AiConnectionStatus.ACTIVE,
+      scopes,
+    },
+  });
+
+  const summary = toSummary(await getAiConnectionRecord(workspaceId, connection.id));
+  await persistVerification(connection.id, summary.health);
+
+  return toSummary(await getAiConnectionRecord(workspaceId, connection.id));
+}
+
 export async function getAiConnectionByApiKeyId(apiKeyId: string) {
   return prisma.aiConnection.findFirst({
     where: { apiKeyId },
@@ -909,14 +1013,26 @@ export async function getAiConnectionByApiKeyId(apiKeyId: string) {
   });
 }
 
+export type AiConnectionSessionIdentity =
+  | { type: "pat"; apiKeyId: string }
+  | { type: "oauth"; oauthClientId: string };
+
+export function connectionMatchesIdentity(
+  connection: { apiKeyId: string | null; oauthClientId: string | null },
+  identity: AiConnectionSessionIdentity,
+) {
+  return identity.type === "pat"
+    ? connection.apiKeyId === identity.apiKeyId
+    : connection.oauthClientId === identity.oauthClientId;
+}
+
 export async function startAiConnectionSession(input: {
   connectionId: string;
   workspaceId: string;
   userId: string;
-  apiKeyId: string;
+  identity: AiConnectionSessionIdentity;
   client: AiConnectionClientInput;
   transport: "http" | "stdio";
-  authType?: "pat";
   scopes?: string[];
 }) {
   const connection = await prisma.aiConnection.findFirst({
@@ -927,11 +1043,12 @@ export async function startAiConnectionSession(input: {
     select: {
       id: true,
       apiKeyId: true,
+      oauthClientId: true,
       status: true,
     },
   });
 
-  if (!connection || connection.status === AiConnectionStatus.REVOKED || connection.apiKeyId !== input.apiKeyId) {
+  if (!connection || connection.status === AiConnectionStatus.REVOKED || !connectionMatchesIdentity(connection, input.identity)) {
     throw new AppError(401, ERROR_CODES.AI_CONNECTION_REVOKED, "This Trussen AI connection is no longer active.");
   }
 
@@ -940,9 +1057,9 @@ export async function startAiConnectionSession(input: {
       aiConnectionId: input.connectionId,
       workspaceId: input.workspaceId,
       userId: input.userId,
-      apiKeyId: input.apiKeyId,
+      apiKeyId: input.identity.type === "pat" ? input.identity.apiKeyId : null,
       client: toClientEnum(input.client),
-      authType: AiConnectionAuthType.PAT,
+      authType: input.identity.type === "pat" ? AiConnectionAuthType.PAT : AiConnectionAuthType.OAUTH,
       transport: input.transport,
       scopeSnapshot: input.scopes ?? AI_CONNECTION_SCOPES,
     },
@@ -961,7 +1078,7 @@ export async function resolveAiConnectionHttpSession(input: {
   connectionId: string;
   workspaceId: string;
   userId: string;
-  apiKeyId: string;
+  identity: AiConnectionSessionIdentity;
   client: AiConnectionClientInput;
   scopes?: string[];
   hint?: AiConnectionLogicalSessionHint | null;
@@ -974,11 +1091,12 @@ export async function resolveAiConnectionHttpSession(input: {
     select: {
       id: true,
       apiKeyId: true,
+      oauthClientId: true,
       status: true,
     },
   });
 
-  if (!connection || connection.status === AiConnectionStatus.REVOKED || connection.apiKeyId !== input.apiKeyId) {
+  if (!connection || connection.status === AiConnectionStatus.REVOKED || !connectionMatchesIdentity(connection, input.identity)) {
     throw new AppError(401, ERROR_CODES.AI_CONNECTION_REVOKED, "This Trussen AI connection is no longer active.");
   }
 
@@ -987,11 +1105,12 @@ export async function resolveAiConnectionHttpSession(input: {
   const now = new Date();
   const hint = cleanLogicalSessionHint(input.hint);
   const bootstrapCutoff = new Date(Date.now() - HTTP_BOOTSTRAP_SESSION_TTL_MS);
+  const sessionApiKeyId = input.identity.type === "pat" ? input.identity.apiKeyId : null;
   const commonWhere = {
     aiConnectionId: connection.id,
     workspaceId: input.workspaceId,
     userId: input.userId,
-    apiKeyId: input.apiKeyId,
+    apiKeyId: sessionApiKeyId,
     client: toClientEnum(input.client),
     transport: "http",
     status: AiConnectionSessionStatus.ACTIVE,
@@ -1079,9 +1198,9 @@ export async function resolveAiConnectionHttpSession(input: {
       aiConnectionId: input.connectionId,
       workspaceId: input.workspaceId,
       userId: input.userId,
-      apiKeyId: input.apiKeyId,
+      apiKeyId: sessionApiKeyId,
       client: toClientEnum(input.client),
-      authType: AiConnectionAuthType.PAT,
+      authType: input.identity.type === "pat" ? AiConnectionAuthType.PAT : AiConnectionAuthType.OAUTH,
       transport: "http",
       scopeSnapshot: input.scopes ?? AI_CONNECTION_SCOPES,
       ...(hint.sessionKey ? { sessionKey: hint.sessionKey } : {}),

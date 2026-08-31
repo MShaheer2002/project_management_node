@@ -49,6 +49,7 @@
     "@bull-board/api": "^8.6.0",
     "@bull-board/express": "^8.6.0",
     "@clerk/express": "^2.1.17",
+    "@clerk/mcp-tools": "^0.6.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
