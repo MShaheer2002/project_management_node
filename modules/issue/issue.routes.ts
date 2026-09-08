@@ -15,6 +15,7 @@ import {
   createSubtaskSchema,
   deleteIssueAttachmentParamsSchema,
   deleteSubtaskParamsSchema,
+  getStatusCountsSchema,
   issueIdParamsSchema,
   listIssuesSchema,
   listWatchersSchema,
@@ -33,7 +34,7 @@ router.post("/", authenticate, validate(createIssueSchema), requireWorkspace, re
 router.post("/assignment-eligibility", authenticate, validate(checkAssignmentEligibilitySchema), requireWorkspace, requireScope("issues:write"), requireRole("MEMBER", "ADMIN", "OWNER"), controller.checkAssignmentEligibility);
 router.get("/", authenticate, validate(listIssuesSchema), requireWorkspace, requireScope("issues:read"), controller.list);
 // Must be registered before "/:id" — otherwise Express would match "status-counts" as an :id.
-router.get("/status-counts", authenticate, requireWorkspace, requireScope("issues:read"), controller.getStatusCounts);
+router.get("/status-counts", authenticate, validate(getStatusCountsSchema), requireWorkspace, requireScope("issues:read"), controller.getStatusCounts);
 router.get("/:id", authenticate, validate(issueIdParamsSchema), requireWorkspace, requireScope("issues:read"), controller.getById);
 router.patch("/:id", authenticate, validate(updateIssueSchema), requireWorkspace, requireScope("issues:write"), requireRole("MEMBER", "ADMIN", "OWNER"), controller.update);
 router.delete("/:id", authenticate, validate(issueIdParamsSchema), requireWorkspace, requireScope("issues:write"), requireRole("ADMIN", "OWNER"), controller.remove);

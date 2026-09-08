@@ -23,6 +23,7 @@ export const list: RequestHandler = async (req, res, next) => {
     const result = await departmentService.listDepartments(
       req.workspace!.id,
       req.workspace!.role,
+      req.user!.id,
       (req.validated?.query ?? req.query) as ListDepartmentsQuery,
     );
     sendList(res, result.items, result.meta);
@@ -36,6 +37,7 @@ export const getById: RequestHandler = async (req, res, next) => {
     const department = await departmentService.getDepartmentById(
       req.workspace!.id,
       req.workspace!.role,
+      req.user!.id,
       req.params.id as string,
     );
     sendSuccess(res, 200, department);
@@ -71,6 +73,7 @@ export const listMembers: RequestHandler = async (req, res, next) => {
     const result = await departmentMembershipService.listDepartmentMembers(
       req.workspace!.id,
       req.workspace!.role,
+      req.user!.id,
       req.params.id as string,
       (req.validated?.query ?? req.query) as ListDepartmentMembersQuery,
     );

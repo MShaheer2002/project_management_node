@@ -2132,7 +2132,7 @@ async function executeToolLegacy(
           },
           ctx,
           async () => {
-            const updated = await updateTeam(ctx.workspaceId, teamId, {
+            const updated = await updateTeam(ctx.workspaceId, workspaceRole(ctx), teamId, {
               ...(args.name ? { name: str(args.name) } : {}),
               ...(args.leadId ? { leadId: resolveUserId(args.leadId, ctx)! } : {}),
               ...(args.departmentId !== undefined ? { departmentId: str(args.departmentId) || null } : {}),
@@ -2366,7 +2366,7 @@ async function executeToolLegacy(
       }
 
       case "list_departments": {
-        const result = await listDepartments(ctx.workspaceId, workspaceRole(ctx), {
+        const result = await listDepartments(ctx.workspaceId, workspaceRole(ctx), ctx.userId, {
           ...(args.q ? { q: str(args.q) } : {}),
           limit: Math.min(num(args.limit, 20), 50),
           view: "compact",
@@ -2378,7 +2378,7 @@ async function executeToolLegacy(
         const departmentId = str(args.departmentId);
         if (!departmentId) return { success: false, data: null, error: "departmentId is required" };
 
-        const department = await getDepartmentById(ctx.workspaceId, workspaceRole(ctx), departmentId);
+        const department = await getDepartmentById(ctx.workspaceId, workspaceRole(ctx), ctx.userId, departmentId);
         return { success: true, data: department };
       }
 
@@ -2537,7 +2537,7 @@ async function executeToolLegacy(
       case "list_department_members": {
         const departmentId = str(args.departmentId);
         if (!departmentId) return { success: false, data: null, error: "departmentId is required" };
-        const result = await listDepartmentMembers(ctx.workspaceId, workspaceRole(ctx), departmentId, {
+        const result = await listDepartmentMembers(ctx.workspaceId, workspaceRole(ctx), ctx.userId, departmentId, {
           limit: Math.min(num(args.limit, 50), 100),
           view: "compact",
         });

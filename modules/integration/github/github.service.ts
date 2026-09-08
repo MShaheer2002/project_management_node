@@ -363,7 +363,6 @@ export async function handleGitHubPullRequest(workspaceId: string, payload: any)
       where: { id: issueId, workspaceId },
       select: {
         id: true,
-        internalId: true,
         title: true,
         status: true,
         assigneeId: true,
@@ -377,7 +376,7 @@ export async function handleGitHubPullRequest(workspaceId: string, payload: any)
     if (!issue) continue;
 
     const automationTargets = await getGithubAutomationTargets(workspaceId, issue.projectId);
-    const issueRouteId = issue.internalId ?? issue.id;
+    const issueRouteId = issue.id;
 
     if (action === "opened" || action === "reopened") {
       // Log activity
@@ -608,12 +607,12 @@ export async function handleGitHubPullRequestReview(workspaceId: string, payload
   for (const issueId of allRefs) {
     const issue = await prisma.issue.findFirst({
       where: { id: issueId, workspaceId },
-      select: { id: true, internalId: true, title: true, assigneeId: true, creatorId: true },
+      select: { id: true, title: true, assigneeId: true, creatorId: true },
     });
 
     if (!issue) continue;
 
-    const issueRouteId = issue.internalId ?? issue.id;
+    const issueRouteId = issue.id;
 
     await logActivity({
       workspaceId,

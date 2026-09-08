@@ -210,7 +210,7 @@ async function emitCycleEvent(workspaceId: string, type: string, payload: Record
 function mapIssueSummary(item: any) {
   return {
     id: item.id,
-    publicId: item.internalId,
+    publicId: item.id,
     title: item.title,
     status: issueStatusFromDb[item.status] ?? "backlog",
     priority: issuePriorityFromDb[item.priority] ?? "medium",
@@ -790,7 +790,7 @@ export async function carryOverCycle(workspaceId: string, cycleId: string, userI
 
   const cycleIssues = await prisma.issue.findMany({
       where: { workspaceId, cycleId },
-    select: { id: true, assigneeId: true, title: true, internalId: true, status: true, projectId: true },
+    select: { id: true, assigneeId: true, title: true, status: true, projectId: true },
   });
   const workflowByProject = await getEffectiveWorkflowMap(workspaceId, cycleIssues.map((issue) => issue.projectId));
   const carryOverKeysForProject = createStatusKeyResolver(workflowByProject, getCarryOverStatusKeys);
@@ -839,18 +839,18 @@ export async function carryOverCycle(workspaceId: string, cycleId: string, userI
     type: "UPDATE",
     category: "update",
     title: "Issue moved between cycles",
-    message: `Issue ${issue.internalId} was moved during cycle carry-over`,
-    target: { type: "issue", id: issue.id, publicId: issue.internalId, url: `/issues/${issue.internalId}` },
+    message: `Issue ${issue.id} was moved during cycle carry-over`,
+    target: { type: "issue", id: issue.id, publicId: issue.id, url: `/issues/${issue.id}` },
     metadata: {
       issueId: issue.id,
-      issuePublicId: issue.internalId,
+      issuePublicId: issue.id,
       field: "cycleId",
       from: cycleId,
       to: targetCycleId,
       workspaceId,
       entityId: issue.id,
       entityTitle: issue.title,
-      url: `/issues/${issue.internalId}`,
+      url: `/issues/${issue.id}`,
     },
     eventId: `cycle-carry-over:${cycleId}:${issue.id}`,
   })));
@@ -900,7 +900,7 @@ export async function listCycleIssues(
       ? {
           OR: [
             { title: { contains: query.q, mode: "insensitive" } },
-            { internalId: { contains: query.q, mode: "insensitive" } },
+            { id: { contains: query.q, mode: "insensitive" } },
           ],
         }
       : {}),
@@ -994,7 +994,7 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
   const [issue, cycle] = await Promise.all([
     prisma.issue.findFirst({
       where: { id: issueId, workspaceId },
-      select: { id: true, internalId: true, teamId: true, assigneeId: true, title: true, creatorId: true, status: true, projectId: true },
+      select: { id: true, teamId: true, assigneeId: true, title: true, creatorId: true, status: true, projectId: true },
     }),
     assertCycleInWorkspace(workspaceId, input.cycleId),
   ]);
@@ -1024,10 +1024,10 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
     type: "ISSUE_ADDED_TO_CYCLE",
     targetType: "ISSUE",
     targetId: issue.id,
-    message: `Issue ${issue.internalId} assigned to cycle ${cycle.name}`,
+    message: `Issue ${issue.id} assigned to cycle ${cycle.name}`,
     metadata: {
       issueId: issue.id,
-      issuePublicId: issue.internalId,
+      issuePublicId: issue.id,
       cycleId: cycle.id,
       cycleName: cycle.name,
       teamId: cycle.teamId,
@@ -1047,18 +1047,18 @@ export async function assignIssueToCycle(workspaceId: string, issueRouteId: stri
     type: "UPDATE",
     category: "update",
     title: "Issue planned into cycle",
-    message: `Issue ${issue.internalId} was planned into cycle ${cycle.name}`,
-    target: { type: "issue", id: issue.id, publicId: issue.internalId, url: `/issues/${issue.internalId}` },
+    message: `Issue ${issue.id} was planned into cycle ${cycle.name}`,
+    target: { type: "issue", id: issue.id, publicId: issue.id, url: `/issues/${issue.id}` },
     metadata: {
       issueId: issue.id,
-      issuePublicId: issue.internalId,
+      issuePublicId: issue.id,
       field: "cycleId",
       from: null,
       to: cycle.id,
       workspaceId,
       entityId: issue.id,
       entityTitle: issue.title,
-      url: `/issues/${issue.internalId}`,
+      url: `/issues/${issue.id}`,
     },
     eventId: `issue-cycle-assigned:${issue.id}:${cycle.id}:${recipientUserId}`,
   })));

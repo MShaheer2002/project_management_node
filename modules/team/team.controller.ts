@@ -48,6 +48,7 @@ export const update: RequestHandler = async (req, res, next) => {
   try {
     const team = await teamService.updateTeam(
       req.workspace!.id,
+      req.workspace!.role,
       req.params.id as string,
       req.body,
     );

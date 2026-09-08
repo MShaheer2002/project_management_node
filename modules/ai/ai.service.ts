@@ -15,6 +15,7 @@
  */
 
 import { callAI, createEmbedding } from "./ai.provider.js";
+import { AiCallAbortedError } from "./ai.tool-runtime.js";
 import { assertAiAccess } from "./ai.access.js";
 import { runRuleBasedDetection } from "./ai.rules.js";
 import { buildIssueGenerationContext, resolveMentions } from "./ai.context.js";
@@ -577,6 +578,7 @@ export async function generateIssue(
     modelOverride?: string | undefined;
     resolvedAssigneeId?: string | undefined;
     resolvedProjectId?: string | undefined;
+    signal?: AbortSignal | undefined;
   },
 ): Promise<GenerateIssueResult> {
   const startedAt = Date.now();
@@ -653,6 +655,7 @@ export async function generateIssue(
   const callOptions: Parameters<typeof callAI>[1] = {
     taskType: "generate_issue",
     temperature: 0.3,
+    signal: options?.signal,
   };
   // Only allow whitelisted model IDs to prevent privilege escalation
   if (options?.modelOverride) {
@@ -675,6 +678,13 @@ export async function generateIssue(
       callOptions,
     );
   } catch (error) {
+    // A user-initiated cancel (Escape while generating) is not a failure —
+    // don't record it as one, and skip straight to rethrowing so the caller
+    // (which already knows the client is gone) doesn't bother billing/logging it.
+    if (error instanceof AiCallAbortedError) {
+      throw error;
+    }
+
     logAiError("issue_generation_failed", {
       workspaceId,
       userId: options?.userId,

@@ -391,7 +391,6 @@ export async function getWorkspaceStatusUsage(workspaceId: string, statusKey: st
       take: take + 1,
       select: {
         id: true,
-        internalId: true,
         title: true,
         project: {
           select: {
@@ -411,7 +410,7 @@ export async function getWorkspaceStatusUsage(workspaceId: string, statusKey: st
     issueCount,
     truncated,
     issues: issues.slice(0, take).map((issue) => ({
-      id: issue.internalId,
+      id: issue.id,
       publicId: issue.id,
       title: issue.title,
       project: issue.project

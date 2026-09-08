@@ -19,7 +19,6 @@ import { getStatusRecord, normalizeWorkspaceStatuses } from "../../shared/workfl
 
 const ISSUE_SELECT = {
   id: true,
-  internalId: true,
   title: true,
   status: true,
   priority: true,
@@ -418,7 +417,7 @@ export async function getWorkspaceAnalytics(workspaceId: string, query: Analytic
     .filter((issue) => isBottleneckStatus(issue.status))
     .map((issue) => ({
       issueId: issue.id,
-      publicId: issue.internalId,
+      publicId: issue.id,
       title: issue.title,
       status: issue.status,
       stuckDays: Math.max(0, Math.floor((now.getTime() - issue.updatedAt.getTime()) / (24 * 60 * 60 * 1000))),

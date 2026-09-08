@@ -603,7 +603,7 @@ function runHybridDepartmentSearch(query: string, ctx: RegistryContext, limit: n
     query,
     ctx,
     limit,
-    (ids) => listDepartments(ctx.workspaceId, ctx.userRole as WorkspaceRole, { ids, limit } as never),
+    (ids) => listDepartments(ctx.workspaceId, ctx.userRole as WorkspaceRole, ctx.userId, { ids, limit } as never),
   );
 }
 

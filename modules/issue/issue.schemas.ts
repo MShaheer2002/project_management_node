@@ -76,6 +76,12 @@ export const listIssuesSchema = {
   }),
 };
 
+export const getStatusCountsSchema = {
+  query: z.object({
+    projectId: z.string().uuid().optional(),
+  }),
+};
+
 export const checkAssignmentEligibilitySchema = {
   body: z.object({
     projectId: z.string().uuid(),
@@ -246,4 +252,5 @@ export const updateIntegrationRefSchema = {
 export type CreateIssueInput = z.infer<typeof createIssueSchema.body>;
 export type CheckAssignmentEligibilityInput = z.infer<typeof checkAssignmentEligibilitySchema.body>;
 export type ListIssuesQuery = z.infer<typeof listIssuesSchema.query>;
+export type GetStatusCountsQuery = z.infer<typeof getStatusCountsSchema.query>;
 export type UpdateIssueInput = z.infer<typeof updateIssueSchema.body>;

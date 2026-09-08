@@ -15,7 +15,7 @@ import { Router } from "express";
 import { authenticate } from "../../shared/middleware/authenticate.js";
 import { requireWorkspace } from "../../shared/middleware/require-workspace.js";
 import { sendSuccess } from "../../shared/utils/api-response.js";
-import { listIntegrations, disconnectProvider } from "./integration.service.js";
+import { listIntegrations, disconnectProvider, getIntegrationConnectionStatus } from "./integration.service.js";
 import { requireRole } from "../../shared/middleware/require-role.js";
 
 const router = Router();
@@ -26,6 +26,19 @@ router.get("/", authenticate, requireWorkspace, requireRole("ADMIN", "OWNER"), a
   try {
     const integrations = await listIntegrations(req.workspace!.id);
     sendSuccess(res, 200, integrations);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Shared: Connection status (any workspace member) ────────────────────────
+// No config/connectedBy details — safe for members who can't manage
+// integrations but still need to know e.g. whether Figma previews should show.
+
+router.get("/status", authenticate, requireWorkspace, async (req, res, next) => {
+  try {
+    const status = await getIntegrationConnectionStatus(req.workspace!.id);
+    sendSuccess(res, 200, status);
   } catch (error) {
     next(error);
   }

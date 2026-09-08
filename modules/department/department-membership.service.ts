@@ -31,13 +31,16 @@ function getMemberOrderBy(
 async function assertDepartmentAccess(
   workspaceId: string,
   workspaceRole: WorkspaceRole,
+  userId: string,
   departmentId: string,
 ) {
   const department = await prisma.department.findFirst({
     where: {
       id: departmentId,
       workspaceId,
-      ...(workspaceRole === "GUEST" ? { visibility: "PUBLIC" } : {}),
+      ...(workspaceRole === "OWNER" || workspaceRole === "ADMIN"
+        ? {}
+        : { OR: [{ visibility: "PUBLIC" }, { headId: userId }, { memberships: { some: { userId } } }] }),
     },
     select: { id: true, name: true },
   });
@@ -93,10 +96,11 @@ function buildDepartmentMemberWhere(
 export async function listDepartmentMembers(
   workspaceId: string,
   workspaceRole: WorkspaceRole,
+  userId: string,
   departmentId: string,
   query: ListDepartmentMembersQuery,
 ) {
-  const department = await assertDepartmentAccess(workspaceId, workspaceRole, departmentId);
+  const department = await assertDepartmentAccess(workspaceId, workspaceRole, userId, departmentId);
 
   const limit = clampListLimit(query.limit);
   const where = buildDepartmentMemberWhere(workspaceId, departmentId, query);
@@ -135,10 +139,7 @@ export async function listDepartmentMembers(
             },
             teamMemberships: {
               where: {
-                team: {
-                  workspaceId,
-                  departmentId,
-                },
+                team: { workspaceId },
               },
               orderBy: { joinedAt: "asc" },
               take: 1,
@@ -275,6 +276,19 @@ export async function removeDepartmentMember(workspaceId: string, departmentId: 
 
     if (!membership) {
       throw new AppError(404, ERROR_CODES.MEMBER_NOT_IN_DEPARTMENT, "Member is not in this department");
+    }
+
+    const targetMembership = await tx.workspaceMembership.findUnique({
+      where: { userId_workspaceId: { userId, workspaceId } },
+      select: { role: true },
+    });
+
+    if (targetMembership?.role === "ADMIN" || targetMembership?.role === "OWNER") {
+      throw new AppError(
+        403,
+        ERROR_CODES.CANNOT_REMOVE_WORKSPACE_ADMIN,
+        "A workspace admin or owner can't be removed from a department. Change their workspace role first.",
+      );
     }
 
     if (department.headId === userId) {

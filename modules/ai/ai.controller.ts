@@ -37,6 +37,13 @@ import type {
  * AI never writes to DB. The user reviews and submits via the normal issue creation flow.
  */
 export const generateIssue: RequestHandler = async (req, res, next) => {
+  // Same cancellation contract as chat: aborting the client request closes
+  // the connection, Express emits "close", and this signal propagates into
+  // the in-flight provider call — without it, cancelling on the client would
+  // still let the AI call (and its billing) run to completion server-side.
+  const abortController = new AbortController();
+  req.on("close", () => abortController.abort());
+
   try {
     const { prompt, resolvedAssigneeId, resolvedProjectId } = req.body as GenerateIssueInput;
     const workspaceId = req.workspace!.id;
@@ -45,10 +52,13 @@ export const generateIssue: RequestHandler = async (req, res, next) => {
       userId: req.user!.id,
       resolvedAssigneeId,
       resolvedProjectId,
+      signal: abortController.signal,
     });
 
     sendSuccess(res, 200, result);
   } catch (error) {
+    // Client is already gone — nothing to respond to, and no error to report.
+    if (abortController.signal.aborted) return;
     next(error);
   }
 };

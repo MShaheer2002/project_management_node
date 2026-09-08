@@ -19,6 +19,7 @@
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { env } from "../../config/env.js";
+import { AiCallAbortedError } from "./ai.tool-runtime.js";
 
 // ─── Available Models ───────────────────────────────────────────────────────
 
@@ -165,6 +166,12 @@ export interface AiCallOptions {
   maxTokens?: number;
   /** Temperature (0-1, lower = more deterministic) */
   temperature?: number;
+  /**
+   * Caller-provided abort signal (e.g. tied to the HTTP request's "close"
+   * event) — aborting it cancels the in-flight provider call instead of
+   * letting it run to completion (and get billed) after the caller left.
+   */
+  signal?: AbortSignal | undefined;
 }
 
 export interface AiCallResult {
@@ -195,9 +202,27 @@ async function callModel(
   messages: AiMessage[],
   maxTokens: number,
   temperature: number,
+  callerSignal?: AbortSignal,
 ): Promise<{ response: Response } | { rateLimited: true; retryAfter: number }> {
+  if (callerSignal?.aborted) {
+    throw new AiCallAbortedError();
+  }
+
+  // Two abort sources share one signal: our own timeout, and the caller's
+  // cancel request. `abortedByCaller` distinguishes them so a user-initiated
+  // cancel is not reported back as a provider timeout.
   const controller = new AbortController();
+  let abortedByCaller = false;
+  const onCallerAbort = () => {
+    abortedByCaller = true;
+    controller.abort();
+  };
+  callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
   const timeoutId = setTimeout(() => controller.abort(), 60_000);
+  const cleanup = () => {
+    clearTimeout(timeoutId);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
+  };
 
   let response: Response;
   try {
@@ -218,13 +243,13 @@ async function callModel(
       signal: controller.signal,
     });
   } catch (error) {
-    clearTimeout(timeoutId);
     if (error instanceof DOMException && error.name === "AbortError") {
+      if (abortedByCaller) throw new AiCallAbortedError();
       throw new AppError(504, ERROR_CODES.AI_PROVIDER_ERROR, "AI request timed out. Please try again.");
     }
     throw new AppError(502, ERROR_CODES.AI_PROVIDER_ERROR, "Failed to reach AI provider");
   } finally {
-    clearTimeout(timeoutId);
+    cleanup();
   }
 
   if (response.status === 429) {
@@ -254,6 +279,10 @@ export async function callAI(
     throw new AppError(500, ERROR_CODES.AI_NOT_CONFIGURED, "AI is not configured — OPENROUTER_API_KEY is missing");
   }
 
+  if (options.signal?.aborted) {
+    throw new AiCallAbortedError();
+  }
+
   const primaryModel = options.model ?? DEFAULT_AI_MODEL;
   const maxTokens = options.maxTokens ?? TASK_MAX_TOKENS[options.taskType ?? ""] ?? 1024;
   const temperature = Math.max(0, Math.min(1, options.temperature ?? 0.3));
@@ -264,7 +293,7 @@ export async function callAI(
   let lastError: AppError | null = null;
 
   for (const model of modelsToTry) {
-    const result = await callModel(model, messages, maxTokens, temperature);
+    const result = await callModel(model, messages, maxTokens, temperature, options.signal);
 
     if ("rateLimited" in result) {
       lastError = new AppError(429, ERROR_CODES.AI_RATE_LIMITED, `Model ${model} is temporarily rate-limited`);

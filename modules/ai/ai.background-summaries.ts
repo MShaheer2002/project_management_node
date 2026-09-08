@@ -72,7 +72,6 @@ export async function buildWorkspaceDigestPayload(workspaceId: string) {
           select: {
             id: true,
             title: true,
-            internalId: true,
             status: true,
           },
         },
@@ -96,7 +95,7 @@ export async function buildWorkspaceDigestPayload(workspaceId: string) {
     const current = blockerCount.get(row.issueId) ?? {
       issueId: row.issue.id,
       title: row.issue.title,
-      publicId: row.issue.internalId,
+      publicId: row.issue.id,
       status: row.issue.status,
       count: 0,
     };

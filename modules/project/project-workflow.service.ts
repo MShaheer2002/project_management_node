@@ -180,7 +180,7 @@ export async function getProjectWorkflowStatusUsage(
       where: { projectId, status: statusKey },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       take: take + 1,
-      select: { id: true, internalId: true, title: true },
+      select: { id: true, title: true },
     }),
   ]);
 
@@ -191,7 +191,7 @@ export async function getProjectWorkflowStatusUsage(
     label: status.label,
     issueCount,
     truncated,
-    issues: issues.slice(0, take).map((issue) => ({ id: issue.internalId, publicId: issue.id, title: issue.title })),
+    issues: issues.slice(0, take).map((issue) => ({ id: issue.id, publicId: issue.id, title: issue.title })),
   };
 }
 

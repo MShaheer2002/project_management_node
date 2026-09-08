@@ -683,7 +683,6 @@ export async function processIssueIntelligenceJob(payload: IssueIntelligenceJob,
       where: { id: payload.issueId, workspaceId: payload.workspaceId },
       select: {
         id: true,
-        internalId: true,
         title: true,
         description: true,
         priority: true,
@@ -760,8 +759,8 @@ export async function processIssueIntelligenceJob(payload: IssueIntelligenceJob,
             message: suggestion!.message,
             targetType: "issue",
             targetId: issue.id,
-            targetPublicId: issue.internalId ?? issue.id,
-            targetUrl: `/issues/${issue.internalId ?? issue.id}`,
+            targetPublicId: issue.id,
+            targetUrl: `/issues/${issue.id}`,
             recipientUserIds: recipients,
             metadata: {
               issueId: issue.id,
@@ -894,7 +893,7 @@ async function syncEntityAliasesForIndexedEntity(payload: EmbeddingJob, label: s
 async function runIssueDuplicateDetection(payload: EmbeddingJob): Promise<boolean> {
   const issue = await prisma.issue.findFirst({
     where: { id: payload.entityId, workspaceId: payload.workspaceId },
-    select: { id: true, internalId: true, title: true, description: true, updatedAt: true },
+    select: { id: true, title: true, description: true, updatedAt: true },
   });
   if (!issue) return false;
 
@@ -919,8 +918,8 @@ async function runIssueDuplicateDetection(payload: EmbeddingJob): Promise<boolea
     message: suggestion.message,
     targetType: "issue",
     targetId: issue.id,
-    targetPublicId: issue.internalId ?? issue.id,
-    targetUrl: `/issues/${issue.internalId ?? issue.id}`,
+    targetPublicId: issue.id,
+    targetUrl: `/issues/${issue.id}`,
     recipientUserIds: recipients,
     metadata: { issueId: issue.id, suggestionType: suggestion.type, strategy: "embedding" },
   });
@@ -968,7 +967,6 @@ async function* paginateWorkspaces(workspaceId?: string): AsyncGenerator<{ id: s
  */
 type StaleIssueCandidate = {
   id: string;
-  internalId: string | null;
   title: string;
   assigneeId: string | null;
   updatedAt: Date;
@@ -987,7 +985,6 @@ async function* paginateStaleIssueCandidates(workspaceId: string): AsyncGenerato
       },
       select: {
         id: true,
-        internalId: true,
         title: true,
         assigneeId: true,
         updatedAt: true,
@@ -1092,8 +1089,8 @@ export async function processStaleScanJob(payload: StaleScanJob, jobMeta?: { job
             message: suggestion.message,
             targetType: "issue",
             targetId: issue.id,
-            targetPublicId: issue.internalId ?? issue.id,
-            targetUrl: `/issues/${issue.internalId ?? issue.id}`,
+            targetPublicId: issue.id,
+            targetUrl: `/issues/${issue.id}`,
             recipientUserIds: [...new Set([
               issue.assigneeId,
               issue.project.leadId,

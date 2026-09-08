@@ -190,7 +190,7 @@ export async function addTeamMembers(workspaceId: string, teamId: string, actorU
   const added = await prisma.$transaction(async (tx) => {
     const team = await tx.team.findFirst({
       where: { id: teamId, workspaceId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, departmentId: true },
     });
 
     if (!team) {
@@ -235,6 +235,18 @@ export async function addTeamMembers(workspaceId: string, teamId: string, actorU
         teamId,
       })),
     });
+
+    // A team's members are department members when the team belongs to one —
+    // keep that true for members added after the team was already attached.
+    if (team.departmentId) {
+      await tx.departmentMembership.createMany({
+        data: userIds.map((userId) => ({
+          userId,
+          departmentId: team.departmentId as string,
+        })),
+        skipDuplicates: true,
+      });
+    }
 
     return { userIds, teamId, teamName: team.name };
   });

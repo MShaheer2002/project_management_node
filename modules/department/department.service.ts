@@ -257,11 +257,16 @@ function buildDepartmentAnalytics(
 function buildDepartmentWhere(
   workspaceId: string,
   workspaceRole: WorkspaceRole,
+  userId: string,
   query: ListDepartmentsFilters,
 ): Prisma.DepartmentWhereInput {
+  const visibilityFilter: Prisma.DepartmentWhereInput[] =
+    workspaceRole === "OWNER" || workspaceRole === "ADMIN"
+      ? []
+      : [{ OR: [{ visibility: "PUBLIC" }, { headId: userId }, { memberships: { some: { userId } } }] }];
+
   return {
     workspaceId,
-    ...(workspaceRole === "GUEST" ? { visibility: "PUBLIC" } : {}),
     ...(query.ids ? { id: { in: [...query.ids] } } : {}),
     ...(query.visibility ? { visibility: query.visibility } : {}),
     ...(query.headId ? { headId: query.headId } : {}),
@@ -273,6 +278,7 @@ function buildDepartmentWhere(
           ],
         }
       : {}),
+    ...(visibilityFilter.length ? { AND: visibilityFilter } : {}),
   };
 }
 
@@ -293,13 +299,16 @@ function getDepartmentOrderBy(sort: ListDepartmentsQuery["sort"]): Prisma.Depart
 async function assertDepartmentAccessible(
   workspaceId: string,
   workspaceRole: WorkspaceRole,
+  userId: string,
   departmentId: string,
 ) {
   const department = await prisma.department.findFirst({
     where: {
       id: departmentId,
       workspaceId,
-      ...(workspaceRole === "GUEST" ? { visibility: "PUBLIC" } : {}),
+      ...(workspaceRole === "OWNER" || workspaceRole === "ADMIN"
+        ? {}
+        : { OR: [{ visibility: "PUBLIC" }, { headId: userId }, { memberships: { some: { userId } } }] }),
     },
     select: departmentSummarySelect,
   });
@@ -444,7 +453,9 @@ export async function createDepartment(workspaceId: string, input: CreateDepartm
     triggeredByUserId: undefined,
   });
 
-  return getDepartmentById(workspaceId, "MEMBER", department.id);
+  // Create is already gated to ADMIN/OWNER at the route — "OWNER" here just
+  // bypasses the visibility check to fetch the just-created record back.
+  return getDepartmentById(workspaceId, "OWNER", "", department.id);
 }
 
 /**
@@ -453,9 +464,14 @@ export async function createDepartment(workspaceId: string, input: CreateDepartm
  */
 type ListDepartmentsFilters = ListDepartmentsQuery & { ids?: readonly string[] };
 
-export async function listDepartments(workspaceId: string, workspaceRole: WorkspaceRole, query: ListDepartmentsFilters) {
+export async function listDepartments(
+  workspaceId: string,
+  workspaceRole: WorkspaceRole,
+  userId: string,
+  query: ListDepartmentsFilters,
+) {
   const limit = clampListLimit(query.limit);
-  const where = buildDepartmentWhere(workspaceId, workspaceRole, query);
+  const where = buildDepartmentWhere(workspaceId, workspaceRole, userId, query);
   const orderBy = getDepartmentOrderBy(query.sort);
 
   const [total, records] = await Promise.all([
@@ -486,9 +502,10 @@ export async function listDepartments(workspaceId: string, workspaceRole: Worksp
 export async function getDepartmentById(
   workspaceId: string,
   workspaceRole: WorkspaceRole,
+  userId: string,
   departmentId: string,
 ) {
-  const department = await assertDepartmentAccessible(workspaceId, workspaceRole, departmentId);
+  const department = await assertDepartmentAccessible(workspaceId, workspaceRole, userId, departmentId);
   const [workspace, issues, teams] = await Promise.all([
     prisma.workspace.findUnique({
       where: { id: workspaceId },
@@ -624,7 +641,9 @@ export async function updateDepartment(
     triggeredByUserId: undefined,
   });
 
-  return getDepartmentById(workspaceId, "MEMBER", departmentId);
+  // Update is already gated by requireOwnership at the route — "OWNER" here
+  // just bypasses the visibility check to fetch the just-updated record back.
+  return getDepartmentById(workspaceId, "OWNER", "", departmentId);
 }
 
 export async function deleteDepartment(workspaceId: string, departmentId: string) {

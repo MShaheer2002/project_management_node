@@ -697,6 +697,7 @@ model Project {
   blockedDependencies ProjectDependency[] @relation("RoadmapBlockedProject")
   documents  EntityDocument[]
   documentFolders DocumentFolder[]
+  statusCounts ProjectStatusCount[]
 
   @@unique([workspaceId, name]) // Project names must be unique within a workspace
   @@unique([workspaceId, slug])
@@ -2072,4 +2073,23 @@ model WorkspaceStatusCount {
 
   @@id([workspaceId, statusKey])
   @@index([workspaceId])
+}
+
+/// ProjectStatusCount — the same trigger-maintained counting pattern as
+/// WorkspaceStatusCount, scoped to a single project instead of the whole
+/// workspace. Lets a project's issue list show accurate per-status counts
+/// without ever loading or counting issues at request time — see migration
+/// 20260901000000_project_status_counts, which extends the same trigger
+/// function to also maintain this table (on status change AND on an issue
+/// moving between projects).
+model ProjectStatusCount {
+  projectId String
+  statusKey String
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, statusKey])
+  @@index([projectId])
 }

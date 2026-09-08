@@ -206,7 +206,7 @@ export async function createComment(workspaceId: string, issueId: string, userId
         category: "comment",
         title: "New reply to your comment",
         message: `Someone replied on issue ${issuePublicId}`,
-        target: { type: "comment", id: created.id, publicId: issuePublicId, url: `/issues/${issuePublicId}` },
+        target: { type: "comment", id: created.id, publicId: issuePublicId, url: `/issues/${issuePublicId}?commentId=${created.id}` },
         metadata: {
           issueId,
           commentId: created.id,
@@ -215,7 +215,7 @@ export async function createComment(workspaceId: string, issueId: string, userId
           workspaceId,
           entityId: issueId,
           entityTitle: issueForNotification?.title ?? null,
-          url: `/issues/${issuePublicId}`,
+          url: `/issues/${issuePublicId}?commentId=${created.id}`,
         },
         eventId: `comment-reply:${created.id}:${parent.authorId}`,
       });
@@ -231,7 +231,7 @@ export async function createComment(workspaceId: string, issueId: string, userId
     category: "mention",
     title: "You were mentioned in a comment",
     message: `You were mentioned on issue ${issuePublicId}`,
-    target: { type: "comment", id: created.id, publicId: issuePublicId, url: `/issues/${issuePublicId}` },
+    target: { type: "comment", id: created.id, publicId: issuePublicId, url: `/issues/${issuePublicId}?commentId=${created.id}` },
     metadata: {
       issueId,
       commentId: created.id,
@@ -240,7 +240,7 @@ export async function createComment(workspaceId: string, issueId: string, userId
       workspaceId,
       entityId: issueId,
       entityTitle: issueForNotification?.title ?? null,
-      url: `/issues/${issuePublicId}`,
+      url: `/issues/${issuePublicId}?commentId=${created.id}`,
     },
     eventId: `comment-mention:${created.id}:${mentionedUserId}`,
   })));

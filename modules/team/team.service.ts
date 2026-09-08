@@ -281,6 +281,16 @@ export async function createTeam(workspaceId: string, actorUserId: string, input
       skipDuplicates: true,
     });
 
+    if (input.departmentId) {
+      await tx.departmentMembership.createMany({
+        data: memberIds.map((userId) => ({
+          userId,
+          departmentId: input.departmentId as string,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
     if ((input.docs?.length ?? 0) > 0) {
       await attachInitialTeamDocuments(tx, workspaceId, created.id, actorUserId, input.docs ?? []);
     }
@@ -344,14 +354,26 @@ export async function getTeamById(workspaceId: string, workspaceRole: WorkspaceR
   return mapTeam(team, true);
 }
 
-export async function updateTeam(workspaceId: string, teamId: string, input: UpdateTeamInput) {
+export async function updateTeam(
+  workspaceId: string,
+  workspaceRole: WorkspaceRole,
+  teamId: string,
+  input: UpdateTeamInput,
+) {
   const current = await prisma.team.findFirst({
     where: { id: teamId, workspaceId },
-    select: { id: true, leadId: true, name: true },
+    select: { id: true, leadId: true, name: true, departmentId: true },
   });
 
   if (!current) {
     throw new AppError(404, ERROR_CODES.TEAM_NOT_FOUND, "Team not found");
+  }
+
+  // requireOwnership lets a team's own lead update most fields, but moving a
+  // team between departments is a department-management action — restrict it
+  // to workspace ADMIN/OWNER even for the team's lead.
+  if (input.departmentId !== undefined && workspaceRole !== "OWNER" && workspaceRole !== "ADMIN") {
+    throw new AppError(403, ERROR_CODES.FORBIDDEN, "Only workspace admins and owners can move a team between departments");
   }
 
   if (input.name) {
@@ -418,7 +440,7 @@ export async function updateTeam(workspaceId: string, teamId: string, input: Upd
       });
     }
 
-    if (input.departmentId !== undefined) {
+    if (input.departmentId !== undefined && input.departmentId !== current.departmentId) {
       await tx.project.updateMany({
         where: { workspaceId, teamId },
         data: { departmentId: input.departmentId },
@@ -428,6 +450,68 @@ export async function updateTeam(workspaceId: string, teamId: string, input: Upd
         where: { workspaceId, teamId },
         data: { departmentId: input.departmentId },
       });
+
+      const teamMembers = await tx.teamMembership.findMany({
+        where: { teamId },
+        select: { userId: true },
+      });
+      const memberIds = teamMembers.map((member) => member.userId);
+
+      // Leaving the previous department: drop members who have no other
+      // reason to be there (not the department head, not on another team
+      // still attached to it) — otherwise they'd stay listed forever.
+      if (current.departmentId && memberIds.length > 0) {
+        const previousDepartmentId = current.departmentId;
+        const previousDepartment = await tx.department.findUnique({
+          where: { id: previousDepartmentId },
+          select: { headId: true },
+        });
+
+        const stillCovered = await tx.teamMembership.findMany({
+          where: {
+            userId: { in: memberIds },
+            teamId: { not: teamId },
+            team: { departmentId: previousDepartmentId },
+          },
+          select: { userId: true },
+        });
+
+        // Workspace ADMIN/OWNER keep their department membership regardless
+        // of team changes — only a role change (demotion) should drop them.
+        const workspaceManagers = await tx.workspaceMembership.findMany({
+          where: {
+            workspaceId,
+            userId: { in: memberIds },
+            role: { in: ["ADMIN", "OWNER"] },
+          },
+          select: { userId: true },
+        });
+
+        const keep = new Set(stillCovered.map((member) => member.userId));
+        workspaceManagers.forEach((member) => keep.add(member.userId));
+        if (previousDepartment?.headId) {
+          keep.add(previousDepartment.headId);
+        }
+
+        const removableIds = memberIds.filter((userId) => !keep.has(userId));
+        if (removableIds.length > 0) {
+          await tx.departmentMembership.deleteMany({
+            where: { departmentId: previousDepartmentId, userId: { in: removableIds } },
+          });
+        }
+      }
+
+      // Joining a new department: members join it too (skip anyone already
+      // there, e.g. from another team or an explicit add).
+      if (input.departmentId && memberIds.length > 0) {
+        await tx.departmentMembership.createMany({
+          data: memberIds.map((userId) => ({
+            userId,
+            departmentId: input.departmentId as string,
+          })),
+          skipDuplicates: true,
+        });
+      }
     }
   });
 

@@ -324,7 +324,7 @@ async function applyRevert(input: {
       const { updateTeam } = await import("../team/team.service.js");
       const fieldRevert = pickDefined(beforeState, ["name", "description", "leadId", "visibility", "departmentId"]);
       if (Object.keys(fieldRevert).length > 0) {
-        await updateTeam(workspaceId, targetId, fieldRevert as never);
+        await updateTeam(workspaceId, userRole as never, targetId, fieldRevert as never);
       }
       return;
     }

@@ -332,7 +332,7 @@ export function mapIssue(record: any, includeRelations = true) {
 
   const base = {
     id: record.id,
-    entityId: record.internalId,
+    entityId: record.id,
     title: record.title,
     description: record.description,
     type: typeFromDb[record.type] ?? "task",
@@ -1139,17 +1139,32 @@ export async function listIssues(workspaceId: string, workspaceRole: WorkspaceRo
 }
 
 /**
- * Per-status issue counts for a workspace, read straight from WorkspaceStatusCount —
- * a table kept in sync by a Postgres trigger on every Issue insert/update/delete
- * (see migration 20260723184235_workspace_status_counts). This never runs a runtime
- * COUNT(*) over Issue; it only reads already-maintained counters.
+ * Per-status issue counts, read straight from a trigger-maintained counter
+ * table — WorkspaceStatusCount for the whole workspace, or ProjectStatusCount
+ * when scoped to one project (see migrations 20260723184235_workspace_status_counts
+ * and 20260901000000_project_status_counts). Both are kept in sync by a Postgres
+ * trigger on every Issue insert/update/delete, so this never runs a runtime
+ * COUNT(*) over Issue — it only reads already-maintained counters.
  *
- * These are unfiltered, workspace-wide totals (matching the issue's raw `status`
- * value regardless of which workflow — workspace default or a project override —
- * it belongs to). Callers applying extra filters (search, project, assignee, etc.)
- * should keep using the `meta.total` a filtered `listIssues` call already returns.
+ * Only `projectId` has a matching counter table today. Callers applying any
+ * other filter (search, team, department, assignee, etc.) should keep using
+ * the `meta.total` a filtered `listIssues` call already returns.
  */
-export async function getStatusCounts(workspaceId: string) {
+export async function getStatusCounts(workspaceId: string, filters?: { projectId?: string | undefined }) {
+  if (filters?.projectId) {
+    // Scope through the project relation, not just projectId — otherwise a
+    // caller could read another workspace's project counts by guessing its id.
+    const rows = await prisma.projectStatusCount.findMany({
+      where: { projectId: filters.projectId, project: { workspaceId } },
+      select: { statusKey: true, count: true },
+    });
+
+    return rows.reduce<Record<string, number>>((acc, row) => {
+      acc[row.statusKey] = row.count;
+      return acc;
+    }, {});
+  }
+
   const rows = await prisma.workspaceStatusCount.findMany({
     where: { workspaceId },
     select: { statusKey: true, count: true },
@@ -1891,7 +1906,6 @@ export async function updateIssueStatus(
       where: { id: issueId, workspaceId },
       select: {
         id: true,
-        internalId: true,
         title: true,
         creatorId: true,
         assigneeId: true,

@@ -4,7 +4,7 @@ import { sendList, sendSuccess } from "../../shared/utils/api-response.js";
 import * as issueService from "./issue.service.js";
 import * as subtaskService from "./subtask.service.js";
 import * as issueApprovalService from "./issue-approval.service.js";
-import type { ListIssuesQuery } from "./issue.schemas.js";
+import type { GetStatusCountsQuery, ListIssuesQuery } from "./issue.schemas.js";
 
 export const create: RequestHandler = async (req, res, next) => {
   try {
@@ -45,7 +45,8 @@ export const checkAssignmentEligibility: RequestHandler = async (req, res, next)
 
 export const getStatusCounts: RequestHandler = async (req, res, next) => {
   try {
-    const counts = await issueService.getStatusCounts(req.workspace!.id);
+    const query = (req.validated?.query ?? req.query) as GetStatusCountsQuery;
+    const counts = await issueService.getStatusCounts(req.workspace!.id, { projectId: query.projectId });
     sendSuccess(res, 200, counts);
   } catch (error) {
     next(error);

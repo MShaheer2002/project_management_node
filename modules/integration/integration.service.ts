@@ -58,6 +58,24 @@ export async function listIntegrations(workspaceId: string) {
   });
 }
 
+// ─── Connection Status (all members) ─────────────────────────────────────────
+// Unlike listIntegrations, this exposes no config/connectedBy details, so it's
+// safe for any workspace member — used to gate feature visibility (e.g. Figma
+// previews) for users who aren't allowed to manage integrations.
+
+export async function getIntegrationConnectionStatus(workspaceId: string) {
+  const integrations = await prisma.integration.findMany({
+    where: { workspaceId },
+    select: { provider: true, connected: true },
+  });
+
+  const providers = ["GITHUB", "SLACK", "DISCORD", "FIGMA"] as const;
+  return providers.map((provider) => ({
+    provider: provider.toLowerCase(),
+    connected: integrations.find((i) => i.provider === provider)?.connected ?? false,
+  }));
+}
+
 // ─── Disconnect ──────────────────────────────────────────────────────────────
 
 export async function disconnectProvider(workspaceId: string, provider: string, actorId: string) {
