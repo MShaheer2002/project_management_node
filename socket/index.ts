@@ -3,29 +3,19 @@ import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
 
 import { env } from "../config/env.js";
+import { isAllowedFrontendOrigin } from "../shared/utils/allowed-origin.js";
 import { registerNotificationEvents } from "./notification.events.js";
 import { socketAuth } from "./auth.js";
 import { joinBaseRooms, registerRoomHandlers } from "./rooms.js";
 
 let ioInstance: Server | null = null;
 
-function isAllowedOrigin(origin: string | undefined) {
-  if (!origin) return true;
-  return (
-    origin.startsWith("http://localhost:") ||
-    origin.startsWith("http://127.0.0.1:") ||
-    /^http:\/\/192\.168\.\d+\.\d+:\d+$/.test(origin) ||
-    origin.endsWith(".ngrok-free.dev") ||
-    origin === env.FRONTEND_URL
-  );
-}
-
 export function initializeSocket(httpServer: HttpServer) {
   if (ioInstance) return ioInstance;
 
   const io = new Server(httpServer, {
     cors: {
-      origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
+      origin: (origin, callback) => callback(null, isAllowedFrontendOrigin(origin, env.NODE_ENV)),
       credentials: true,
       methods: ["GET", "POST"],
       allowedHeaders: ["Authorization", "X-Workspace-Id", "Content-Type"],

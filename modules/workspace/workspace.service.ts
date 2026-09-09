@@ -353,6 +353,30 @@ export async function checkSlugAvailability(slug: string) {
 }
 
 /**
+ * Look up a workspace by its subdomain slug — PUBLIC, unauthenticated.
+ *
+ * Used by the frontend before login to decide what to show on
+ * `<slug>.trussen.app`: a sign-in page (workspace exists) or a redirect to
+ * the marketing landing page (it doesn't). Only ever returns display-safe
+ * fields — never anything that would leak workspace contents to a visitor
+ * who hasn't proven membership yet.
+ */
+export async function resolveWorkspaceBySlug(slug: string) {
+  const workspace = await prisma.workspace.findUnique({
+    where: { slug },
+    // No `id` — an anonymous, pre-login caller has no use for the internal
+    // workspace UUID, so it isn't handed out even though it isn't secret.
+    select: { name: true, slug: true, logo: true },
+  });
+
+  if (!workspace) {
+    throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "No workspace found for this address");
+  }
+
+  return workspace;
+}
+
+/**
  * Get workspace custom statuses.
  */
 export async function getWorkspaceStatuses(workspaceId: string) {

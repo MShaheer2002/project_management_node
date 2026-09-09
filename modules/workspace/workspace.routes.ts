@@ -8,6 +8,7 @@
  *   POST   /workspaces                                — Create workspace
  *   GET    /workspaces                                — List user's workspaces
  *   GET    /workspaces/check-slug/:slug               — Check slug availability
+ *   GET    /workspaces/resolve/:slug                  — Resolve workspace by slug (public, no auth)
  *   GET    /workspaces/:workspaceId                   — Get workspace details
  *   PATCH  /workspaces/:workspaceId                   — Update workspace
  *   DELETE /workspaces/:workspaceId                   — Delete workspace
@@ -29,6 +30,7 @@ import {
   updateWorkspaceSchema,
   workspaceIdParamSchema,
   checkSlugSchema,
+  resolveBySlugSchema,
   inviteMemberSchema,
   listWorkspaceMembersSchema,
   changeMemberRoleSchema,
@@ -70,6 +72,16 @@ router.get(
   authenticate,
   validate(checkSlugSchema),
   controller.checkSlug,
+);
+
+// Resolve a workspace by its subdomain slug — PUBLIC, no auth.
+// Frontend calls this on <slug>.trussen.app before login to decide between
+// a sign-in page (found) and a redirect to the landing page (not found).
+// NOTE: must be before /:workspaceId so "resolve" isn't treated as a UUID.
+router.get(
+  "/resolve/:slug",
+  validate(resolveBySlugSchema),
+  controller.resolveBySlug,
 );
 
 // Get workspace details — must be a member

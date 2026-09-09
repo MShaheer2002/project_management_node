@@ -75,6 +75,20 @@ export const checkSlug: RequestHandler = async (req, res, next) => {
   }
 };
 
+/**
+ * GET /workspaces/resolve/:slug — PUBLIC, no auth required.
+ * Lets the frontend ask "does <slug>.trussen.app exist?" before login, to
+ * decide between showing a sign-in page or redirecting to the landing page.
+ */
+export const resolveBySlug: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await workspaceService.resolveWorkspaceBySlug(req.params.slug as string);
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ─── Workspace Statuses ─────────────────────────────────────────────────────
 
 /** GET /workspaces/:workspaceId/statuses — Get workspace custom statuses */

@@ -110,6 +110,13 @@ export const checkSlugSchema = {
   }),
 };
 
+/** GET /workspaces/resolve/:slug — Public lookup by subdomain slug */
+export const resolveBySlugSchema = {
+  params: z.object({
+    slug: slugSchema,
+  }),
+};
+
 /** POST /workspaces/:workspaceId/invitations — Send invitation */
 export const inviteMemberSchema = {
   params: z.object({
