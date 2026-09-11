@@ -18,8 +18,21 @@ import type { ListWorkspaceMembersQuery } from "./workspace.schemas.js";
 /** POST /workspaces — Create a new workspace (user becomes OWNER) */
 export const create: RequestHandler = async (req, res, next) => {
   try {
-    const workspace = await workspaceService.createWorkspace(req.user!.id, req.body);
+    const workspace = await workspaceService.createWorkspace(req.user!.id, req.user!.email, req.body);
     sendSuccess(res, 201, workspace);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** PATCH /workspaces/:workspaceId/invite-domain-policy — ADMIN/OWNER only */
+export const updateInviteDomainPolicy: RequestHandler = async (req, res, next) => {
+  try {
+    const result = await workspaceService.updateInviteDomainPolicy(
+      req.params.workspaceId as string,
+      req.body,
+    );
+    sendSuccess(res, 200, result);
   } catch (error) {
     next(error);
   }

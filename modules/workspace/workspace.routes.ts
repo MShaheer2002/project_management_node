@@ -11,6 +11,7 @@
  *   GET    /workspaces/resolve/:slug                  — Resolve workspace by slug (public, no auth)
  *   GET    /workspaces/:workspaceId                   — Get workspace details
  *   PATCH  /workspaces/:workspaceId                   — Update workspace
+ *   PATCH  /workspaces/:workspaceId/invite-domain-policy — Update invite domain restriction
  *   DELETE /workspaces/:workspaceId                   — Delete workspace
  *   POST   /workspaces/:workspaceId/members/invite    — Invite member
  *   GET    /workspaces/:workspaceId/members           — List members
@@ -31,6 +32,7 @@ import {
   workspaceIdParamSchema,
   checkSlugSchema,
   resolveBySlugSchema,
+  updateInviteDomainPolicySchema,
   inviteMemberSchema,
   listWorkspaceMembersSchema,
   changeMemberRoleSchema,
@@ -101,6 +103,19 @@ router.patch(
   requireWorkspace,
   requireRole("ADMIN", "OWNER"),
   controller.update,
+);
+
+// Update who can be invited, by email domain — OWNER only. Deciding who can
+// be invited at all is a step above day-to-day member management (which
+// ADMINs already handle), so this is deliberately narrower than the usual
+// ADMIN-or-OWNER bar.
+router.patch(
+  "/:workspaceId/invite-domain-policy",
+  authenticate,
+  validate(updateInviteDomainPolicySchema),
+  requireWorkspace,
+  requireRole("OWNER"),
+  controller.updateInviteDomainPolicy,
 );
 
 // Delete workspace — OWNER only (cascades everything)

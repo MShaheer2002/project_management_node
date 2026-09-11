@@ -30,6 +30,7 @@ import type {
   UpdateWorkspaceInput,
   UpdateWorkspaceStatusesInput,
   UpdateWorkflowAutomationInput,
+  UpdateInviteDomainPolicyInput,
 } from "./workspace.schemas.js";
 
 /**
@@ -96,7 +97,12 @@ async function generateUniquePrefix(name: string, explicitPrefix?: string): Prom
   throw new AppError(409, ERROR_CODES.WORKSPACE_PREFIX_TAKEN, "Could not generate a unique issue prefix");
 }
 
-export async function createWorkspace(userId: string, input: CreateWorkspaceInput) {
+/** Pulls "trussen.app" out of "someone@trussen.app". */
+function domainFromEmail(email: string): string {
+  return email.split("@")[1]!.toLowerCase();
+}
+
+export async function createWorkspace(userId: string, userEmail: string, input: CreateWorkspaceInput) {
   // Check if slug is already taken
   const existing = await prisma.workspace.findUnique({
     where: { slug: input.slug },
@@ -110,6 +116,24 @@ export async function createWorkspace(userId: string, input: CreateWorkspaceInpu
   // Generate or validate issue prefix
   const issuePrefix = await generateUniquePrefix(input.name, (input as any).issuePrefix);
 
+  // Resolve the invite domain policy up front — COMPANY_ONLY derives its
+  // one domain from the creator's own email; CUSTOM needs at least one
+  // domain supplied; ANY (the default) needs nothing.
+  const inviteDomainPolicy = input.inviteDomainPolicy ?? "ANY";
+  let allowedEmailDomains: string[] = [];
+  if (inviteDomainPolicy === "COMPANY_ONLY") {
+    allowedEmailDomains = [domainFromEmail(userEmail)];
+  } else if (inviteDomainPolicy === "CUSTOM") {
+    if (!input.allowedEmailDomains || input.allowedEmailDomains.length === 0) {
+      throw new AppError(
+        422,
+        ERROR_CODES.VALIDATION_ERROR,
+        "Add at least one domain, or choose a different invite option",
+      );
+    }
+    allowedEmailDomains = [...new Set(input.allowedEmailDomains)];
+  }
+
   // Create workspace + OWNER membership + default team atomically
   const result = await prisma.$transaction(async (tx) => {
     // 1. Create the workspace
@@ -120,6 +144,8 @@ export async function createWorkspace(userId: string, input: CreateWorkspaceInpu
         issuePrefix,
         teamSize: input.teamSize ?? null,
         createdById: userId,
+        inviteDomainPolicy,
+        allowedEmailDomains,
       },
     });
 
@@ -172,7 +198,55 @@ export async function createWorkspace(userId: string, input: CreateWorkspaceInpu
     role: "OWNER" as const,
     defaultTeamId: result.defaultTeam.id,
     createdAt: result.workspace.createdAt,
+    inviteDomainPolicy: result.workspace.inviteDomainPolicy,
+    allowedEmailDomains: result.workspace.allowedEmailDomains,
   };
+}
+
+/**
+ * Update who can be invited to a workspace, by email domain.
+ * ANY needs no domain list. COMPANY_ONLY re-derives its one domain from the
+ * *caller's own* email (not the original creator's) — whoever is an admin
+ * right now is treated as representing "the company domain" going forward.
+ * CUSTOM requires at least one domain.
+ */
+export async function updateInviteDomainPolicy(
+  workspaceId: string,
+  input: UpdateInviteDomainPolicyInput,
+) {
+  let allowedEmailDomains: string[] = [];
+
+  if (input.inviteDomainPolicy === "COMPANY_ONLY") {
+    // Derived from the workspace's OWNER, not whichever admin happens to be
+    // flipping this toggle — otherwise a non-owner admin with a different
+    // email domain (e.g. an external consultant) could silently redefine
+    // "the company domain" to their own, every time this setting changes.
+    const owner = await prisma.workspaceMembership.findFirst({
+      where: { workspaceId, role: "OWNER" },
+      select: { user: { select: { email: true } } },
+    });
+    if (!owner) {
+      throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "Workspace owner not found");
+    }
+    allowedEmailDomains = [domainFromEmail(owner.user.email)];
+  } else if (input.inviteDomainPolicy === "CUSTOM") {
+    if (!input.allowedEmailDomains || input.allowedEmailDomains.length === 0) {
+      throw new AppError(
+        422,
+        ERROR_CODES.VALIDATION_ERROR,
+        "Add at least one domain, or choose a different invite option",
+      );
+    }
+    allowedEmailDomains = [...new Set(input.allowedEmailDomains)];
+  }
+
+  const workspace = await prisma.workspace.update({
+    where: { id: workspaceId },
+    data: { inviteDomainPolicy: input.inviteDomainPolicy, allowedEmailDomains },
+    select: { id: true, inviteDomainPolicy: true, allowedEmailDomains: true },
+  });
+
+  return workspace;
 }
 
 /**
@@ -195,6 +269,8 @@ export async function listWorkspaces(userId: string) {
           customStatuses: true,
           workflowAutomation: true,
           uploadPolicy: true,
+          inviteDomainPolicy: true,
+          allowedEmailDomains: true,
           createdAt: true,
         },
       },
@@ -247,6 +323,8 @@ export async function listWorkspaces(userId: string) {
       m.workspace.customStatuses as any[],
     ),
     uploadPolicy: m.workspace.uploadPolicy,
+    inviteDomainPolicy: m.workspace.inviteDomainPolicy,
+    allowedEmailDomains: m.workspace.allowedEmailDomains,
     role: m.role,
     defaultTeamId: defaultTeamMap.get(m.workspace.id) ?? null,
     unreadNotifications: unreadMap.get(m.workspace.id) ?? 0,
@@ -273,6 +351,8 @@ export async function getWorkspaceById(workspaceId: string) {
       customStatuses: true,
       workflowAutomation: true,
       uploadPolicy: true,
+      inviteDomainPolicy: true,
+      allowedEmailDomains: true,
       createdById: true,
       createdAt: true,
       updatedAt: true,

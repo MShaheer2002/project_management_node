@@ -55,6 +55,15 @@ const slugSchema = z
   });
 
 const teamSizeSchema = z.enum(["SMALL", "MEDIUM", "LARGE", "ENTERPRISE"]);
+
+const inviteDomainPolicySchema = z.enum(["ANY", "COMPANY_ONLY", "CUSTOM"]);
+
+// Bare domain only (no @, no scheme) — e.g. "trussen.app", not "user@trussen.app"
+const emailDomainSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/, "Enter a domain like trussen.app, not an email address");
 const memberListSortSchema = z.enum(["name:asc", "name:desc", "joinedAt:asc", "joinedAt:desc"]);
 const memberListViewSchema = z.enum(["compact", "full"]);
 
@@ -76,6 +85,11 @@ export const createWorkspaceSchema = {
       .max(5, "Issue prefix must be at most 5 characters")
       .regex(/^[A-Z]+$/, "Issue prefix must be uppercase letters only")
       .optional(),
+    // Who can be invited — defaults to ANY (no restriction) if omitted.
+    // COMPANY_ONLY needs no domain list — it's derived from the creator's
+    // own email. CUSTOM requires at least one domain in allowedEmailDomains.
+    inviteDomainPolicy: inviteDomainPolicySchema.optional(),
+    allowedEmailDomains: z.array(emailDomainSchema).max(20, "Too many domains").optional(),
   }),
 };
 
@@ -114,6 +128,17 @@ export const checkSlugSchema = {
 export const resolveBySlugSchema = {
   params: z.object({
     slug: slugSchema,
+  }),
+};
+
+/** PATCH /workspaces/:workspaceId/invite-domain-policy */
+export const updateInviteDomainPolicySchema = {
+  params: z.object({
+    workspaceId: z.string().uuid("Invalid workspace ID"),
+  }),
+  body: z.object({
+    inviteDomainPolicy: inviteDomainPolicySchema,
+    allowedEmailDomains: z.array(emailDomainSchema).max(20, "Too many domains").optional(),
   }),
 };
 
@@ -366,6 +391,7 @@ export const revokeInvitationSchema = {
 
 export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema.body>;
 export type UpdateWorkspaceInput = z.infer<typeof updateWorkspaceSchema.body>;
+export type UpdateInviteDomainPolicyInput = z.infer<typeof updateInviteDomainPolicySchema.body>;
 export type UpdateWorkspaceStatusesInput = z.infer<typeof updateWorkspaceStatusesSchema.body>;
 export type UpdateWorkflowAutomationInput = z.infer<typeof updateWorkflowAutomationSchema.body>;
 export type InviteMemberInput = z.infer<typeof inviteMemberSchema.body>;

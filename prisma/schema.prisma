@@ -269,6 +269,13 @@ enum TeamSize {
   ENTERPRISE  // 50+ members
 }
 
+/// Who is allowed to be invited to a workspace, by email domain.
+enum InviteDomainPolicy {
+  ANY           // no restriction — any email domain can be invited
+  COMPANY_ONLY  // only the domain captured from the creator's email at signup
+  CUSTOM        // an admin-managed list of allowed domains
+}
+
 /// Invitation lifecycle — tracks the state of a workspace invite
 enum InvitationStatus {
   PENDING   // Invite sent, waiting for acceptance
@@ -436,6 +443,14 @@ model Workspace {
   customStatuses Json  @default("[{\"key\":\"backlog\",\"label\":\"Backlog\",\"color\":\"#6b7280\",\"order\":0,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"todo\",\"label\":\"Todo\",\"color\":\"#3b82f6\",\"order\":1,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"in-progress\",\"label\":\"In Progress\",\"color\":\"#f59e0b\",\"order\":2,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"review\",\"label\":\"Review\",\"color\":\"#8b5cf6\",\"order\":3,\"isFinal\":false,\"showOnBoard\":true},{\"key\":\"done\",\"label\":\"Done\",\"color\":\"#22c55e\",\"order\":4,\"isFinal\":true,\"showOnBoard\":true}]")
   workflowAutomation Json @default("{\"subtaskCompletion\":{\"enabled\":true,\"mode\":\"suggest\",\"targetStatusKey\":\"done\"},\"cycleStart\":{\"enabled\":false,\"fromStatusKey\":\"backlog\",\"targetStatusKey\":\"todo\"},\"overdue\":{\"enabled\":false,\"action\":\"notify\"},\"githubPullRequest\":{\"opened\":{\"enabled\":true,\"targetStatusKey\":\"review\"},\"merged\":{\"enabled\":true,\"targetStatusKey\":\"done\"}}}")
   uploadPolicy UploadPolicy @default(BOTH) // Controls where members can upload: BOTH, SYSTEM_ONLY, DRIVE_ONLY
+  // Who can be invited, by email domain — ANY (default): no restriction.
+  // COMPANY_ONLY: only the single domain auto-captured from the creator's
+  // email at signup (allowedEmailDomains has exactly one entry). CUSTOM:
+  // an admin-managed list (allowedEmailDomains can hold one or many).
+  // Enforced in invitation.service.ts createInvitation — never at accept
+  // time, since an existing invite already went through this check.
+  inviteDomainPolicy  InviteDomainPolicy @default(ANY)
+  allowedEmailDomains String[]           @default([])
   createdById  String // FK → User who created this workspace (becomes OWNER)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

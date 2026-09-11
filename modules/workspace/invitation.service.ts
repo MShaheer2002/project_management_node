@@ -39,6 +39,37 @@ const INVITE_EXPIRY_DAYS = 7;
  * If the email is already a workspace member:
  *   → Reject with MEMBER_ALREADY_EXISTS
  */
+/**
+ * Enforces the workspace's invite domain policy (Workspace.inviteDomainPolicy
+ * / allowedEmailDomains — see prisma/schema.prisma). ANY: no check. Anything
+ * else: the invitee's email domain must be in allowedEmailDomains.
+ *
+ * This is a policy check, separate from — and runs well before — the
+ * email-ownership check at accept time (acceptInvitationRecord below): this
+ * decides whether an invite for this address should be CREATED at all;
+ * that one decides whether the person clicking the link is who it was sent
+ * to. Both apply; neither substitutes for the other.
+ */
+async function assertEmailDomainAllowed(workspaceId: string, email: string) {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { inviteDomainPolicy: true, allowedEmailDomains: true },
+  });
+
+  if (!workspace || workspace.inviteDomainPolicy === "ANY") return;
+
+  const domain = email.split("@")[1]?.toLowerCase();
+  if (!domain || !workspace.allowedEmailDomains.includes(domain)) {
+    throw new AppError(
+      403,
+      ERROR_CODES.INVITE_DOMAIN_NOT_ALLOWED,
+      workspace.inviteDomainPolicy === "COMPANY_ONLY"
+        ? `Only ${workspace.allowedEmailDomains[0]} email addresses can be invited to this workspace`
+        : `${domain} isn't an allowed domain for this workspace`,
+    );
+  }
+}
+
 export async function createInvitation(params: {
   workspaceId: string;
   email: string;
@@ -52,6 +83,7 @@ export async function createInvitation(params: {
 }) {
   const email = normalizeEmail(params.email);
 
+  await assertEmailDomainAllowed(params.workspaceId, email);
   await enforceFreeWorkspaceCapacity(params.workspaceId, email);
 
   // Check if already a member (by email → find user → check membership)
