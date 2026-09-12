@@ -3,7 +3,6 @@ import http from "node:http";
 import { Worker, type Job } from "bullmq";
 
 import { env } from "../../config/env.js";
-import { startBullBoard } from "../../infra/queue/dashboard.js";
 import { closeAllQueues, getQueue } from "../../infra/queue/queues.js";
 import {
   closeSharedQueueConnection,
@@ -213,13 +212,11 @@ export async function startAiBackgroundWorkers() {
 
   await registerScheduledJobs();
   const healthServer = startHealthServer(workers);
-  const bullBoardServer = startBullBoard();
 
   const shutdown = async (signal: string) => {
     console.log(`[AI Worker] Received ${signal}. Shutting down workers...`);
     await Promise.all(workers.map(({ worker }) => worker.close().catch(() => {})));
     await new Promise<void>((resolve) => (healthServer ? healthServer.close(() => resolve()) : resolve()));
-    await new Promise<void>((resolve) => (bullBoardServer ? bullBoardServer.close(() => resolve()) : resolve()));
     await closeAllQueues().catch(() => {});
     await closeSharedQueueConnection().catch(() => {});
     // All 6 workers share this one connection now — close it once, after

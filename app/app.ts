@@ -36,6 +36,7 @@ import { errorHandler } from "../shared/middleware/error-handler.js";
 import { sendSuccess } from "../shared/utils/api-response.js";
 import { prisma } from "../shared/utils/prisma.js";
 import { openApiSpec } from "../docs/api/openapi.js";
+import { getBullBoardRouter } from "../infra/queue/dashboard.js";
 import authRoutes from "../modules/auth/auth.routes.js";
 import workspaceRoutes from "../modules/workspace/workspace.routes.js";
 import invitationRoutes from "../modules/workspace/invitation.routes.js";
@@ -153,6 +154,14 @@ app.get("/health", async (_req, res, next) => {
     next(error);
   }
 });
+
+// Queue dashboard — off unless BULL_BOARD_ENABLED, basic-auth gated (see
+// infra/queue/dashboard.ts for why this lives on api instead of ai-worker)
+const bullBoardRouter = getBullBoardRouter("/admin/queues");
+if (bullBoardRouter) {
+  app.use("/admin/queues", bullBoardRouter);
+  console.log("[Bull Board] Mounted at /admin/queues");
+}
 
 // ─── Feature Module Routes (mounted here as phases are built) ────────────────
 
