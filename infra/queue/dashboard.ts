@@ -9,9 +9,14 @@
  * Off by default (`BULL_BOARD_ENABLED=false`) and gated by basic auth when
  * on — this exposes job payloads and counts across every workspace, which is
  * an ops view, not something to leave open on a public port.
+ *
+ * Mounted as a route on the main `api` app (see `app/app.ts`) rather than
+ * run as its own standalone server — the AI jobs it displays actually run
+ * in the `ai-worker` process, but that process has no public HTTP route in
+ * production (it's a DO App Platform Worker component), while `api` already
+ * does. Both processes connect to the same Redis, so either can read queue
+ * state; `api` is just the one with a public URL to serve it from.
  */
-
-import http from "node:http";
 
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
@@ -40,12 +45,12 @@ function requireBasicAuth(username: string, password: string) {
   };
 }
 
-export function startBullBoard(): http.Server | null {
+export function getBullBoardRouter(basePath: string): express.Router | null {
   if (!env.BULL_BOARD_ENABLED) return null;
 
   if (!env.BULL_BOARD_USERNAME || !env.BULL_BOARD_PASSWORD) {
     console.warn(
-      "[Bull Board] BULL_BOARD_ENABLED is true but BULL_BOARD_USERNAME/BULL_BOARD_PASSWORD are not set. Not starting — an unauthenticated queue dashboard is not an option.",
+      "[Bull Board] BULL_BOARD_ENABLED is true but BULL_BOARD_USERNAME/BULL_BOARD_PASSWORD are not set. Not mounting — an unauthenticated queue dashboard is not an option.",
     );
     return null;
   }
@@ -56,22 +61,17 @@ export function startBullBoard(): http.Server | null {
     .map((queue) => new BullMQAdapter(queue));
 
   if (queues.length === 0) {
-    console.warn("[Bull Board] No queues available (is REDIS_URL set?) — not starting.");
+    console.warn("[Bull Board] No queues available (is REDIS_URL set?) — not mounting.");
     return null;
   }
 
   const serverAdapter = new ExpressAdapter();
-  serverAdapter.setBasePath("/");
+  serverAdapter.setBasePath(basePath);
 
   createBullBoard({ queues, serverAdapter });
 
-  const app = express();
-  app.use(requireBasicAuth(env.BULL_BOARD_USERNAME, env.BULL_BOARD_PASSWORD));
-  app.use("/", serverAdapter.getRouter());
-
-  const server = app.listen(env.BULL_BOARD_PORT, () => {
-    console.log(`[Bull Board] Queue dashboard listening on :${env.BULL_BOARD_PORT}`);
-  });
-
-  return server;
+  const router = express.Router();
+  router.use(requireBasicAuth(env.BULL_BOARD_USERNAME, env.BULL_BOARD_PASSWORD));
+  router.use(serverAdapter.getRouter());
+  return router;
 }
