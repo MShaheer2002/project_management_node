@@ -6,9 +6,17 @@ backend, database, AI worker, Redis, file storage, real-time (sockets) — and
 says exactly where each one lives and why.
 
 Stack chosen: **Vercel** (frontend) + **DigitalOcean App Platform**
-(backend, via Docker) + **DigitalOcean Managed PostgreSQL** +
+(backend, via Docker) + **Neon** (serverless Postgres) +
 **DigitalOcean Managed Redis** + **Cloudflare** (DNS) + your existing
 **AWS S3** (file uploads — no change needed there).
+
+> Database note: this originally used DigitalOcean Managed PostgreSQL —
+> swapped for Neon to avoid its ~$15/mo minimum while pre-launch. Neon has a
+> real free tier (not a trial) with pgvector support, which this schema
+> needs (`AiEmbedding.embedding vector(1536)`). The one thing you're giving
+> up is DO's 7-day backup window — Neon's free tier only restores up to 6
+> hours of history (see section 11). Revisit DO (or Neon's paid tier) once
+> real customer data makes that gap matter.
 
 ---
 
@@ -20,7 +28,7 @@ Stack chosen: **Vercel** (frontend) + **DigitalOcean App Platform**
 | Backend API (Express) | Handles all `/api/...` requests, auth, billing, etc. | **DigitalOcean App Platform** — Web Service |
 | Real-time (Socket.IO) | Live updates (notifications, board updates) | **Same backend process** — it's not a separate service, `socket/index.ts` attaches to the same HTTP server as the API |
 | AI background worker | Processes queued AI jobs (embeddings, summaries, etc.) — `workers/ai-background.worker.ts` | **DigitalOcean App Platform** — Worker component (same Docker image, different start command) |
-| Database | PostgreSQL, holds all app data | **DigitalOcean Managed PostgreSQL** |
+| Database | PostgreSQL, holds all app data | **Neon** (serverless Postgres, free tier) |
 | Redis | Job queue backbone for the AI worker (BullMQ) | **DigitalOcean Managed Redis (Valkey)** |
 | File storage | Uploaded images/videos/documents | **AWS S3** (already wired up via `AWS_*` env vars — leave as is, no reason to migrate) |
 | MCP server (stdio) | Lets Claude Desktop talk to Trussen locally | **Not deployed at all** — it's a local stdio tool (`mcp/server.ts`), separate from the HTTP MCP routes already mounted inside the API (`mcp/mcp.http.routes.js`, mounted in `app/app.ts`). Nothing extra to do here. |
@@ -62,10 +70,11 @@ Two things are easy to miss:
                                         │                           │                           │
                                         ▼                           ▼                           ▼
                              ┌────────────────────┐     ┌────────────────────┐      ┌────────────────────┐
-                             │ DO Managed Postgres │     │   DO Managed Redis  │      │      AWS S3         │
-                             └────────────────────┘     └──────────┬─────────┘      │ (file uploads)       │
-                                                                    │                └────────────────────┘
-                                                                    ▼
+                             │   Neon (Postgres)   │     │   DO Managed Redis  │      │      AWS S3         │
+                             │  different cloud —   │     │                      │      │ (file uploads)       │
+                             │  plain internet+SSL,  │     └──────────┬─────────┘      └────────────────────┘
+                             │  not DO's private net │                │
+                             └────────────────────┘                  ▼
                                                          ┌────────────────────┐
                                                          │  DO App Platform    │
                                                          │  Worker component:  │
@@ -78,6 +87,11 @@ Two things are easy to miss:
 One Docker image, built once from `project_management_node`, runs as
 **two** components on DigitalOcean — a Web Service and a Worker — just with
 different start commands. Same code, same env vars, no duplication.
+
+Neon sits outside DO's network (it runs on AWS under the hood) — the API
+reaches it over a normal internet connection with SSL, the same way any
+external API call would, not DO's zero-latency private networking. Not
+something to design around at this stage, just why it's drawn separately.
 
 ---
 
@@ -121,22 +135,34 @@ just not a production deployment concern).
 
 ---
 
-## 4. DigitalOcean setup
+## 4. Database (Neon) & DigitalOcean setup
 
-### 4a. Managed PostgreSQL
+### 4a. Neon (Postgres)
 Create it first — everything else needs `DATABASE_URL`.
-1. DO dashboard → Databases → Create → PostgreSQL.
-2. Pick the region closest to where your App Platform app will run (they
-   must be in the same DO region to talk over the private network — faster
-   and free of bandwidth charges).
-3. Copy the connection string it gives you → this becomes `DATABASE_URL`.
-4. Add your App Platform app to the database's "trusted sources" once it
-   exists (step 4c) so only your app can connect, not the open internet.
+1. [neon.com](https://neon.com) → sign up (free) → Create Project.
+2. Pick the region geographically closest to where your App Platform app
+   will run (e.g. Neon's `aws-us-east-1` next to a DO NYC app) — there's no
+   private-network pairing like two DO products get, so proximity is just
+   about keeping the round-trip short, not free bandwidth.
+3. **Postgres version: 14 or newer** — required for the `pgvector`
+   extension this schema uses (`AiEmbedding.embedding vector(1536)`; see
+   migration `20260622150000_phase20d_background_infra`). Neon's default is
+   already 16+, so this is just something to not downgrade.
+4. Copy the connection string from the Neon dashboard (**pooled** connection
+   string, the one with `-pooler` in the hostname — Prisma works fine
+   through it and it handles bursts of connections better) → this becomes
+   `DATABASE_URL`. Make sure `?sslmode=require` is on the end; Neon requires
+   SSL.
+5. No "trusted sources" step — Neon isn't on DO's private network, so it's
+   reached over the open internet like any external API, authenticated by
+   the password in the connection string plus SSL. Nothing to configure on
+   the DO side for this.
 
 ### 4b. Managed Redis (Valkey)
 1. DO dashboard → Databases → Create → Valkey (DO's Redis-compatible
    managed offering — same protocol, `ioredis` doesn't know the difference).
-2. Same region as Postgres and the app.
+2. Same DO region as the App Platform app (step 4c) — this one *does* get
+   DO's private networking, so keep it local to get that benefit.
 3. Copy the connection string → this becomes `REDIS_URL`.
 
 ### 4c. App Platform — the app itself
@@ -153,10 +179,12 @@ Create it first — everything else needs `DATABASE_URL`.
    - **Name:** `ai-worker`
    - **Type:** Worker (no public HTTP port needed)
    - **Run Command override:** `node dist/workers/ai-background.worker.js`
-4. Attach the Postgres and Redis databases from step 4a/4b to the app (DO
-   lets you "attach" a managed database to an App Platform app — it
-   injects the connection string as an env var automatically, or you paste
-   it manually into step 5 below).
+4. Attach the Redis database from step 4b to the app (DO lets you "attach"
+   its own managed databases to an App Platform app — it injects the
+   connection string as an env var automatically). Neon isn't a DO
+   product, so there's nothing to "attach" for Postgres — just paste the
+   `DATABASE_URL` from step 4a manually into step 5 below like any other
+   secret.
 5. Set environment variables (see the checklist in section 7) on **both**
    components — they share the same `.env` shape since it's the same image.
 6. Deploy. DO gives you a default URL like
@@ -353,32 +381,34 @@ as a step you might skip.
 "I turned on backups" is not a backup strategy — a backup you've never
 restored is an assumption, not a plan. Do these explicitly:
 
-1. **Automated backups are already on by default** — DO takes a daily
-   backup of every Managed PostgreSQL cluster automatically, no setup
-   needed. Confirm it in the dashboard anyway — Databases → your cluster →
-   Backups.
-2. **Point-in-time recovery (PITR) is also included by default** — DO
-   keeps WAL (write-ahead log) archives alongside the daily backup, so you
-   can restore to any specific second, not just the last nightly snapshot.
-   This matters for "a bad migration or bug corrupted data 3 hours ago" —
-   a nightly-only backup would still lose those 3 hours; PITR doesn't.
-   **The one real limit to know:** the whole retention window is a fixed
-   **7 days**, on every plan, with no dashboard option to extend it. If you
-   ever need to keep data recoverable for longer than a week (common for
-   compliance, or just peace of mind once you have paying customers), that
-   means a separate periodic `pg_dump` exported to S3 on your own schedule
-   — DO's built-in backups don't cover that by themselves.
+1. **Point-in-time restore is on by default on Neon, including the free
+   tier** — no setup needed, it's just how Neon's storage works (every
+   branch can be restored to an earlier point via its history, not a
+   separate nightly-snapshot system). Nothing to enable in a dashboard.
+2. **The real limit to know, and it's a meaningfully smaller safety net
+   than a typical managed Postgres:** the free tier only keeps **6 hours**
+   of restorable history (capped at 1 GB of changes). Paid tiers extend
+   this — 7 days on Launch, 30 days on Scale, both billed per GB-month of
+   history kept. This is the direct cost of avoiding the ~$15/mo DO
+   Managed Postgres bill: "a bad migration corrupted data 3 hours ago" is
+   still recoverable on the free tier; "corrupted data from last Tuesday"
+   is not. Revisit upgrading Neon's plan (or moving to DO) once that 6-hour
+   window is actually too short for how you operate — e.g. once real
+   customers are on it and a slower-to-notice bug becomes plausible.
 3. **Actually run a restore, once, before you need it for real:**
-   - Trigger a restore-to-new-cluster from a backup (DO supports restoring
-     into a *new* database instance without touching production).
-   - Point a local `DATABASE_URL` at that restored instance.
+   - Neon Console → your project → **Restore** — this creates a new branch
+     from a point in your history (Neon calls this "Branch Restore" /
+     time-travel), rather than DO's "spin up a whole new cluster" — same
+     idea, cheaper operation on Neon's end since branches are copy-on-write.
+   - Point a local `DATABASE_URL` at that restored branch's connection
+     string.
    - Run `npx prisma migrate status` and a few real queries (e.g. does a
      known workspace/user exist with the right data) to confirm it's not
      just "a database came up" but "the data is actually there and
      correct."
-   - Tear the test instance down afterward.
+   - Delete the test branch afterward.
 4. **Write down the restore procedure** (even a few lines: where to click
-   in DO, what connection string to use, who's allowed to trigger a
+   in Neon, what connection string to use, who's allowed to trigger a
    production restore) — the point of a disaster recovery plan is that it
    works when someone is stressed at 2am, not that it lives only in
    someone's memory of doing it once.
@@ -391,8 +421,8 @@ thing that only reveals it's broken at the worst possible time.
 
 ## 12. First-time deploy order (do it in this order)
 
-1. Create the Managed PostgreSQL database (section 4a) with automated
-   backups on (section 11).
+1. Create the Neon Postgres project (section 4a) — point-in-time restore
+   is already on by default (section 11).
 2. Run `npx prisma migrate deploy` against it once, locally, to create the
    schema — this is the one and only time this runs manually (see
    section 10).

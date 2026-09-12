@@ -9,6 +9,14 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"]!,
+    // The Prisma CLI (migrate, db push, studio, ...) needs a DIRECT
+    // connection — it doesn't work reliably through a transaction-mode
+    // pooler like Neon's (no session-level features: advisory locks,
+    // certain prepared statements). The running app is unaffected by this —
+    // it never reads this file; `shared/utils/prisma.ts` builds its own
+    // adapter straight from `DATABASE_URL` (the pooled one), independently.
+    // Locally there's no pooler distinction, so DIRECT_URL is unset and this
+    // just falls back to DATABASE_URL.
+    url: process.env["DIRECT_URL"] || process.env["DATABASE_URL"]!,
   },
 });
