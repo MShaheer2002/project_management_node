@@ -24,12 +24,13 @@ backend URL to point at.
 - A DigitalOcean account, and a GitHub account with access to the
   `project_management_node` repo.
 
-**One decision to make at step 2 below, not before:** DO will ask which
-branch to deploy from. Since this repo's deployment work only exists on
-`feat/ai-agent-redesign`, point it there directly rather than merging to
-`main` first just to unblock deployment — merge into `main` whenever that
-branch is actually ready on its own timeline, then repoint DO at `main` at
-that point (a one-line change in DO's settings, not a redo of this guide).
+**Branch workflow (decided):** `main` is the deployed branch — it's a
+fast-forward of what used to be `feat/ai-agent-redesign` (`main` was
+previously just the original empty scaffold, 1 commit; it now matches the
+72 real commits of app code). `dev` is where ongoing work happens. The
+workflow going forward: commit to `dev`, open a PR into `main` when a
+change is ready to ship, merge it — DO auto-deploys `main` on every merge.
+Point DO at **`main`** in step 2 below, not `dev`.
 
 ---
 
@@ -40,8 +41,8 @@ that point (a one-line change in DO's settings, not a redo of this guide).
    the first time (it'll ask which repos to grant access to — select
    `project_management_node` specifically, not "all repositories," unless
    you're fine granting more).
-3. Pick the repo, then the branch: **`feat/ai-agent-redesign`** (see the
-   decision note above).
+3. Pick the repo, then the branch: **`main`** (see the branch workflow
+   note above).
 4. DO scans the repo and should detect a `Dockerfile` at the root and
    offer **"Dockerfile"** as the build method — pick that explicitly if
    it defaults to buildpacks instead. Buildpacks would try to guess how to
@@ -172,11 +173,10 @@ Job** → add one with run command:
 npx prisma migrate deploy
 ```
 
-From this point on, every future push to `feat/ai-agent-redesign` (or
-`main`, once you repoint it) triggers a rebuild that runs this job first,
-applying any new migrations before the new code goes live — you never run
-`migrate deploy` by hand again after this (that was the one-time bootstrap
-in `step-4-migration-neon.md`).
+From this point on, every future merge into `main` triggers a rebuild that
+runs this job first, applying any new migrations before the new code goes
+live — you never run `migrate deploy` by hand again after this (that was
+the one-time bootstrap in `step-4-migration-neon.md`).
 
 ---
 
