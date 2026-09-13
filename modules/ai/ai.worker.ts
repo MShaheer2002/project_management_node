@@ -61,6 +61,15 @@ function createAiWorker<T>(
       connection: connection as any,
       prefix: env.REDIS_QUEUE_PREFIX ?? "trussen",
       concurrency: options.concurrency,
+      // BullMQ's default (5s) means every idle worker re-polls Redis
+      // constantly — with 6 queues running 24/7 this alone burned ~456k of
+      // Upstash's 500k free monthly commands in under a day with zero real
+      // jobs. These are background AI jobs (embeddings, digests, etc.), not
+      // anything a user is watching load in real time, so trading up to 10
+      // minutes of extra pickup latency for ~120x fewer idle commands is a
+      // fine deal — this is what's keeping the free tier's monthly cap from
+      // being blown through by idle polling alone.
+      drainDelay: 600,
       ...(options.limiter ? { limiter: options.limiter } : {}),
     },
   );
