@@ -5,8 +5,7 @@
  *   POST  /connect        — Connect with personal access token (ADMIN/OWNER)
  *   GET   /settings       — Get settings (ADMIN/OWNER)
  *   PATCH /settings       — Update settings (ADMIN/OWNER)
- *   GET   /preview        — Fetch file metadata from URL (any member)
- *   POST  /batch-preview  — Fetch metadata for multiple URLs (any member)
+ *   POST  /batch-preview  — Previews for Figma links on an issue the caller can see (F-41)
  */
 
 import { Router } from "express";
@@ -18,7 +17,6 @@ import { strictRateLimiter } from "../../../shared/middleware/rate-limiter.js";
 import * as controller from "./figma.controller.js";
 import {
   connectFigmaSchema,
-  previewFigmaSchema,
   updateFigmaSettingsSchema,
 } from "./figma.schemas.js";
 
@@ -53,15 +51,6 @@ router.patch(
 );
 
 // Preview — any workspace member, rate limited (hits external Figma API)
-router.get(
-  "/preview",
-  authenticate,
-  requireWorkspace,
-  strictRateLimiter,
-  validate(previewFigmaSchema),
-  controller.preview,
-);
-
 // Batch preview — any workspace member, rate limited
 router.post(
   "/batch-preview",

@@ -6,7 +6,6 @@ import {
   buildCursorConfig,
   evaluateAiConnectionHealth,
   buildGenericSetup,
-  resolveCodexMcpUrl,
   resolveMcpBaseUrl,
   toConnectionStatus,
 } from "./ai-connection.service.js";
@@ -16,15 +15,32 @@ test("resolveMcpBaseUrl points at the remote MCP endpoint", () => {
   assert.match(resolveMcpBaseUrl(), /\/mcp$/);
 });
 
-test("resolveCodexMcpUrl appends the token as api_key for Codex compatibility", () => {
-  const url = resolveCodexMcpUrl("lin_test_abc123");
-  assert.match(url, /\?api_key=lin_test_abc123$/);
-});
-
 test("buildCodexConfig emits a minimal MCP toml block", () => {
   const config = buildCodexConfig("lin_test_abc123");
   assert.match(config, /\[mcp_servers\.trussen\]/);
-  assert.match(config, /api_key=lin_test_abc123/);
+  assert.match(config, /http_headers = \{ Authorization = "Bearer lin_test_abc123" \}/);
+});
+
+test("no client config puts the token in a URL (F-14)", () => {
+  // A PAT in a query string leaks into every upstream proxy/CDN/tunnel access
+  // log, shell history and Referer header. Codex used to be generated that way.
+  const token = "lin_test_abc123";
+  for (const [name, config] of [
+    ["codex", buildCodexConfig(token)],
+    ["claudeDesktop", buildClaudeDesktopConfig(token)],
+    ["cursor", buildCursorConfig(token)],
+  ] as const) {
+    assert.equal(config.includes("api_key="), false, `${name} config embeds api_key in a URL`);
+    assert.equal(config.includes(`?${token}`), false, `${name} config puts the token in a query string`);
+    assert.match(config, /Authorization/, `${name} config does not use header auth`);
+  }
+});
+
+test("the Codex block is valid TOML shape — key = value per line, token not in the url", () => {
+  const lines = buildCodexConfig("lin_test_abc123").split("\n");
+  const urlLine = lines.find((line) => line.startsWith("url = "));
+  assert.ok(urlLine, "no url line");
+  assert.equal(urlLine!.includes("lin_test_abc123"), false, "token leaked into the url line");
 });
 
 test("desktop-style clients use bearer auth config", () => {

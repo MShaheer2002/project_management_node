@@ -57,6 +57,32 @@ function uniqueUserIds(values: Array<string | null | undefined>) {
   return [...new Set(values.filter(Boolean) as string[])];
 }
 
+/**
+ * The numbers a stored summary may keep: plain values and one level of
+ * {value, direction}-style objects. Every list is dropped, which removes the
+ * per-person tables (workload, completion rate, overdue per member).
+ *
+ * Summaries were stored with the full analytics payload, computed as an
+ * admin, and served to anyone who can see the project or team — members and
+ * guests could read colleagues' overdue counts and completion rates that the
+ * analytics pages only show to leads and admins (F-43).
+ */
+export function aggregateMetrics(summary: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (!summary || typeof summary !== "object") return out;
+  for (const [key, value] of Object.entries(summary as Record<string, unknown>)) {
+    if (value === null || ["number", "string", "boolean"].includes(typeof value)) {
+      out[key] = value;
+    } else if (typeof value === "object" && !Array.isArray(value)) {
+      const flat = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).filter(([, v]) => v === null || ["number", "string", "boolean"].includes(typeof v)),
+      );
+      if (Object.keys(flat).length > 0) out[key] = flat;
+    }
+  }
+  return out;
+}
+
 export async function buildWorkspaceDigestPayload(workspaceId: string) {
   const [analytics, owners, blockedRows, currentCycles] = await Promise.all([
     getWorkspaceAnalytics(workspaceId, { period: "7d" }),
@@ -126,7 +152,7 @@ export async function buildWorkspaceDigestPayload(workspaceId: string) {
     reason: "Built from the shared workspace analytics primitives used by Trussen AI reports, with blocker and current-cycle highlights.",
     payload: {
       scope: "workspace",
-      analytics,
+      metrics: aggregateMetrics(analytics.summary),
       report: formatAnalyticsReport("workspace", analytics),
       topBlockers,
       cycleProgress,
@@ -184,7 +210,7 @@ export async function buildProjectHealthSummary(workspaceId: string, projectId: 
     reason: "Generated from the shared project analytics pipeline to proactively surface delivery risk.",
     payload: {
       scope: "project",
-      analytics,
+      metrics: aggregateMetrics(analytics.summary),
       report: formatAnalyticsReport("project", analytics),
       riskSignals,
       anchor: { targetType: "project", targetId: project.id },
@@ -203,18 +229,13 @@ export async function buildProjectHealthSummary(workspaceId: string, projectId: 
 }
 
 export async function buildTeamHealthSummary(workspaceId: string, teamId: string): Promise<ProactiveSummaryResult | null> {
-  const [analytics, team, admins, memberships] = await Promise.all([
+  const [analytics, team, admins] = await Promise.all([
     getTeamAnalytics(workspaceId, BACKGROUND_ANALYTICS_ROLE, "", teamId, DEFAULT_RANGE),
     prisma.team.findFirst({
       where: { id: teamId, workspaceId },
       select: { id: true, name: true, leadId: true },
     }),
     getWorkspaceAdminIds(workspaceId),
-    prisma.teamMembership.findMany({
-      where: { teamId },
-      select: { userId: true },
-      take: 100,
-    }),
   ]);
 
   if (!team) return null;
@@ -247,16 +268,13 @@ export async function buildTeamHealthSummary(workspaceId: string, teamId: string
     reason: "Generated from the shared team analytics pipeline to surface workload imbalance and delivery pressure.",
     payload: {
       scope: "team",
-      analytics,
+      metrics: aggregateMetrics(analytics.summary),
       report: formatAnalyticsReport("team", analytics),
       riskSignals,
       anchor: { targetType: "team", targetId: team.id },
     },
-    recipientUserIds: uniqueUserIds([
-      ...admins,
-      team.leadId,
-      ...memberships.map((membership) => membership.userId),
-    ]),
+    // Team health is about people's workload: leads and admins only, like team analytics.
+    recipientUserIds: uniqueUserIds([...admins, team.leadId]),
     dedupeSuffix: `day:${getDayBucket()}`,
     expiresAt: expiresInDefaultWindow(),
     notificationTargetType: "team",
@@ -266,7 +284,7 @@ export async function buildTeamHealthSummary(workspaceId: string, teamId: string
 }
 
 export async function buildCycleHealthSummary(workspaceId: string, cycleId: string): Promise<ProactiveSummaryResult | null> {
-  const [analytics, cycle, admins, memberships] = await Promise.all([
+  const [analytics, cycle, admins] = await Promise.all([
     getCycleAnalytics(workspaceId, BACKGROUND_ANALYTICS_ROLE, "", cycleId, DEFAULT_RANGE),
     prisma.cycle.findFirst({
       where: { id: cycleId, workspaceId },
@@ -278,19 +296,6 @@ export async function buildCycleHealthSummary(workspaceId: string, cycleId: stri
       },
     }),
     getWorkspaceAdminIds(workspaceId),
-    prisma.cycle.findFirst({
-      where: { id: cycleId, workspaceId },
-      select: {
-        team: {
-          select: {
-            memberships: {
-              select: { userId: true },
-              take: 100,
-            },
-          },
-        },
-      },
-    }),
   ]);
 
   if (!cycle) return null;
@@ -318,17 +323,14 @@ export async function buildCycleHealthSummary(workspaceId: string, cycleId: stri
     reason: "Generated from the shared cycle analytics pipeline to highlight pacing risk before the cycle slips further.",
     payload: {
       scope: "cycle",
-      analytics,
+      metrics: aggregateMetrics(analytics.summary),
       report: formatAnalyticsReport("cycle", analytics),
       riskSignals,
       teamId: cycle.teamId,
       anchor: { targetType: "cycle", targetId: cycle.id },
     },
-    recipientUserIds: uniqueUserIds([
-      ...admins,
-      cycle.team?.leadId,
-      ...((memberships?.team?.memberships ?? []).map((membership) => membership.userId)),
-    ]),
+    // Leads and admins only, like cycle analytics.
+    recipientUserIds: uniqueUserIds([...admins, cycle.team?.leadId]),
     dedupeSuffix: `day:${getDayBucket()}`,
     expiresAt: expiresInDefaultWindow(),
     notificationTargetType: "team",

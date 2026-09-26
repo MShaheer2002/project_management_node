@@ -359,6 +359,10 @@ model User {
   name         String
   avatar       String?
   lastActiveAt DateTime?
+  // Set when Clerk reports the account deleted. The row is kept because
+  // Activity/Issue/Comment/ApiKey FKs are RESTRICT and authorship must survive;
+  // access is revoked separately (memberships, API keys, AI connections). F-19.
+  deletedAt    DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -410,6 +414,8 @@ model User {
   uploadedDocuments     EntityDocument[] @relation("EntityDocumentUploader")
   createdDocumentFolders DocumentFolder[] @relation("DocumentFolderCreator")
   driveConnection       UserDriveConnection? // Per-user Google Drive OAuth connection
+  driveUploads          DriveUpload[]
+  workspaceDrivesConnected WorkspaceDriveConnection[]
   aiConversations       AiConversation[] // Trussen AI chat conversations
   aiUserUsageDaily      AiUserUsageDaily[] // Daily AI usage rollups per workspace
   aiToolExecutions      AiToolExecution[] // Recent AI mutation executions for duplicate protection
@@ -455,6 +461,19 @@ model Workspace {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // Soft delete: an OWNER "deleting" the workspace deactivates it. It is
+  // unusable but restorable by an OWNER until purgeAt, when the lifecycle job
+  // (workspace-lifecycle.service.ts) deletes it and everything it owns.
+  deactivatedAt                DateTime?
+  deactivatedById              String? // No FK — must survive that user's own offboarding
+  purgeAt                      DateTime?
+  purgeStartedAt               DateTime? // Purge lock; a lock older than an hour is retried
+  lastDeletionReminderDaysLeft Int? // 15 / 5 / 1 — which countdown email went out last
+  resumeBillingOnRestore       Boolean @default(false)
+  // Whether members may set their *personal* Google Drive to share uploads as
+  // "anyone with the link". The Workspace Drive's sharing is set by admins.
+  allowPublicDriveLinks        Boolean @default(true) // Renewal was switched off by the deactivation, so a restore switches it back on
+
   // -- Creator relation --
   createdBy User @relation("WorkspaceCreator", fields: [createdById], references: [id])
 
@@ -498,8 +517,11 @@ model Workspace {
   aiResolverSnapshots   AiResolverSnapshot[]
   aiMetricCountersDaily AiMetricCounterDaily[]
   statusCounts          WorkspaceStatusCount[]
+  driveUploads          DriveUpload[]
+  driveConnection       WorkspaceDriveConnection?
 
   @@index([slug])
+  @@index([purgeAt])
 }
 
 /// WorkspaceMembership — join table linking User ↔ Workspace with a role
@@ -515,6 +537,8 @@ model WorkspaceMembership {
   designation String?
   invitedById String? // FK → User who invited this member (null for workspace creator)
   joinedAt    DateTime      @default(now())
+  // Where this member's Drive uploads go when the workspace has a Workspace Drive
+  driveUploadTarget DriveTarget @default(WORKSPACE)
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1206,6 +1230,7 @@ model Notification {
   @@index([workspaceId, recipientUserId, createdAt(sort: Desc)])
   @@index([workspaceId, recipientUserId, readAt, createdAt(sort: Desc)])
   @@index([workspaceId, recipientUserId, type, createdAt(sort: Desc)])
+  @@index([workspaceId, actorUserId, type, createdAt]) // hourly mention limit (F-38)
   @@unique([workspaceId, recipientUserId, dedupeKey])
   @@index([workspaceId])
 }
@@ -1341,7 +1366,7 @@ model Integration {
   workspaceId   String
   provider      IntegrationProvider
   connected     Boolean             @default(false)
-  accessToken   String?             // OAuth token (GitHub/Slack) — encrypted at app level
+  accessToken   String?             // OAuth token (GitHub/Slack/Figma) — AES-256-GCM at app level (shared/utils/secret-box.ts). Rows predating that are plaintext until `npm run backfill:integration-tokens`.
   providerMeta  Json?               // Small stable identity data (GitHub user, Slack team, etc.)
   connectedAt   DateTime?
   connectedById String?             // FK → User who connected this integration
@@ -1645,6 +1670,7 @@ model UserDriveConnection {
   tokenExpiresAt DateTime // When the access token expires (used to trigger refresh)
   email          String   // Google account email for display (e.g., "shaheer@gmail.com")
   connected      Boolean  @default(true)
+  defaultSharing DriveSharing @default(PUBLIC) // Who can open files uploaded to this Drive
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -2107,4 +2133,66 @@ model ProjectStatusCount {
 
   @@id([projectId, statusKey])
   @@index([projectId])
+}
+
+/// How a file Trussen uploaded to someone's Google Drive is shared (F-39).
+/// PRIVATE: only the uploader (others use Google's "Request access").
+/// COMPANY: anyone signed in to the uploader's Google Workspace domain with the link.
+/// PUBLIC: anyone with the link — only when the workspace allows it.
+enum DriveSharing {
+  PRIVATE
+  COMPANY
+  PUBLIC
+}
+
+/// One row per file Trussen uploaded to a user's Google Drive. The proof that a
+/// Drive attachment is genuine (validateAttachmentRefs), and the record of how
+/// it is shared. Only the uploader's own Drive token can change the file.
+model DriveUpload {
+  id          String       @id @default(uuid())
+  workspaceId String
+  uploaderId  String
+  driveFileId String       @unique
+  fileName    String
+  mimeType    String
+  sizeBytes   Int
+  webViewLink String
+  sharing     DriveSharing @default(PRIVATE)
+  target      DriveTarget  @default(PERSONAL) // Which Drive holds it: the uploader's own, or the Workspace Drive
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  uploader  User      @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, sharing])
+  @@index([uploaderId])
+}
+
+/// Which Google Drive an upload goes to.
+enum DriveTarget {
+  PERSONAL
+  WORKSPACE
+}
+
+/// One Google Drive for the whole workspace, connected by an owner or admin.
+/// Every member can upload into it. Removed automatically if the admin who
+/// connected it leaves the workspace or stops being an admin — their Google
+/// account holds the files.
+model WorkspaceDriveConnection {
+  id             String       @id @default(uuid())
+  workspaceId    String       @unique // One per workspace; also settles two admins connecting at once
+  connectedById  String
+  email          String
+  accessToken    String       // Encrypted at rest (AES-256-GCM)
+  refreshToken   String       // Encrypted at rest (AES-256-GCM)
+  tokenExpiresAt DateTime
+  defaultSharing DriveSharing @default(PUBLIC)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  connectedBy User      @relation(fields: [connectedById], references: [id], onDelete: Cascade)
+
+  @@index([connectedById])
 }

@@ -64,12 +64,11 @@ async function assertIssueLabelWriteAccess(workspaceId: string, workspaceRole: W
     select: { id: true },
   });
 
+  // One answer for both "does not exist" and "exists but is not yours".
+  // Returning 403 in the second case confirmed which issue keys are real, and
+  // keys are sequential (`PREFIX-N`), so it mapped the whole workspace (F-07).
   if (!issue) {
-    const exists = await prisma.issue.findFirst({ where: { id: issueId, workspaceId }, select: { id: true } });
-    if (!exists) {
-      throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
-    }
-    throw new AppError(403, ERROR_CODES.FORBIDDEN, "You cannot modify labels for this issue");
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
   }
 }
 

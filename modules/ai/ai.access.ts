@@ -4,7 +4,10 @@ import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { prisma } from "../../shared/utils/prisma.js";
 
-export type AiFeature = "chat" | "issue_generation";
+// "assist" and "draft_suggestions" are cheap features, but they still call a
+// provider (and draft suggestions creates embeddings), so they are gated and
+// metered like the rest (F-23).
+export type AiFeature = "chat" | "issue_generation" | "assist" | "draft_suggestions";
 
 type LimitConfig = {
   requestLimit: number | null;

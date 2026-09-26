@@ -42,10 +42,14 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
     // If the user signed up 1 second ago, the webhook might not have fired yet.
     const user = await prisma.user.findUnique({
       where: { id: auth.userId },
-      select: { id: true, email: true, name: true },
+      select: { id: true, email: true, name: true, deletedAt: true },
     });
 
-    if (!user) {
+    // An offboarded account keeps its User row (authorship must survive), so
+    // existence alone is not proof of a live account (F-19). Clerk should stop
+    // issuing tokens for a deleted user anyway — this closes the window where
+    // an already-issued token is still within its lifetime.
+    if (!user || user.deletedAt) {
       throw new AppError(
         403,
         ERROR_CODES.USER_NOT_SYNCED,

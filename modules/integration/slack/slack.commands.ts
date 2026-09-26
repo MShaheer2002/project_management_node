@@ -9,8 +9,17 @@
 
 import { prisma } from "../../../shared/utils/prisma.js";
 import { env } from "../../../config/env.js";
-import { findConnectedIntegration, getSettings } from "../integration.service.js";
-import { parseSlashCommand, parseCommandFlags, ephemeralResponse } from "./slack.utils.js";
+import { getSettings } from "../integration.service.js";
+import { decryptSecretOrLegacy } from "../../../shared/utils/secret-box.js";
+import { visibleIssueWhere, type Viewer } from "../../../shared/utils/visibility.js";
+import type { WorkspaceRole } from "../../../app/generated/prisma/client.js";
+import {
+  parseSlashCommand,
+  parseCommandFlags,
+  ephemeralResponse,
+  findIntegrationForTeam,
+  escapeSlackText,
+} from "./slack.utils.js";
 
 // ─── Main Handler ───────────────────────────────────────────────────────────
 
@@ -32,17 +41,25 @@ export async function handleSlashCommand(body: {
   // Find workspace by Slack team ID stored in providerMeta
   const integrations = await prisma.integration.findMany({
     where: { provider: "SLACK", connected: true },
-    select: { id: true, workspaceId: true, accessToken: true, providerMeta: true, connectedById: true },
+    select: {
+      id: true,
+      workspaceId: true,
+      accessToken: true,
+      providerMeta: true,
+      connectedById: true,
+      workspace: { select: { deactivatedAt: true } },
+    },
   });
 
-  // Match by team_id from the Slack payload
-  const integration = integrations.find((i) => {
-    const meta = i.providerMeta as { team?: { id: string } } | null;
-    return meta?.team?.id === body.team_id;
-  }) ?? integrations[0]; // Fallback to first if single workspace
+  // Match by team_id — no fallback to another tenant, see findIntegrationForTeam (F-03).
+  const integration = findIntegrationForTeam(integrations, body.team_id);
 
   if (!integration) {
     return ephemeralResponse(":x: No Trussen workspace is connected to this Slack workspace.");
+  }
+
+  if (integration.workspace.deactivatedAt) {
+    return ephemeralResponse(":x: This Trussen workspace has been deactivated by its owner.");
   }
 
   const settings = await getSettings(integration.id);
@@ -51,10 +68,16 @@ export async function handleSlashCommand(body: {
   }
 
   const workspaceId = integration.workspaceId;
-  const token = integration.accessToken!;
+  const token = decryptSecretOrLegacy(integration.accessToken!);
 
-  // Resolve the Slack user to a Trussen user by email
-  let actorId = integration.connectedById!; // Fallback to admin
+  // Resolve the Slack user to a Trussen user by email.
+  //
+  // There is deliberately NO fallback to the integration's connecting admin.
+  // Anyone in the connected Slack team can run /trussen — including
+  // single-channel guests — so falling back meant an unmapped Slack user
+  // created issues attributed to an admin and read issues with that admin's
+  // reach (F-18).
+  let viewer: Viewer | null = null;
   try {
     const slackUserResponse = await fetch(
       `https://slack.com/api/users.info?user=${body.user_id}`,
@@ -74,27 +97,34 @@ export async function handleSlashCommand(body: {
         // Verify user is a member of this workspace
         const membership = await prisma.workspaceMembership.findUnique({
           where: { userId_workspaceId: { userId: trussenUser.id, workspaceId } },
-          select: { userId: true },
+          select: { role: true },
         });
         if (membership) {
-          actorId = trussenUser.id;
+          viewer = { userId: trussenUser.id, role: membership.role as WorkspaceRole };
         }
       }
     }
   } catch {
-    // Fallback to admin — non-critical
+    // Leave viewer null — an unresolved Slack user gets no access at all.
+  }
+
+  if (!viewer) {
+    return ephemeralResponse(
+      ":x: Your Slack account isn't linked to a Trussen member in this workspace. " +
+      "Make sure your Slack email matches your Trussen account.",
+    );
   }
 
   switch (subCommand) {
     case "create":
-      return handleCreateCommand(workspaceId, actorId, args);
+      return handleCreateCommand(workspaceId, viewer.userId, args);
     case "status":
-      return handleStatusCommand(workspaceId, args);
+      return handleStatusCommand(workspaceId, viewer, args);
     case "my-issues":
     case "my":
-      return handleMyIssuesCommand(workspaceId, actorId);
+      return handleMyIssuesCommand(workspaceId, viewer.userId);
     case "cycle":
-      return handleCycleCommand(workspaceId);
+      return handleCycleCommand(workspaceId, viewer);
     case "help":
     case "":
       return handleHelpCommand();
@@ -173,14 +203,17 @@ export async function handleCreateCommand(workspaceId: string, actorId: string, 
   );
 }
 
-export async function handleStatusCommand(workspaceId: string, args: string) {
+export async function handleStatusCommand(workspaceId: string, viewer: Viewer, args: string) {
   const issueRef = args.trim().toUpperCase();
   if (!issueRef) {
     return ephemeralResponse(":x: Usage: `/trussen status TES-1`");
   }
 
+  // Scoped to the resolved member: issue keys are sequential, so an unscoped
+  // lookup let anyone in the Slack team read private-project issues by
+  // guessing keys (F-18). "Not found" covers both cases — no existence oracle.
   const issue = await prisma.issue.findFirst({
-    where: { id: issueRef, workspaceId },
+    where: { id: issueRef, workspaceId, ...visibleIssueWhere(viewer) },
     select: {
       id: true,
       title: true,
@@ -206,9 +239,9 @@ export async function handleStatusCommand(workspaceId: string, args: string) {
   };
 
   return ephemeralResponse(
-    `${statusEmoji[issue.status] ?? ":grey_question:"} <${issueUrl}|${issue.id}> ${issue.title}\n` +
+    `${statusEmoji[issue.status] ?? ":grey_question:"} <${issueUrl}|${issue.id}> ${escapeSlackText(issue.title)}\n` +
     `*Status:* ${issue.status} \u00b7 *Priority:* ${issue.priority}\n` +
-    `*Assignee:* ${issue.assignee?.name ?? "Unassigned"} \u00b7 *Project:* ${issue.project?.name ?? "\u2014"}`,
+    `*Assignee:* ${escapeSlackText(issue.assignee?.name ?? "Unassigned")} \u00b7 *Project:* ${escapeSlackText(issue.project?.name ?? "\u2014")}`,
   );
 }
 
@@ -243,21 +276,20 @@ export async function handleMyIssuesCommand(workspaceId: string, actorId: string
   const lines = issues.map((i) => {
     const emoji = priorityEmoji[i.priority] ?? ":grey_question:";
     const url = `${env.FRONTEND_URL}/issues/${i.id}`;
-    return `${emoji} <${url}|${i.id}> ${i.title} \u2014 _${i.status}_`;
+    return `${emoji} <${url}|${i.id}> ${escapeSlackText(i.title)} \u2014 _${i.status}_`;
   });
 
   return ephemeralResponse(`*Your Open Issues (${issues.length})*\n\n${lines.join("\n")}`);
 }
 
-export async function handleCycleCommand(workspaceId: string) {
+export async function handleCycleCommand(workspaceId: string, viewer: Viewer) {
   const cycle = await prisma.cycle.findFirst({
     where: { workspaceId, status: "CURRENT" },
     select: {
       id: true,
       name: true,
-      startDate: true,
-      endDate: true,
-      _count: { select: { issues: true } },
+      startsAt: true,
+      endsAt: true,
     },
   });
 
@@ -265,22 +297,23 @@ export async function handleCycleCommand(workspaceId: string) {
     return ephemeralResponse(":calendar: No active cycle found.");
   }
 
-  const completedCount = await prisma.issue.count({
-    where: { cycleId: cycle.id, status: "DONE" },
-  });
-
-  const total = cycle._count.issues;
+  // Counts scoped the same way — a cycle spans projects the caller may not see.
+  const visible = visibleIssueWhere(viewer);
+  const [completedCount, total] = await Promise.all([
+    prisma.issue.count({ where: { cycleId: cycle.id, status: "DONE", ...visible } }),
+    prisma.issue.count({ where: { cycleId: cycle.id, ...visible } }),
+  ]);
   const progress = total > 0 ? Math.round((completedCount / total) * 100) : 0;
 
-  const startStr = cycle.startDate
-    ? new Date(cycle.startDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+  const startStr = cycle.startsAt
+    ? new Date(cycle.startsAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })
     : "\u2014";
-  const endStr = cycle.endDate
-    ? new Date(cycle.endDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+  const endStr = cycle.endsAt
+    ? new Date(cycle.endsAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })
     : "\u2014";
 
   return ephemeralResponse(
-    `:calendar: *${cycle.name}*\n${startStr} \u2013 ${endStr}\n\n` +
+    `:calendar: *${escapeSlackText(cycle.name)}*\n${startStr} \u2013 ${endStr}\n\n` +
     `:chart_with_upwards_trend: Progress: ${progress}% (${completedCount}/${total} issues)\n` +
     `:white_check_mark: Done: ${completedCount} \u00b7 :arrows_counterclockwise: Remaining: ${total - completedCount}`,
   );

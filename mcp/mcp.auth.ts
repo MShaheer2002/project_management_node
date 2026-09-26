@@ -265,6 +265,15 @@ export function extractMcpAccessToken(input: {
     return extractBearerToken(input.authorizationHeader);
   }
 
+  // DEPRECATED: token in the query string. Still accepted so existing clients
+  // configured with the old generated Codex URL keep working, but no longer
+  // advertised — a PAT in a URL leaks into every upstream proxy/CDN/tunnel
+  // access log, shell history and Referer header. This app's request logger
+  // redacts these keys; upstream logs do not (F-14).
+  //
+  // ponytail: remove the branch once telemetry shows no client using it —
+  //   the warning below is how you know. Cutting it now would break anyone
+  //   still on a previously generated Codex config.
   const queryToken =
     typeof input.query?.api_key === "string"
       ? input.query.api_key
@@ -273,11 +282,14 @@ export function extractMcpAccessToken(input: {
         : null;
 
   if (queryToken && queryToken.trim()) {
+    console.warn(
+      "[MCP] Deprecated query-string token used. Re-copy the client setup to use the Authorization header (F-14).",
+    );
     return queryToken.trim();
   }
 
   throw new Error(
-    "Missing MCP token. Send Authorization: Bearer <Trussen AI connection token> or use ?api_key=<token>.",
+    "Missing MCP token. Send Authorization: Bearer <Trussen AI connection token>.",
   );
 }
 

@@ -65,6 +65,7 @@ export const completeOAuthSetup: RequestHandler = async (req, res, next) => {
     const result = await aiConnectionService.completeOAuthSetup(
       req.workspace!.id,
       req.user!.id,
+      req.workspace!.role,
       req.body,
     );
     sendSuccess(res, 200, result);

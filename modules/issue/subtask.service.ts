@@ -2,10 +2,17 @@ import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { runSubtaskCompletionAutomation } from "../../shared/workflow/workflow-automation-runtime.js";
+import { visibleIssueWhere, type Viewer } from "../../shared/utils/visibility.js";
 
-async function assertIssueExists(workspaceId: string, issueId: string) {
+/**
+ * Subtask writes are issue writes: they can flip an issue's status through the
+ * subtask-completion automation. Existence in the workspace was the only check,
+ * so any MEMBER could add or complete subtasks on an issue in a private project
+ * they are not a member of (F-21).
+ */
+async function assertIssueWritable(workspaceId: string, viewer: Viewer, issueId: string) {
   const issue = await prisma.issue.findFirst({
-    where: { id: issueId, workspaceId },
+    where: { id: issueId, workspaceId, ...visibleIssueWhere(viewer) },
     select: { id: true },
   });
 
@@ -16,10 +23,11 @@ async function assertIssueExists(workspaceId: string, issueId: string) {
 
 export async function createSubtask(
   workspaceId: string,
+  viewer: Viewer,
   issueId: string,
   input: { title: string; order?: number },
 ) {
-  await assertIssueExists(workspaceId, issueId);
+  await assertIssueWritable(workspaceId, viewer, issueId);
 
   const subtask = await prisma.issueSubtask.create({
     data: {
@@ -34,12 +42,13 @@ export async function createSubtask(
 
 export async function updateSubtask(
   workspaceId: string,
+  viewer: Viewer,
   issueId: string,
   subtaskId: string,
   actorUserId: string,
   input: { title?: string; completed?: boolean; order?: number },
 ) {
-  await assertIssueExists(workspaceId, issueId);
+  await assertIssueWritable(workspaceId, viewer, issueId);
 
   const existing = await prisma.issueSubtask.findFirst({
     where: { id: subtaskId, issueId },
@@ -66,8 +75,8 @@ export async function updateSubtask(
   return subtask;
 }
 
-export async function deleteSubtask(workspaceId: string, issueId: string, subtaskId: string) {
-  await assertIssueExists(workspaceId, issueId);
+export async function deleteSubtask(workspaceId: string, viewer: Viewer, issueId: string, subtaskId: string) {
+  await assertIssueWritable(workspaceId, viewer, issueId);
 
   const existing = await prisma.issueSubtask.findFirst({
     where: { id: subtaskId, issueId },
@@ -83,10 +92,11 @@ export async function deleteSubtask(workspaceId: string, issueId: string, subtas
 
 export async function reorderSubtasks(
   workspaceId: string,
+  viewer: Viewer,
   issueId: string,
   items: Array<{ id: string; order: number }>,
 ) {
-  await assertIssueExists(workspaceId, issueId);
+  await assertIssueWritable(workspaceId, viewer, issueId);
 
   await prisma.$transaction(
     items.map((item) =>

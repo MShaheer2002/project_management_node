@@ -2,6 +2,7 @@ import { prisma } from "../utils/prisma.js";
 import { logActivity } from "../utils/activity.js";
 import { createNotification } from "../../modules/notification/notification.service.js";
 import { resolveEffectiveWorkflow, resolveEffectiveWorkflowMap, type EffectiveWorkflow } from "./effective-workflow.js";
+import type { WorkspaceStatusRecord } from "./workflow-automation.js";
 
 function isFinalStatus(statuses: Array<{ key: string; isFinal: boolean }>, statusKey: string) {
   return statuses.find((status) => status.key === statusKey)?.isFinal === true;
@@ -50,6 +51,46 @@ async function getWorkflowContextForProjects(workspaceId: string, projectIds: st
   return resolveEffectiveWorkflowMap(workspaceSource, projects);
 }
 
+/**
+ * Would moving an issue between these statuses cross a workflow gate?
+ *
+ * An automation has no reviewer, no role and no way to satisfy a person-specific
+ * rule, so it must not perform a move the workflow restricts — otherwise
+ * completing subtasks becomes a way around approvals (F-21). It does not
+ * evaluate the gate *against the triggering user*: even a user who could make
+ * the move by hand should do so explicitly, not as a side effect.
+ *
+ * Returns the reason it is blocked, or null when the move is unrestricted.
+ */
+export function automationTransitionBlockedBy(
+  statuses: WorkspaceStatusRecord[],
+  currentStatusKey: string,
+  targetStatusKey: string,
+): string | null {
+  const current = statuses.find((status) => status.key === currentStatusKey);
+  const target = statuses.find((status) => status.key === targetStatusKey);
+  if (!current || !target) return "unknown status";
+
+  // Forward move out of an approval-gated status — the exact bypass.
+  if (current.approval.required && target.order > current.order) {
+    return `${current.label} requires approval before moving forward`;
+  }
+
+  if (current.transitions.mode === "restricted") {
+    const explicit = current.transitions.to.includes(targetStatusKey);
+    const rollback = current.transitions.allowRollback && target.order < current.order;
+    if (!explicit && !rollback) {
+      return `${current.label} cannot transition to ${target.label}`;
+    }
+  }
+
+  // Person-specific gates an automation cannot stand in for.
+  if (target.transitions.assigneeOnly) return `${target.label} can only be entered by the assignee`;
+  if (target.transitions.creatorOnly) return `${target.label} can only be entered by the creator`;
+
+  return null;
+}
+
 export async function runSubtaskCompletionAutomation(
   workspaceId: string,
   issueId: string,
@@ -91,6 +132,14 @@ export async function runSubtaskCompletionAutomation(
   const targetStatusKey = automation.subtaskCompletion.targetStatusKey;
 
   if (automation.subtaskCompletion.mode === "move" && targetStatusKey !== issue.status) {
+    const blocked = automationTransitionBlockedBy(statuses, issue.status, targetStatusKey);
+    if (blocked) {
+      console.warn(
+        `[workflow] subtask-completion automation skipped for issue ${issue.id}: ${blocked}`,
+      );
+      return;
+    }
+
     const nextCompletedAt = isFinalStatus(statuses, targetStatusKey) ? new Date() : issue.completedAt;
 
     await prisma.issue.update({

@@ -94,23 +94,32 @@ export const AI_MODELS: Record<string, AiModel> = {
 
 // ─── Model Configuration (from env, with hardcoded defaults) ────────────────
 
+// Fallbacks come only from configuration — there are no built-in defaults.
+// They used to default to free ":free" models, so any outage sent workspace
+// data (issue text, member and project names, tool results) to free
+// third-party endpoints that may keep or train on it (F-42).
+
+/** A free OpenRouter model. */
+export const isFreeModel = (model: string) => model.endsWith(":free");
+
+/** Fallbacks we may call automatically: configured, and not free unless explicitly allowed. */
+export function usableFallbacks(models: Array<string | undefined | null>, allowFree = env.AI_ALLOW_FREE_FALLBACKS) {
+  return uniqueModels(models).filter((model) => allowFree || !isFreeModel(model));
+}
+
 // Issue Creator models (Phase 20A)
 export const ISSUE_MODEL_DEFAULT = env.AI_ISSUE_MODEL_DEFAULT ?? "deepseek/deepseek-v4-flash";
 export const ISSUE_MODEL_FALLBACKS = [
   ISSUE_MODEL_DEFAULT,
-  env.AI_ISSUE_MODEL_FALLBACK_1 ?? "meta-llama/llama-3.3-70b-instruct:free",
-  env.AI_ISSUE_MODEL_FALLBACK_2 ?? "qwen/qwen3-coder:free",
-  env.AI_ISSUE_MODEL_FALLBACK_3 ?? "google/gemma-4-31b-it:free",
-].filter(Boolean);
+  ...usableFallbacks([env.AI_ISSUE_MODEL_FALLBACK_1, env.AI_ISSUE_MODEL_FALLBACK_2, env.AI_ISSUE_MODEL_FALLBACK_3]),
+];
 
 // Trussen AI Chat models (Phase 20B)
 export const CHAT_MODEL_DEFAULT = env.AI_CHAT_MODEL_DEFAULT ?? "deepseek/deepseek-v4-flash";
 export const CHAT_MODEL_FALLBACKS = [
   CHAT_MODEL_DEFAULT,
-  env.AI_CHAT_MODEL_FALLBACK_1 ?? "meta-llama/llama-3.3-70b-instruct:free",
-  env.AI_CHAT_MODEL_FALLBACK_2 ?? "qwen/qwen3-coder:free",
-  env.AI_CHAT_MODEL_FALLBACK_3 ?? "google/gemma-4-31b-it:free",
-].filter(Boolean);
+  ...usableFallbacks([env.AI_CHAT_MODEL_FALLBACK_1, env.AI_CHAT_MODEL_FALLBACK_2, env.AI_CHAT_MODEL_FALLBACK_3]),
+];
 
 export const EMBEDDING_MODEL_DEFAULT = env.AI_EMBEDDING_MODEL ?? "openai/text-embedding-3-small";
 
@@ -122,19 +131,22 @@ function uniqueModels(models: Array<string | undefined | null>) {
   return Array.from(new Set(models.filter((model): model is string => Boolean(model))));
 }
 
+/**
+ * The models to try, in order: the requested one, then the configured
+ * fallbacks for its feature. This used to keep *only* ":free" fallbacks, which
+ * both sent data to free endpoints and silently dropped the paid chat
+ * fallbacks configured in production, leaving chat with none (F-42, B-12).
+ * The requested model itself is always used as given — only automatic
+ * fallbacks are filtered.
+ */
 export function fallbackChainForPrimary(primaryModel: string) {
-  if (CHAT_MODEL_FALLBACKS.includes(primaryModel) || primaryModel === CHAT_MODEL_DEFAULT) {
-    return uniqueModels([primaryModel, ...CHAT_MODEL_FALLBACKS.filter((model) => model.includes(":free"))]);
+  if (CHAT_MODEL_FALLBACKS.includes(primaryModel)) {
+    return uniqueModels([primaryModel, ...CHAT_MODEL_FALLBACKS]);
   }
-  if (ISSUE_MODEL_FALLBACKS.includes(primaryModel) || primaryModel === ISSUE_MODEL_DEFAULT) {
-    return uniqueModels([primaryModel, ...ISSUE_MODEL_FALLBACKS.filter((model) => model.includes(":free"))]);
+  if (ISSUE_MODEL_FALLBACKS.includes(primaryModel)) {
+    return uniqueModels([primaryModel, ...ISSUE_MODEL_FALLBACKS]);
   }
-
-  return uniqueModels([
-    primaryModel,
-    ...CHAT_MODEL_FALLBACKS.filter((model) => model.includes(":free")),
-    ...ISSUE_MODEL_FALLBACKS.filter((model) => model.includes(":free")),
-  ]);
+  return uniqueModels([primaryModel, ...CHAT_MODEL_FALLBACKS, ...ISSUE_MODEL_FALLBACKS]);
 }
 
 // ─── Task-Specific Max Tokens ───────────────────────────────────────────────

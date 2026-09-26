@@ -11,7 +11,7 @@ import type {
 
 export const create: RequestHandler = async (req, res, next) => {
   try {
-    const team = await teamService.createTeam(req.workspace!.id, req.user!.id, req.body);
+    const team = await teamService.createTeam(req.workspace!.id, req.user!.id, req.workspace!.role, req.body);
     sendSuccess(res, 201, team);
   } catch (error) {
     next(error);
@@ -51,6 +51,7 @@ export const update: RequestHandler = async (req, res, next) => {
       req.workspace!.role,
       req.params.id as string,
       req.body,
+      req.user!.id,
     );
     sendSuccess(res, 200, team);
   } catch (error) {

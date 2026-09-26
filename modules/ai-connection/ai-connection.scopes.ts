@@ -23,3 +23,15 @@ export const ALL_SCOPES = [
 ] as const;
 
 export type Scope = (typeof ALL_SCOPES)[number];
+
+/**
+ * Scopes a non-admin gets when completing their own OAuth setup without asking
+ * for anything specific.
+ *
+ * Deliberately read-only, and deliberately not empty: `hasScope()` treats an
+ * empty scope list as unrestricted, so `[]` is a wildcard by accident.
+ */
+export const DEFAULT_OAUTH_SCOPES: Scope[] = ["issues:read", "projects:read"];
+
+/** The wildcard. Granting it is an admin decision, never a self-service one. */
+export const ADMIN_SCOPE: Scope = "admin";

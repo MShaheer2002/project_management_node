@@ -104,6 +104,7 @@ export const updateWorkspaceSchema = {
       .optional(),
     logo: z.string().url("Logo must be a valid URL").nullable().optional(),
     uploadPolicy: z.enum(["BOTH", "SYSTEM_ONLY", "DRIVE_ONLY"]).optional(),
+    allowPublicDriveLinks: z.boolean().optional(),
   }),
   params: z.object({
     workspaceId: z.string().uuid("Invalid workspace ID"),
@@ -114,6 +115,14 @@ export const updateWorkspaceSchema = {
 export const workspaceIdParamSchema = {
   params: z.object({
     workspaceId: z.string().uuid("Invalid workspace ID"),
+  }),
+};
+
+/** DELETE /workspaces/:workspaceId — deactivate; the name must be typed to confirm */
+export const deactivateWorkspaceSchema = {
+  params: workspaceIdParamSchema.params,
+  body: z.object({
+    confirmName: z.string().min(1, "Type the workspace name to confirm").max(200),
   }),
 };
 

@@ -14,6 +14,7 @@ import {
 import { sendSuccess } from "../../../shared/utils/api-response.js";
 import { AppError } from "../../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../../shared/errors/error-codes.js";
+import { resolveIssueRouteId } from "../../issue/issue.service.js";
 
 /** POST /integrations/figma/connect — Connect with personal access token */
 export const connect: RequestHandler = async (req, res, next) => {
@@ -65,28 +66,25 @@ export const updateFigmaSettings: RequestHandler = async (req, res, next) => {
   }
 };
 
-/** GET /integrations/figma/preview?url=... — Fetch Figma file metadata */
-export const preview: RequestHandler = async (req, res, next) => {
-  try {
-    const url = req.query.url as string;
-    const result = await figmaService.previewFigmaFile(req.workspace!.id, url);
-    sendSuccess(res, 200, result);
-  } catch (error) {
-    next(error);
-  }
-};
-
-/** POST /integrations/figma/batch-preview — Fetch metadata for multiple URLs */
+/** POST /integrations/figma/batch-preview — { issueId, urls }: previews for Figma links on an issue the caller can see */
 export const batchPreview: RequestHandler = async (req, res, next) => {
   try {
-    const { urls } = req.body as { urls: string[] };
+    const { urls, issueId } = req.body as { urls: string[]; issueId?: string };
+    if (typeof issueId !== "string" || !issueId) {
+      throw new AppError(400, ERROR_CODES.VALIDATION_ERROR, "issueId is required");
+    }
     if (!Array.isArray(urls) || urls.length === 0) {
       throw new AppError(400, ERROR_CODES.VALIDATION_ERROR, "urls must be a non-empty array");
     }
     if (urls.length > 20) {
       throw new AppError(400, ERROR_CODES.VALIDATION_ERROR, "Maximum 20 URLs per batch request");
     }
-    const results = await figmaService.batchPreviewFigmaFiles(req.workspace!.id, urls);
+    const results = await figmaService.batchPreviewFigmaFiles(
+      req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
+      await resolveIssueRouteId(req.workspace!.id, issueId),
+      urls,
+    );
     sendSuccess(res, 200, results);
   } catch (error) {
     next(error);

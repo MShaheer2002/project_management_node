@@ -15,6 +15,17 @@ export const issueCommentsParamsSchema = {
   }),
 };
 
+/** GET /issues/:id/mentionable-members — who the @-mention picker may suggest */
+export const mentionableMembersSchema = {
+  params: z.object({
+    id: z.string().min(1),
+  }),
+  query: z.object({
+    q: z.string().trim().max(100).optional(),
+    limit: z.coerce.number().int().min(1).max(20).default(6),
+  }),
+};
+
 export const createCommentSchema = {
   params: z.object({
     id: z.string().min(1),

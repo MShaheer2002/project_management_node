@@ -7,6 +7,7 @@
  * Context is cached in-memory for 5 minutes to avoid redundant DB queries.
  */
 
+import { visibleProjectWhere, type Viewer } from "../../shared/utils/visibility.js";
 import { prisma } from "../../shared/utils/prisma.js";
 
 // ─── In-Memory Cache ────────────────────────────────────────────────────────
@@ -53,13 +54,19 @@ export function invalidateContextCache(workspaceId?: string): void {
  * Get compact project list: [{id, name}]
  * ~200 tokens for 20 projects.
  */
-export async function getProjectNames(workspaceId: string): Promise<Array<{ id: string; name: string }>> {
-  const cacheKey = `projects:${workspaceId}`;
+export async function getProjectNames(
+  workspaceId: string,
+  viewer: Viewer,
+): Promise<Array<{ id: string; name: string }>> {
+  // Scoped per viewer: this list is sent to the LLM and echoed back as project
+  // suggestions, so an unfiltered list hands private project names to a GUEST
+  // (F-06 n). The cache key carries the viewer for the same reason.
+  const cacheKey = `projects:${workspaceId}:${viewer.role}:${viewer.userId}`;
   const cached = getCached<Array<{ id: string; name: string }>>(cacheKey);
   if (cached.hit) return cached.data;
 
   const projects = await prisma.project.findMany({
-    where: { workspaceId },
+    where: { workspaceId, ...visibleProjectWhere(viewer) },
     select: { id: true, name: true },
     orderBy: { name: "asc" },
     take: 50,
@@ -218,9 +225,9 @@ export async function resolveMentions(
  *
  * Total: ~600-800 tokens for a typical workspace.
  */
-export async function buildIssueGenerationContext(workspaceId: string, issueType?: string) {
+export async function buildIssueGenerationContext(workspaceId: string, viewer: Viewer, issueType?: string) {
   const [projects, members, labels, template] = await Promise.all([
-    getProjectNames(workspaceId),
+    getProjectNames(workspaceId, viewer),
     getMemberNames(workspaceId),
     getLabelNames(workspaceId),
     issueType ? getActiveTemplate(workspaceId, issueType) : Promise.resolve(null),

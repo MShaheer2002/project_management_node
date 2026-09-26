@@ -1,3 +1,4 @@
+import { assertProjectVisible, visibleProjectWhere, type Viewer } from "../../shared/utils/visibility.js";
 import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
@@ -248,7 +249,7 @@ async function loadMilestoneMap(workspaceId: string, projectIds: string[]) {
   return map;
 }
 
-async function loadDependencyMaps(workspaceId: string, projectIds: string[]) {
+async function loadDependencyMaps(workspaceId: string, viewer: Viewer, projectIds: string[]) {
   if (projectIds.length === 0) {
     return {
       upstream: new Map<string, DependencyRow[]>(),
@@ -300,10 +301,28 @@ async function loadDependencyMaps(workspaceId: string, projectIds: string[]) {
     orderBy: [{ createdAt: "desc" }],
   });
 
+  // Each row embeds BOTH linked projects in full — name, slug, dates, team,
+  // department and the lead's name + email. Keep only rows where the viewer can
+  // see both ends; the mere existence of a link to a private project is itself
+  // the leak (F-06 s).
+  const linkedIds = [
+    ...new Set(rows.flatMap((row: any) => [row.blockingProjectId, row.blockedProjectId])),
+  ] as string[];
+  const visibleLinked = linkedIds.length
+    ? await prisma.project.findMany({
+        where: { id: { in: linkedIds }, workspaceId, ...visibleProjectWhere(viewer) },
+        select: { id: true },
+      })
+    : [];
+  const visibleIds = new Set(visibleLinked.map((project) => project.id));
+  const visibleRows = rows.filter(
+    (row: any) => visibleIds.has(row.blockingProjectId) && visibleIds.has(row.blockedProjectId),
+  );
+
   const upstream = new Map<string, DependencyRow[]>();
   const downstream = new Map<string, DependencyRow[]>();
 
-  for (const row of rows) {
+  for (const row of visibleRows) {
     const blockedRows = upstream.get(row.blockedProjectId) ?? [];
     blockedRows.push(row);
     upstream.set(row.blockedProjectId, blockedRows);
@@ -729,7 +748,7 @@ export async function listRoadmap(
   const allProjectIds = allProjects.map((project) => project.id);
   const issueCounts = await loadIssueCounts(workspaceId, allProjectIds);
   const milestoneMap = await loadMilestoneMap(workspaceId, allProjectIds);
-  const dependencyMaps = await loadDependencyMaps(workspaceId, allProjectIds);
+  const dependencyMaps = await loadDependencyMaps(workspaceId, { userId, role }, allProjectIds);
 
   let scheduledItems = scheduledProjects.map((project) =>
     buildRoadmapItem(
@@ -796,7 +815,7 @@ export async function getProjectRoadmapDetail(
   const window = getRoadmapWindow("QUARTER");
   const issueCounts = await loadIssueCounts(workspaceId, [projectId]);
   const milestoneMap = await loadMilestoneMap(workspaceId, [projectId]);
-  const dependencyMaps = await loadDependencyMaps(workspaceId, [projectId]);
+  const dependencyMaps = await loadDependencyMaps(workspaceId, { userId, role }, [projectId]);
   const item = buildRoadmapItem(
     project,
     window.from,
@@ -1180,8 +1199,13 @@ export async function deleteMilestone(
 export async function createDependency(
   workspaceId: string,
   actorUserId: string,
+  viewer: Viewer,
   input: CreateDependencyInput,
 ) {
+  // Managing one side is not enough: creating a link marks the OTHER project
+  // BLOCKED and notifies its lead, so the actor must see both (F-06 s).
+  await assertProjectVisible(workspaceId, input.blockingProjectId, viewer);
+  await assertProjectVisible(workspaceId, input.blockedProjectId, viewer);
   const blockingProject = await assertProjectInWorkspace(workspaceId, input.blockingProjectId);
   const blockedProject = await assertProjectInWorkspace(workspaceId, input.blockedProjectId);
   assertRoadmapMutableProject(blockingProject);

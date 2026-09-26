@@ -8,7 +8,13 @@ import type { ListCommentsQuery } from "./comment.schemas.js";
 export const create: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    const comment = await commentService.createComment(req.workspace!.id, issueId, req.user!.id, req.body);
+    const comment = await commentService.createComment(
+      req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
+      issueId,
+      req.user!.id,
+      req.body,
+    );
     sendSuccess(res, 201, comment);
   } catch (error) {
     next(error);
@@ -20,10 +26,26 @@ export const listByIssue: RequestHandler = async (req, res, next) => {
     const issueId = await resolveIssueRouteId(req.workspace!.id, req.params.id as string);
     const result = await commentService.listComments(
       req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
       issueId,
       (req.validated?.query ?? req.query) as ListCommentsQuery,
     );
     sendList(res, result.items, result.meta);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const mentionableMembers: RequestHandler = async (req, res, next) => {
+  try {
+    const issueId = await resolveIssueRouteId(req.workspace!.id, req.params.id as string);
+    const members = await commentService.listMentionableMembers(
+      req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
+      issueId,
+      (req.validated?.query ?? req.query) as { q?: string; limit: number },
+    );
+    sendSuccess(res, 200, members);
   } catch (error) {
     next(error);
   }
@@ -72,6 +94,8 @@ export const removeAttachment: RequestHandler = async (req, res, next) => {
       req.workspace!.id,
       req.params.id as string,
       req.params.attachmentId as string,
+      req.user!.id,
+      req.workspace!.role,
     );
     res.status(204).send();
   } catch (error) {

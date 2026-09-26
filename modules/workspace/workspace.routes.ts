@@ -10,9 +10,11 @@
  *   GET    /workspaces/check-slug/:slug               — Check slug availability
  *   GET    /workspaces/resolve/:slug                  — Resolve workspace by slug (public, no auth)
  *   GET    /workspaces/:workspaceId                   — Get workspace details
+ *   GET    /workspaces/:workspaceId/logo              — Workspace logo (public redirect to a signed link)
  *   PATCH  /workspaces/:workspaceId                   — Update workspace
  *   PATCH  /workspaces/:workspaceId/invite-domain-policy — Update invite domain restriction
- *   DELETE /workspaces/:workspaceId                   — Delete workspace
+ *   DELETE /workspaces/:workspaceId                   — Deactivate workspace (deleted for good after 30 days)
+ *   POST   /workspaces/:workspaceId/restore           — Restore a deactivated workspace
  *   POST   /workspaces/:workspaceId/members/invite    — Invite member
  *   GET    /workspaces/:workspaceId/members           — List members
  *   PATCH  /workspaces/:workspaceId/members/:userId   — Change member role
@@ -21,15 +23,16 @@
 
 import { Router } from "express";
 import { authenticate } from "../../shared/middleware/authenticate.js";
-import { requireWorkspace } from "../../shared/middleware/require-workspace.js";
+import { requireWorkspace, requireWorkspaceIncludingDeactivated } from "../../shared/middleware/require-workspace.js";
 import { requireRole } from "../../shared/middleware/require-role.js";
 import { validate } from "../../shared/middleware/validate.js";
 import * as controller from "./workspace.controller.js";
-import { strictRateLimiter } from "../../shared/middleware/rate-limiter.js";
+import { strictRateLimiter, invitationRateLimiter } from "../../shared/middleware/rate-limiter.js";
 import {
   createWorkspaceSchema,
   updateWorkspaceSchema,
   workspaceIdParamSchema,
+  deactivateWorkspaceSchema,
   checkSlugSchema,
   resolveBySlugSchema,
   updateInviteDomainPolicySchema,
@@ -86,6 +89,14 @@ router.get(
   controller.resolveBySlug,
 );
 
+// Workspace logo — PUBLIC: the sign-in and invite pages show it before login.
+// Redirects to a short-lived signed S3 link; uploads stay private (F-36).
+router.get(
+  "/:workspaceId/logo",
+  validate(workspaceIdParamSchema),
+  controller.logo,
+);
+
 // Get workspace details — must be a member
 router.get(
   "/:workspaceId",
@@ -118,14 +129,26 @@ router.patch(
   controller.updateInviteDomainPolicy,
 );
 
-// Delete workspace — OWNER only (cascades everything)
+// Delete workspace — OWNER only. Soft delete: deactivates it for 30 days, then
+// the lifecycle job deletes it permanently (workspace-lifecycle.service.ts).
 router.delete(
   "/:workspaceId",
   authenticate,
-  validate(workspaceIdParamSchema),
+  validate(deactivateWorkspaceSchema),
   requireWorkspace,
   requireRole("OWNER"),
   controller.remove,
+);
+
+// Restore a deactivated workspace — OWNER only. The one route that still
+// accepts a deactivated workspace.
+router.post(
+  "/:workspaceId/restore",
+  authenticate,
+  validate(workspaceIdParamSchema),
+  requireWorkspaceIncludingDeactivated,
+  requireRole("OWNER"),
+  controller.restore,
 );
 
 // ─── Workspace Statuses ─────────────────────────────────────────────────────
@@ -196,6 +219,7 @@ router.post(
   validate(inviteMemberSchema),
   requireWorkspace,
   requireRole("ADMIN", "OWNER"),
+  invitationRateLimiter,
   controller.createInvitation,
 );
 

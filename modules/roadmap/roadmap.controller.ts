@@ -118,6 +118,7 @@ export const createDependency: RequestHandler = async (req, res, next) => {
     const result = await roadmapService.createDependency(
       req.workspace!.id,
       req.user!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
       req.body as CreateDependencyInput,
     );
     sendSuccess(res, 201, result);

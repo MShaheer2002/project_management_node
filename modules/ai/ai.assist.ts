@@ -1,3 +1,4 @@
+import { assertAiAccess } from "./ai.access.js";
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
@@ -454,6 +455,15 @@ export async function assist(
   if (!prompt) {
     throw new AppError(400, ERROR_CODES.VALIDATION_ERROR, "Message is required");
   }
+
+  // Gated and metered like chat and issue generation. Without this the guide
+  // was an unmetered path to the provider on any plan (F-23). Checked after the
+  // empty-prompt guard so a malformed request does not consume quota.
+  await assertAiAccess({
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+    feature: "assist",
+  });
 
   const logSuccess = (response: AiAssistResponse, usage: AssistUsage) => {
     logAiInfo("assist_completed", {

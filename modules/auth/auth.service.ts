@@ -10,6 +10,7 @@
  */
 
 import { prisma } from "../../shared/utils/prisma.js";
+import { releaseWorkspaceDrivesOf } from "../drive/drive.service.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import type { ClerkUserPayload } from "./auth.schemas.js";
@@ -65,17 +66,51 @@ export async function updateUser(data: ClerkUserPayload) {
 }
 
 /**
- * Delete a user from our database.
- * Called on `user.deleted` event.
- * Cascades: removes all workspace memberships, team memberships, etc.
- * No-op if user doesn't exist (idempotent).
+ * Offboard a user whose Clerk account was deleted (`user.deleted`).
+ *
+ * This used to call `prisma.user.delete`, which ALWAYS threw: Activity,
+ * ApiKey, Issue, Comment, Workspace and Team all reference User with
+ * ON DELETE RESTRICT, and every member has at least one Activity row from
+ * joining. The webhook returned 500, Clerk's retries failed identically, and
+ * the account's API keys and memberships stayed live indefinitely (F-19).
+ *
+ * So the row is kept — authorship on issues and comments has to survive — and
+ * access is revoked instead, in one transaction:
+ *   - `deletedAt` stamped, so API-key auth can reject the creator
+ *   - workspace/team/department/project memberships removed (also frees seats)
+ *   - API keys deleted, AI connections revoked
+ *   - Google Drive tokens deleted
+ *
+ * Idempotent: re-running is a no-op for an already-offboarded user.
  */
 export async function deleteUser(clerkUserId: string) {
-  // Check if user exists before deleting (no-op if already gone)
-  const user = await prisma.user.findUnique({ where: { id: clerkUserId } });
-  if (!user) return;
+  const user = await prisma.user.findUnique({
+    where: { id: clerkUserId },
+    select: { id: true, deletedAt: true },
+  });
+  if (!user || user.deletedAt) return;
 
-  await prisma.user.delete({ where: { id: clerkUserId } });
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: clerkUserId },
+      data: { deletedAt: new Date() },
+    }),
+    // Deleted, as removeMember does: ApiKey has no revoked state to set, and
+    // AI connections/sessions pointing at a key are kept (their FK is SET NULL).
+    prisma.apiKey.deleteMany({ where: { createdById: clerkUserId } }),
+    prisma.aiConnection.updateMany({
+      where: { userId: clerkUserId, status: { not: "REVOKED" } },
+      data: { status: "REVOKED" },
+    }),
+    prisma.userDriveConnection.deleteMany({ where: { userId: clerkUserId } }),
+    prisma.projectMembership.deleteMany({ where: { userId: clerkUserId } }),
+    prisma.teamMembership.deleteMany({ where: { userId: clerkUserId } }),
+    prisma.departmentMembership.deleteMany({ where: { userId: clerkUserId } }),
+    prisma.workspaceMembership.deleteMany({ where: { userId: clerkUserId } }),
+  ]);
+
+  // Workspace Drives they connected live in their Google account.
+  await releaseWorkspaceDrivesOf(clerkUserId);
 }
 
 /**

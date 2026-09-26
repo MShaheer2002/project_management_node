@@ -121,7 +121,11 @@ export const removeMember: RequestHandler = async (req, res, next) => {
 
 export const getWorkflow: RequestHandler = async (req, res, next) => {
   try {
-    const workflow = await projectWorkflowService.getProjectWorkflow(req.workspace!.id, req.params.id as string);
+    const workflow = await projectWorkflowService.getProjectWorkflow(
+      req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
+      req.params.id as string,
+    );
     sendSuccess(res, 200, workflow);
   } catch (error) {
     next(error);
@@ -133,6 +137,7 @@ export const getWorkflowStatusUsage: RequestHandler = async (req, res, next) => 
     const query = (req.validated?.query ?? req.query) as { limit?: number };
     const usage = await projectWorkflowService.getProjectWorkflowStatusUsage(
       req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
       req.params.id as string,
       req.params.statusKey as string,
       query.limit,
@@ -150,6 +155,7 @@ export const mergeWorkflowStatus: RequestHandler = async (req, res, next) => {
       req.params.id as string,
       req.params.statusKey as string,
       req.body.targetStatusKey,
+      req.workspace!.role,
     );
     sendSuccess(res, 200, workflow);
   } catch (error) {
@@ -163,6 +169,7 @@ export const updateWorkflowStatuses: RequestHandler = async (req, res, next) => 
       req.workspace!.id,
       req.params.id as string,
       req.body as UpdateProjectWorkflowStatusesInput,
+      req.workspace!.role,
     );
     sendSuccess(res, 200, workflow);
   } catch (error) {
@@ -176,6 +183,7 @@ export const clearWorkflowOverride: RequestHandler = async (req, res, next) => {
       req.workspace!.id,
       req.params.id as string,
       req.body as ClearProjectWorkflowOverrideInput,
+      req.workspace!.role,
     );
     sendSuccess(res, 200, workflow);
   } catch (error) {
@@ -189,6 +197,7 @@ export const updateWorkflowAutomation: RequestHandler = async (req, res, next) =
       req.workspace!.id,
       req.params.id as string,
       req.body as UpdateProjectWorkflowAutomationInput,
+      req.workspace!.role,
     );
     sendSuccess(res, 200, workflow);
   } catch (error) {

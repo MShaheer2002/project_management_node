@@ -12,11 +12,14 @@ import { ERROR_CODES } from "../../../shared/errors/error-codes.js";
 import { logActivity } from "../../../shared/utils/activity.js";
 import { env } from "../../../config/env.js";
 import {
+  assertCanConnectIntegration,
   findConnectedIntegration,
   getSettings,
   upsertSettings,
   initDefaultSettings,
 } from "../integration.service.js";
+import { createOAuthState, verifyOAuthState } from "../oauth-state.js";
+import { encryptSecret } from "../../../shared/utils/secret-box.js";
 
 // ─── Default Slack Settings ──────────────────────────────────────────────────
 
@@ -42,7 +45,8 @@ export function getSlackAuthUrl(workspaceId: string, userId: string): string {
     throw new AppError(500, ERROR_CODES.SLACK_NOT_CONFIGURED, "Slack integration is not configured on this server");
   }
 
-  const state = Buffer.from(JSON.stringify({ workspaceId, userId })).toString("base64url");
+  // Signed — the callback is unauthenticated and trusts whatever comes back (F-02).
+  const state = createOAuthState(workspaceId, userId);
 
   const params = new URLSearchParams({
     client_id: env.SLACK_CLIENT_ID,
@@ -62,14 +66,9 @@ export async function handleSlackCallback(code: string, state: string) {
     throw new AppError(500, ERROR_CODES.SLACK_NOT_CONFIGURED, "Slack integration is not configured");
   }
 
-  let stateData: { workspaceId: string; userId: string };
-  try {
-    stateData = JSON.parse(Buffer.from(state, "base64url").toString());
-  } catch {
-    throw new AppError(400, ERROR_CODES.SLACK_OAUTH_FAILED, "Invalid OAuth state parameter");
-  }
-
-  const { workspaceId, userId } = stateData;
+  // Verify state signature, then re-run the gates /connect applied
+  const { workspaceId, userId } = verifyOAuthState(state, ERROR_CODES.SLACK_OAUTH_FAILED);
+  await assertCanConnectIntegration(workspaceId, userId, "SLACK");
 
   // Exchange code for access token
   const tokenResponse = await fetch("https://slack.com/api/oauth.v2.access", {
@@ -107,7 +106,7 @@ export async function handleSlackCallback(code: string, state: string) {
       workspaceId,
       provider: "SLACK",
       connected: true,
-      accessToken: tokenData.access_token,
+      accessToken: encryptSecret(tokenData.access_token),
       providerMeta: {
         botUserId: tokenData.bot_user_id,
         team: tokenData.team,
@@ -117,7 +116,7 @@ export async function handleSlackCallback(code: string, state: string) {
     },
     update: {
       connected: true,
-      accessToken: tokenData.access_token,
+      accessToken: encryptSecret(tokenData.access_token),
       providerMeta: {
         botUserId: tokenData.bot_user_id,
         team: tokenData.team,
