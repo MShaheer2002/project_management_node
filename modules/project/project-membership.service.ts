@@ -248,7 +248,7 @@ export async function addProjectMembers(
 
   await Promise.all(added.userIds.map((memberId) => logActivity({
     workspaceId,
-    actorId: memberId,
+    actorId: actorUserId,
     type: "PROJECT_MEMBER_ADDED",
     targetType: "PROJECT",
     targetId: added.projectId,
@@ -309,7 +309,7 @@ export async function removeProjectMember(workspaceId: string, projectId: string
 
   await logActivity({
     workspaceId,
-    actorId: userId,
+    actorId: actorUserId,
     type: "PROJECT_MEMBER_REMOVED",
     targetType: "PROJECT",
     targetId: projectId,

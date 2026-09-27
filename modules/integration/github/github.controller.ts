@@ -7,9 +7,11 @@
 
 import type { RequestHandler } from "express";
 import * as githubService from "./github.service.js";
-import { verifyGitHubSignature } from "./github.utils.js";
+import { verifyGitHubSignature, integrationCoversRepo } from "./github.utils.js";
 import { sendSuccess } from "../../../shared/utils/api-response.js";
 import { AppError } from "../../../shared/utils/api-error.js";
+import { oauthReturnUrl } from "../../../shared/utils/workspace-url.js";
+import { oauthStateWorkspaceId } from "../oauth-state.js";
 import { ERROR_CODES } from "../../../shared/errors/error-codes.js";
 import { env } from "../../../config/env.js";
 import { prisma } from "../../../shared/utils/prisma.js";
@@ -34,10 +36,11 @@ export const callback: RequestHandler = async (req, res, next) => {
   try {
     const { code, state } = (req.validated?.query as { code: string; state: string }) ?? req.query;
     await githubService.handleGitHubCallback(code as string, state as string);
-    res.redirect(`${env.FRONTEND_URL}/integrations?provider=github&status=connected`);
+    res.redirect(await oauthReturnUrl(oauthStateWorkspaceId(state), `/integrations?provider=github&status=connected`));
   } catch (error) {
     const message = error instanceof AppError ? error.message : "Connection failed";
-    res.redirect(`${env.FRONTEND_URL}/integrations?provider=github&status=error&message=${encodeURIComponent(message)}`);
+    // Back to the workspace the flow started in — the bare domain may open a different one.
+    res.redirect(await oauthReturnUrl(oauthStateWorkspaceId(req.query.state), `/integrations?provider=github&status=error&message=${encodeURIComponent(message)}`));
   }
 };
 
@@ -98,11 +101,23 @@ export const githubWebhook: RequestHandler = async (req, res, next) => {
 
     const event = req.headers["x-github-event"] as string;
 
-    // Find all workspaces with GitHub connected
-    const connectedWorkspaces = await prisma.integration.findMany({
-      where: { provider: "GITHUB", connected: true },
-      select: { workspaceId: true },
-    });
+    // Resolve the event to the tenant(s) that actually connected this repo.
+    // A valid signature only proves the event came from *a* Trussen customer —
+    // the secret is shared across all of them — so the repo must be matched
+    // against each workspace's connected repos (F-04).
+    const repoFullName = (req.body?.repository?.full_name as string | undefined) ?? "";
+
+    const connectedWorkspaces = (
+      await prisma.integration.findMany({
+        // A deactivated workspace takes no events; its hooks are removed at purge.
+        where: { provider: "GITHUB", connected: true, workspace: { deactivatedAt: null } },
+        select: { workspaceId: true, providerMeta: true },
+      })
+    ).filter((i) => integrationCoversRepo(i.providerMeta, repoFullName));
+
+    if (connectedWorkspaces.length === 0) {
+      console.warn(`[GitHub Webhook] No connected workspace owns repo "${repoFullName}" — ignoring ${event} event`);
+    }
 
     // Process event for each matching workspace
     for (const { workspaceId } of connectedWorkspaces) {

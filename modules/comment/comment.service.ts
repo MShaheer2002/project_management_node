@@ -1,3 +1,4 @@
+import { assertIssueVisible, filterUsersWhoCanSeeIssue, type Viewer } from "../../shared/utils/visibility.js";
 import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
@@ -7,7 +8,7 @@ import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { prisma } from "../../shared/utils/prisma.js";
 import { emitCommentCreated, emitCommentDeleted, emitCommentUpdated } from "../../socket/events.js";
 import { getSocketServer } from "../../socket/index.js";
-import { validateAttachmentRefs } from "../issue/issue-attachment.service.js";
+import { isStoredAttachment, resolveAttachmentRefs, storedAttachmentBytes } from "../issue/issue-attachment.service.js";
 import { incrementStorageUsage, decrementStorageUsage } from "../billing/billing.service.js";
 import { createNotification } from "../notification/notification.service.js";
 import type { CreateCommentInput, ListCommentsQuery, UpdateCommentInput } from "./comment.schemas.js";
@@ -102,8 +103,85 @@ async function extractMentionedUserIds(workspaceId: string, body: string) {
   return [...ids];
 }
 
-export async function createComment(workspaceId: string, issueId: string, userId: string, input: CreateCommentInput) {
+// ─── Mention limits (F-38) ───────────────────────────────────────────────────
+// Any role that can comment (GUEST included) could mention everyone in the
+// workspace, as often as they liked.
+
+export const MAX_MENTIONS_PER_COMMENT = 20;
+export const MENTION_NOTIFICATIONS_PER_HOUR = 100;
+
+/** How many more mention notifications this person may trigger in the current hour. */
+async function remainingMentionBudget(workspaceId: string, actorUserId: string) {
+  const sent = await prisma.notification.count({
+    where: { workspaceId, actorUserId, type: "MENTION", createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) } },
+  });
+  return Math.max(0, MENTION_NOTIFICATIONS_PER_HOUR - sent);
+}
+
+/**
+ * People the @-mention picker may suggest on this issue: only those who can
+ * open it, so the UI never offers a mention that would be dropped (F-38).
+ *
+ * Mirrors visibleIssueWhere as a single query (admins and owners always; for a
+ * private project also its lead and members). filterUsersWhoCanSeeIssue stays
+ * the authority at send time; the e2e test checks the two agree.
+ */
+export async function listMentionableMembers(
+  workspaceId: string,
+  viewer: Viewer,
+  issueId: string,
+  query: { q?: string; limit: number },
+) {
+  await assertIssueVisible(workspaceId, issueId, viewer);
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { projectId: true, project: { select: { visibility: true, leadId: true } } },
+  });
+  if (!issue) {
+    throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  const canSeePrivateProject = [
+    { role: { in: ["OWNER", "ADMIN"] as WorkspaceRole[] } },
+    ...(issue.project.leadId ? [{ userId: issue.project.leadId }] : []),
+    { user: { projectMemberships: { some: { projectId: issue.projectId } } } },
+  ];
+
+  const memberships = await prisma.workspaceMembership.findMany({
+    where: {
+      workspaceId,
+      userId: { not: viewer.userId },
+      user: {
+        deletedAt: null,
+        ...(query.q ? { OR: [{ name: { contains: query.q, mode: "insensitive" } }, { email: { contains: query.q, mode: "insensitive" } }] } : {}),
+      },
+      ...(issue.project.visibility === "PRIVATE" ? { OR: canSeePrivateProject } : {}),
+    },
+    orderBy: { user: { name: "asc" } },
+    take: query.limit,
+    select: { role: true, user: { select: { id: true, name: true, email: true } } },
+  });
+
+  return memberships.map(({ role, user }) => ({ id: user.id, name: user.name, email: user.email, role }));
+}
+
+export async function createComment(workspaceId: string, viewer: Viewer, issueId: string, userId: string, input: CreateCommentInput) {
+  // Existence in the workspace was the only gate, so a MEMBER could comment on
+  // (and thereby learn about) any private issue (F-07).
+  await assertIssueVisible(workspaceId, issueId, viewer);
   await assertIssueExistsInWorkspace(workspaceId, issueId);
+
+  // Refused before anything is stored, so the author can fix the comment.
+  // Counted as written (not after the visibility filter below), so the limit
+  // doesn't reveal who can see the issue.
+  const mentionedUserIds = (await extractMentionedUserIds(workspaceId, input.body)).filter((id) => id !== userId);
+  if (mentionedUserIds.length > MAX_MENTIONS_PER_COMMENT) {
+    throw new AppError(
+      422,
+      ERROR_CODES.MENTION_LIMIT_EXCEEDED,
+      `You can mention up to ${MAX_MENTIONS_PER_COMMENT} people in one comment.`,
+    );
+  }
 
   if (input.parentId) {
     const parent = await prisma.comment.findFirst({
@@ -142,9 +220,9 @@ export async function createComment(workspaceId: string, issueId: string, userId
   });
 
   if (input.attachments && input.attachments.length > 0) {
-    validateAttachmentRefs(workspaceId, input.attachments);
+    const attachments = await resolveAttachmentRefs(prisma, workspaceId, input.attachments as any[]);
     await (prisma as any).commentAttachment.createMany({
-      data: input.attachments.map((attachment: any) => ({
+      data: attachments.map((attachment: any) => ({
         commentId: created.id,
         workspaceId,
         key: attachment.key,
@@ -158,8 +236,7 @@ export async function createComment(workspaceId: string, issueId: string, userId
       skipDuplicates: true,
     });
 
-    const totalBytes = input.attachments.reduce((sum: number, a: any) => sum + a.size, 0);
-    await incrementStorageUsage(workspaceId, totalBytes);
+    await incrementStorageUsage(workspaceId, storedAttachmentBytes(workspaceId, attachments));
   }
 
   const hydrated = await prisma.comment.findUnique({
@@ -197,7 +274,11 @@ export async function createComment(workspaceId: string, issueId: string, userId
       where: { id: input.parentId, issue: { workspaceId } },
       select: { authorId: true },
     });
-    if (parent?.authorId) {
+    // The parent's author may have lost access to this (private) issue since.
+    const [replyRecipient] = parent?.authorId && parent.authorId !== userId
+      ? await filterUsersWhoCanSeeIssue(workspaceId, issueId, [parent.authorId])
+      : [];
+    if (parent?.authorId && replyRecipient) {
       await createNotification({
         workspaceId,
         recipientUserId: parent.authorId,
@@ -222,8 +303,15 @@ export async function createComment(workspaceId: string, issueId: string, userId
     }
   }
 
-  const mentionedUserIds = await extractMentionedUserIds(workspaceId, input.body);
-  await Promise.all(mentionedUserIds.map((mentionedUserId) => createNotification({
+  // Only people who can open the issue are told about it: the notification
+  // carries its title and an excerpt of the comment.
+  const visibleRecipients = await filterUsersWhoCanSeeIssue(workspaceId, issueId, mentionedUserIds);
+  const budget = visibleRecipients.length > 0 ? await remainingMentionBudget(workspaceId, userId) : 0;
+  const recipients = visibleRecipients.slice(0, budget);
+  if (recipients.length < visibleRecipients.length) {
+    console.warn(`[Comment] mention notifications throttled for user ${userId.slice(0, 15)}: ${visibleRecipients.length - recipients.length} skipped`);
+  }
+  await Promise.all(recipients.map((mentionedUserId) => createNotification({
     workspaceId,
     recipientUserId: mentionedUserId,
     actorUserId: userId,
@@ -286,7 +374,10 @@ export async function createComment(workspaceId: string, issueId: string, userId
   return mapped;
 }
 
-export async function listComments(workspaceId: string, issueId: string, query: ListCommentsQuery) {
+export async function listComments(workspaceId: string, viewer: Viewer, issueId: string, query: ListCommentsQuery) {
+  // Existence-in-workspace was the only check, so any GUEST could read the
+  // comment thread of a private issue by walking sequential keys (F-06 g).
+  await assertIssueVisible(workspaceId, issueId, viewer);
   await assertIssueExistsInWorkspace(workspaceId, issueId);
 
   const limit = clampListLimit(query.limit, 50);
@@ -347,13 +438,13 @@ export async function updateComment(workspaceId: string, commentId: string, user
     });
 
     if (input.attachments && input.attachments.length > 0) {
-      validateAttachmentRefs(workspaceId, input.attachments);
+      const attachments = await resolveAttachmentRefs(tx as any, workspaceId, input.attachments as any[]);
       const existing = await (tx as any).commentAttachment.findMany({
         where: { commentId: current.id },
         select: { key: true },
       });
       const existingKeys = new Set(existing.map((attachment: any) => attachment.key));
-      const toAdd = input.attachments.filter((attachment: any) => !existingKeys.has(attachment.key));
+      const toAdd = attachments.filter((attachment: any) => !existingKeys.has(attachment.key));
       if (toAdd.length > 0) {
         await (tx as any).commentAttachment.createMany({
           data: toAdd.map((attachment: any) => ({
@@ -370,8 +461,7 @@ export async function updateComment(workspaceId: string, commentId: string, user
           skipDuplicates: true,
         });
 
-        const totalBytes = toAdd.reduce((sum: number, a: any) => sum + a.size, 0);
-        await incrementStorageUsage(workspaceId, totalBytes);
+        await incrementStorageUsage(workspaceId, storedAttachmentBytes(workspaceId, toAdd));
       }
     }
 
@@ -481,13 +571,20 @@ export async function addCommentAttachments(workspaceId: string, commentId: stri
 
   const comment = await prisma.comment.findFirst({
     where: { id: commentId, issue: { workspaceId } },
-    select: { id: true },
+    select: { id: true, authorId: true },
   });
   if (!comment) {
     throw new AppError(404, ERROR_CODES.COMMENT_NOT_FOUND, "Comment not found");
   }
 
-  validateAttachmentRefs(workspaceId, attachments);
+  // Adding an attachment is editing the comment, so it follows updateComment's
+  // rule: author only. Without this any GUEST could append misleading files to
+  // an admin's comment (F-10).
+  if (comment.authorId !== userId) {
+    throw new AppError(403, ERROR_CODES.COMMENT_EDIT_FORBIDDEN, "Only the comment author can attach files to this comment");
+  }
+
+  attachments = await resolveAttachmentRefs(prisma, workspaceId, attachments);
   await (prisma as any).commentAttachment.createMany({
     data: attachments.map((attachment: any) => ({
       commentId,
@@ -503,8 +600,7 @@ export async function addCommentAttachments(workspaceId: string, commentId: stri
     skipDuplicates: true,
   });
 
-  const totalBytes = attachments.reduce((sum: number, a: any) => sum + a.size, 0);
-  await incrementStorageUsage(workspaceId, totalBytes);
+  await incrementStorageUsage(workspaceId, storedAttachmentBytes(workspaceId, attachments));
 
   const updated = await prisma.comment.findUnique({
     where: { id: commentId },
@@ -517,16 +613,29 @@ export async function addCommentAttachments(workspaceId: string, commentId: stri
   return mapComment(updated);
 }
 
-export async function removeCommentAttachment(workspaceId: string, commentId: string, attachmentId: string) {
+export async function removeCommentAttachment(
+  workspaceId: string,
+  commentId: string,
+  attachmentId: string,
+  userId: string,
+  role: WorkspaceRole,
+) {
   const attachment = await (prisma as any).commentAttachment.findFirst({
     where: { id: attachmentId, commentId, workspaceId },
-    select: { id: true, size: true },
+    select: { id: true, size: true, key: true, comment: { select: { authorId: true } } },
   });
 
   if (!attachment) {
     throw new AppError(404, ERROR_CODES.COMMENT_ATTACHMENT_NOT_FOUND, "Comment attachment not found");
   }
 
+  // Removing content follows deleteComment's rule: author or workspace admin.
+  // Previously any GUEST could delete evidence off someone else's comment (F-10).
+  const canRemove = attachment.comment?.authorId === userId || role === "ADMIN" || role === "OWNER";
+  if (!canRemove) {
+    throw new AppError(403, ERROR_CODES.COMMENT_DELETE_FORBIDDEN, "You do not have permission to remove this attachment");
+  }
+
   await (prisma as any).commentAttachment.delete({ where: { id: attachmentId } });
-  await decrementStorageUsage(workspaceId, attachment.size);
+  if (isStoredAttachment(workspaceId, attachment.key)) await decrementStorageUsage(workspaceId, attachment.size);
 }

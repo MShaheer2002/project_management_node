@@ -1,3 +1,4 @@
+import { filterVisibleActivityRows, type Viewer } from "../../shared/utils/visibility.js";
 import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
@@ -86,7 +87,7 @@ function parseCsv(input: string | undefined): string[] | undefined {
   return values.length > 0 ? [...new Set(values)] : undefined;
 }
 
-export async function listActivity(workspaceId: string, _workspaceRole: WorkspaceRole, query: ListActivityQuery) {
+export async function listActivity(workspaceId: string, viewer: Viewer, query: ListActivityQuery) {
   const limit = clampListLimit(query.limit, 50);
   const scope = query.scope ?? "workspace";
 
@@ -138,16 +139,19 @@ export async function listActivity(workspaceId: string, _workspaceRole: Workspac
     ];
   }
 
-  const records = await prisma.activity.findMany({
+  const rows = await prisma.activity.findMany({
     where,
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
-    take: limit + 1,
+    // Over-fetch for non-admins: rows targeting invisible issues/projects are
+    // dropped below and we still want a full page back (F-06 b).
+    take: (limit + 1) * 4,
     include: {
       actor: { select: { id: true, name: true, email: true, avatar: true } },
     },
   });
 
+  const records = (await filterVisibleActivityRows(rows, workspaceId, viewer)).slice(0, limit + 1);
   const page = slicePage(records, limit);
   return {
     items: page.items.map(mapActivity),
@@ -160,12 +164,12 @@ export async function listActivity(workspaceId: string, _workspaceRole: Workspac
 
 export async function listIssueActivity(
   workspaceId: string,
-  workspaceRole: WorkspaceRole,
+  viewer: Viewer,
   issueIdentifier: string,
   query: { cursor?: string | undefined; limit?: number | undefined },
 ) {
   const issueId = await resolveIssueRouteId(workspaceId, issueIdentifier);
-  return listActivity(workspaceId, workspaceRole, {
+  return listActivity(workspaceId, viewer, {
     scope: "issue",
     scopeId: issueId,
     cursor: query.cursor,

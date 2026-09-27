@@ -5,7 +5,7 @@ import { Server } from "socket.io";
 import { env } from "../config/env.js";
 import { isAllowedFrontendOrigin } from "../shared/utils/allowed-origin.js";
 import { registerNotificationEvents } from "./notification.events.js";
-import { socketAuth } from "./auth.js";
+import { socketAuth, startSessionRevalidation } from "./auth.js";
 import { joinBaseRooms, registerRoomHandlers } from "./rooms.js";
 
 let ioInstance: Server | null = null;
@@ -28,6 +28,7 @@ export function initializeSocket(httpServer: HttpServer) {
   io.on("connection", async (socket) => {
     await joinBaseRooms(socket);
     registerRoomHandlers(socket);
+    startSessionRevalidation(socket);
 
     const userId = String((socket.data as any).userId ?? "");
     const workspaceId = String((socket.data as any).workspaceId ?? "");

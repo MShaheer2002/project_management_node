@@ -50,6 +50,7 @@ export const generateIssue: RequestHandler = async (req, res, next) => {
 
     const result = await aiService.generateIssue(prompt, workspaceId, {
       userId: req.user!.id,
+      viewer: { userId: req.user!.id, role: req.workspace!.role },
       resolvedAssigneeId,
       resolvedProjectId,
       signal: abortController.signal,
@@ -70,6 +71,7 @@ export const getDraftSuggestions: RequestHandler = async (req, res, next) => {
 
     const result = await aiService.getDraftSuggestions(workspaceId, body, {
       userId: req.user!.id,
+      viewer: { userId: req.user!.id, role: req.workspace!.role },
     });
 
     sendSuccess(res, 200, result);
@@ -175,6 +177,7 @@ export const listConversationMutations: RequestHandler = async (req, res, next) 
     const mutations = await aiMutations.listMutationsForConversation(
       req.params.id as string,
       req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
     );
     sendSuccess(res, 200, mutations);
   } catch (error) {
@@ -189,6 +192,7 @@ export const acceptMutation: RequestHandler = async (req, res, next) => {
       mutationId: req.params.id as string,
       workspaceId: req.workspace!.id,
       userId: req.user!.id,
+      userRole: req.workspace!.role,
     });
     sendSuccess(res, 200, result);
   } catch (error) {

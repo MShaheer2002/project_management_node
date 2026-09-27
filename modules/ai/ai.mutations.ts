@@ -17,6 +17,8 @@
  * change and the user's rejection.
  */
 
+import { isWorkspaceAdmin, type Viewer } from "../../shared/utils/visibility.js";
+import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 import type { Prisma } from "../../app/generated/prisma/client.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { AppError } from "../../shared/utils/api-error.js";
@@ -95,9 +97,20 @@ export async function attachMutationsToMessage(mutationIds: string[], messageId:
     });
 }
 
-export async function listMutationsForConversation(conversationId: string, workspaceId: string) {
+export async function listMutationsForConversation(
+  conversationId: string,
+  workspaceId: string,
+  viewer: Viewer,
+) {
+  // Scoped to the actor the AI worked for. `conversationId` leaks into activity
+  // metadata that every member can read, so a workspace-only filter let anyone
+  // enumerate an admin's AI changes and then revert them (F-08).
   const records = await prisma.aiMutationRecord.findMany({
-    where: { conversationId, workspaceId },
+    where: {
+      conversationId,
+      workspaceId,
+      ...(isWorkspaceAdmin(viewer.role) ? {} : { userId: viewer.userId }),
+    },
     orderBy: { createdAt: "asc" },
     select: {
       id: true,
@@ -123,8 +136,12 @@ export async function acceptMutation(input: {
   mutationId: string;
   workspaceId: string;
   userId: string;
+  userRole: string;
 }) {
-  const record = await loadPendingMutation(input.mutationId, input.workspaceId);
+  const record = await loadPendingMutation(input.mutationId, input.workspaceId, {
+    userId: input.userId,
+    role: input.userRole as WorkspaceRole,
+  });
 
   const updated = await prisma.aiMutationRecord.update({
     where: { id: record.id },
@@ -155,7 +172,10 @@ export async function revertMutation(input: {
   userId: string;
   userRole: string;
 }) {
-  const record = await loadPendingMutation(input.mutationId, input.workspaceId);
+  const record = await loadPendingMutation(input.mutationId, input.workspaceId, {
+    userId: input.userId,
+    role: input.userRole as WorkspaceRole,
+  });
 
   if (!record.revertable) {
     // Rejecting a create: record the user's intent, but do not delete. Point
@@ -232,11 +252,16 @@ export async function revertMutation(input: {
 
 // ─── Internals ──────────────────────────────────────────────────────────────
 
-async function loadPendingMutation(mutationId: string, workspaceId: string) {
+async function loadPendingMutation(mutationId: string, workspaceId: string, viewer: Viewer) {
   const record = await prisma.aiMutationRecord.findFirst({
-    where: { id: mutationId, workspaceId },
+    where: {
+      id: mutationId,
+      workspaceId,
+      ...(isWorkspaceAdmin(viewer.role) ? {} : { userId: viewer.userId }),
+    },
     select: {
       id: true,
+      userId: true,
       status: true,
       kind: true,
       toolName: true,
@@ -269,6 +294,26 @@ async function loadPendingMutation(mutationId: string, workspaceId: string) {
  * workflow validation, notifications and activity logging intact, and an
  * unrecognized target type must fail loudly rather than silently write raw rows.
  */
+/**
+ * Lead-or-admin, matching `requireOwnership` in shared/middleware. Duplicated as
+ * a function rather than reused as middleware because this path is not an HTTP
+ * request — but the rule must stay identical to the REST one.
+ */
+async function assertOwnsOrAdmin(
+  userRole: string,
+  userId: string,
+  ownership: { exists: boolean; ownerId: string | null },
+  forbiddenMessage: string,
+): Promise<void> {
+  if (isWorkspaceAdmin(userRole as WorkspaceRole)) return;
+  if (!ownership.exists) {
+    throw new AppError(404, ERROR_CODES.NOT_FOUND, "That change record no longer exists.");
+  }
+  if (!ownership.ownerId || ownership.ownerId !== userId) {
+    throw new AppError(403, ERROR_CODES.FORBIDDEN, forbiddenMessage);
+  }
+}
+
 async function applyRevert(input: {
   workspaceId: string;
   userId: string;
@@ -306,7 +351,7 @@ async function applyRevert(input: {
     }
 
     case "PROJECT": {
-      const { updateProject } = await import("../project/project.service.js");
+      const { updateProject, getProjectOwnership } = await import("../project/project.service.js");
       const fieldRevert = pickDefined(beforeState, [
         "name",
         "description",
@@ -315,16 +360,32 @@ async function applyRevert(input: {
         "visibility",
       ]);
       if (Object.keys(fieldRevert).length > 0) {
+        // `updateProject` carries no authorization of its own — REST gates it with
+        // the requireOwnership middleware, which this path bypasses entirely. Apply
+        // the same rule here (F-08); reverting `visibility` can re-expose a
+        // project that was deliberately made private.
+        await assertOwnsOrAdmin(
+          userRole,
+          userId,
+          await getProjectOwnership(workspaceId, targetId),
+          "You do not have permission to undo changes to this project",
+        );
         await updateProject(workspaceId, targetId, userId, fieldRevert as never);
       }
       return;
     }
 
     case "TEAM": {
-      const { updateTeam } = await import("../team/team.service.js");
+      const { updateTeam, getTeamOwnership } = await import("../team/team.service.js");
       const fieldRevert = pickDefined(beforeState, ["name", "description", "leadId", "visibility", "departmentId"]);
       if (Object.keys(fieldRevert).length > 0) {
-        await updateTeam(workspaceId, userRole as never, targetId, fieldRevert as never);
+        await assertOwnsOrAdmin(
+          userRole,
+          userId,
+          await getTeamOwnership(workspaceId, targetId),
+          "You do not have permission to undo changes to this team",
+        );
+        await updateTeam(workspaceId, userRole as never, targetId, fieldRevert as never, userId);
       }
       return;
     }

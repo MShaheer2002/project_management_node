@@ -7,6 +7,7 @@
  * No outbound notifications, no webhooks, no dispatcher registration.
  */
 
+import { encryptSecret } from "../../../shared/utils/secret-box.js";
 import { prisma } from "../../../shared/utils/prisma.js";
 import { createHash } from "node:crypto";
 import { AppError } from "../../../shared/utils/api-error.js";
@@ -18,12 +19,12 @@ import {
 } from "../integration.service.js";
 import {
   extractFigmaFileKey,
-  extractFigmaNodeId,
   isFigmaUrl,
   type FigmaFileMetadata,
   type FigmaUserInfo,
 } from "./figma.utils.js";
 import { assertIntegrationAllowedForPlan } from "../../billing/billing.service.js";
+import { assertIssueVisible, type Viewer } from "../../../shared/utils/visibility.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -169,14 +170,14 @@ export async function connectFigma(
       workspaceId,
       provider: "FIGMA",
       connected: true,
-      accessToken,
+      accessToken: encryptSecret(accessToken),
       providerMeta: providerMeta as any,
       connectedAt: new Date(),
       connectedById: userId,
     },
     update: {
       connected: true,
-      accessToken,
+      accessToken: encryptSecret(accessToken),
       providerMeta: providerMeta as any,
       connectedAt: new Date(),
       connectedById: userId,
@@ -203,79 +204,41 @@ export async function connectFigma(
 
 // ─── Preview ─────────────────────────────────────────────────────────────────
 
-/**
- * Fetch Figma file metadata from a URL.
- * Returns name, thumbnail, last modified, and link back to Figma.
- */
-export async function previewFigmaFile(workspaceId: string, url: string) {
-  if (!isFigmaUrl(url)) {
-    throw new AppError(400, ERROR_CODES.VALIDATION_ERROR, "Not a valid Figma URL");
-  }
-
-  const fileKey = extractFigmaFileKey(url);
-  if (!fileKey) {
-    throw new AppError(400, ERROR_CODES.VALIDATION_ERROR, "Could not extract file key from Figma URL");
-  }
-
-  const integration = await findConnectedIntegration(workspaceId, "FIGMA");
-  if (!integration?.accessToken) {
-    throw new AppError(404, ERROR_CODES.INTEGRATION_NOT_CONNECTED, "Figma is not connected. Connect it in Settings → Integrations.");
-  }
-
-  const fileData = await figmaGet<FigmaFileMetadata>(
-    integration.accessToken,
-    `/files/${fileKey}?depth=1`,
-  );
-
-  if (!fileData) {
-    throw new AppError(404, ERROR_CODES.NOT_FOUND, "Figma file not found or access denied. Check that the token has access to this file.");
-  }
-
-  const nodeId = extractFigmaNodeId(url);
-
-  // Fetch node-specific thumbnail if a node ID is provided
-  let thumbnailUrl = fileData.thumbnailUrl;
-  if (nodeId) {
-    const imageData = await figmaGet<{ images: Record<string, string> }>(
-      integration.accessToken,
-      `/images/${fileKey}?ids=${encodeURIComponent(nodeId)}&format=png&scale=2`,
-    );
-    if (imageData?.images?.[nodeId]) {
-      thumbnailUrl = imageData.images[nodeId];
-    }
-  }
-
-  return {
-    fileKey,
-    name: fileData.name,
-    thumbnailUrl,
-    lastModified: fileData.lastModified,
-    version: fileData.version,
-    editorType: fileData.editorType,
-    nodeId,
-    url, // Original URL passed in — for "Open in Figma" button
-  };
+/** Every Figma file key mentioned in some text (issue description HTML, stored links). */
+function figmaFileKeysIn(text: string) {
+  return new Set([...text.matchAll(/figma\.com\/(?:file|design|proto|board)\/([a-zA-Z0-9]+)/g)].map((match) => match[1]!));
 }
 
-// ─── Batch Preview ───────────────────────────────────────────────────────────
-
 /**
- * Fetch metadata for multiple Figma URLs at once.
- * Used when loading an issue or project page that has multiple linked designs.
- * Deduplicates by file key to avoid redundant API calls.
+ * Preview cards for the Figma links on one issue.
+ *
+ * The connected token belongs to the admin who connected Figma, so fetching
+ * any URL a caller sent let anyone in the workspace (guests included) read
+ * the name, thumbnail and date of files only that admin can open (F-41).
+ * Now the caller must be able to see the issue, and only links that are
+ * actually in that issue (description or attached links) are looked up;
+ * anything else is skipped.
  */
-export async function batchPreviewFigmaFiles(workspaceId: string, urls: string[]) {
+export async function batchPreviewFigmaFiles(workspaceId: string, viewer: Viewer, issueId: string, urls: string[]) {
+  await assertIssueVisible(workspaceId, issueId, viewer);
+  const issue = await prisma.issue.findFirst({
+    where: { id: issueId, workspaceId },
+    select: { description: true, integrationRef: true },
+  });
+  if (!issue) return [];
+  const linkedKeys = figmaFileKeysIn(`${issue.description ?? ""} ${JSON.stringify(issue.integrationRef ?? null)}`);
+
   const integration = await findConnectedIntegration(workspaceId, "FIGMA");
   if (!integration?.accessToken) return [];
 
   const token = integration.accessToken;
 
-  // Deduplicate by file key
+  // Deduplicate by file key; drop anything not linked from this issue
   const fileKeys = new Map<string, string[]>(); // fileKey → [urls]
   for (const url of urls) {
     if (!isFigmaUrl(url)) continue;
     const key = extractFigmaFileKey(url);
-    if (!key) continue;
+    if (!key || !linkedKeys.has(key)) continue;
     const existing = fileKeys.get(key) ?? [];
     existing.push(url);
     fileKeys.set(key, existing);
@@ -299,7 +262,5 @@ export async function batchPreviewFigmaFiles(workspaceId: string, urls: string[]
   });
 
   const settled = await Promise.allSettled(fetchPromises);
-  return settled
-    .filter((r): r is PromiseFulfilledResult<typeof r extends PromiseFulfilledResult<infer V> ? V : never> => r.status === "fulfilled")
-    .flatMap((r) => r.value);
+  return settled.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 }

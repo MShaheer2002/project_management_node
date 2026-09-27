@@ -14,6 +14,7 @@
  */
 
 import { prisma } from "../../shared/utils/prisma.js";
+import { releaseWorkspaceDrivesOf } from "../drive/drive.service.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { logActivity } from "../../shared/utils/activity.js";
@@ -227,6 +228,11 @@ export async function changeMemberRole(
     },
   });
 
+  // A Workspace Drive lives in its admin's Google account: it goes with the role.
+  if (newRole !== "ADMIN") {
+    await releaseWorkspaceDrivesOf(targetUserId, workspaceId);
+  }
+
   // Role and designation are part of a member's embedded description, which is
   // what makes "who are the admins" or "who is a frontend engineer" resolvable.
   await indexEntity({
@@ -248,7 +254,7 @@ export async function changeMemberRole(
  * Remove a member from a workspace.
  * OWNER cannot be removed — they must delete the workspace instead.
  */
-export async function removeMember(workspaceId: string, targetUserId: string) {
+export async function removeMember(workspaceId: string, targetUserId: string, actorUserId: string) {
   const removedUser = await prisma.user.findUnique({
     where: { id: targetUserId },
     select: { id: true, name: true, email: true },
@@ -315,10 +321,11 @@ export async function removeMember(workspaceId: string, targetUserId: string) {
   });
 
   await syncPaidSeatQuantityBestEffort(workspaceId);
+  await releaseWorkspaceDrivesOf(targetUserId, workspaceId);
 
   await logActivity({
     workspaceId,
-    actorId: targetUserId,
+    actorId: actorUserId,
     type: "WORKSPACE_MEMBER_REMOVED",
     targetType: "MEMBER",
     targetId: targetUserId,

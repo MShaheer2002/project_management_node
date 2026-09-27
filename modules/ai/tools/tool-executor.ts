@@ -11,6 +11,8 @@
  *   7. Project/team creation — ADMIN/OWNER only
  */
 
+import { createNotification } from "../../notification/notification.service.js";
+import { filterVisibleActivityRows } from "../../../shared/utils/visibility.js";
 import { prisma } from "../../../shared/utils/prisma.js";
 import { AppError } from "../../../shared/utils/api-error.js";
 import { createHash } from "node:crypto";
@@ -38,9 +40,12 @@ import {
   createIssue,
   listWatchers,
   updateIntegrationRefs,
+  mergeIntegrationRef,
   updateIssueStatus,
 } from "../../issue/issue.service.js";
 import type { CreateIssueInput } from "../../issue/issue.schemas.js";
+import { INTEGRATION_PROVIDERS } from "../../issue/issue.schemas.js";
+import { isWebLink } from "../../../shared/utils/web-link.js";
 import {
   createSubtask,
   reorderSubtasks,
@@ -163,7 +168,6 @@ import {
   updateProjectSchedule,
 } from "../../roadmap/roadmap.service.js";
 import {
-  createApiKey,
   getApiKeyById,
   listApiKeys,
 } from "../../api-key/api-key.service.js";
@@ -942,32 +946,45 @@ async function executeToolLegacy(
         if (args.description) data.description = str(args.description);
         if (args.priority) data.priority = str(args.priority).toUpperCase();
         if (args.type) data.type = str(args.type).toUpperCase();
-        if (args.status) {
-          // Use kebab-case status keys (matching workspace custom statuses)
-          const status = str(args.status).toLowerCase().replace(/_/g, "-");
-          data.status = status;
-          if (status === "done") data.completedAt = new Date();
-          else if (existing.status === "done" || existing.status === "DONE") data.completedAt = null;
-        }
         if (args.dueDate) {
           const dueDateStr = str(args.dueDate);
           const resolved = resolveDueDate(dueDateStr);
           if (resolved) data.dueDate = resolved;
         }
 
+        // Status is NOT written here. The raw update below bypasses
+        // assertTransitionPermission/assertStatusEntryRules, so setting it
+        // inline let a MEMBER move an issue out of an approval-gated status via
+        // chat or MCP — the same defect already fixed for update_issue_status
+        // below, which this now matches (F-20). Kebab-case matches workspace
+        // custom status keys.
+        const nextStatus = args.status ? str(args.status).toLowerCase().replace(/_/g, "-") : null;
+
         return withMutationGuard(
           "update_issue",
           {
             issueId: existing.id,
+            ...(nextStatus ? { status: nextStatus } : {}),
             ...data,
           },
           ctx,
           async () => {
-            const updated = await prisma.issue.update({
-              where: { id: existing.id },
-              data,
-              select: { id: true, title: true, status: true, priority: true, assigneeId: true, dueDate: true },
-            });
+            // Status first: if the workflow gate rejects it, nothing has been
+            // written yet, so the issue is not left half-updated.
+            if (nextStatus) {
+              await updateIssueStatus(ctx.workspaceId, workspaceRole(ctx), ctx.userId, existing.id, nextStatus);
+            }
+
+            const updated = Object.keys(data).length > 0
+              ? await prisma.issue.update({
+                  where: { id: existing.id },
+                  data,
+                  select: { id: true, title: true, status: true, priority: true, assigneeId: true, dueDate: true },
+                })
+              : await prisma.issue.findUniqueOrThrow({
+                  where: { id: existing.id },
+                  select: { id: true, title: true, status: true, priority: true, assigneeId: true, dueDate: true },
+                });
 
             await recordAiMutationActivity({
               ctx,
@@ -979,7 +996,7 @@ async function executeToolLegacy(
                 issueId: updated.id,
                 entityId: updated.id,
                 entityTitle: updated.title,
-                changedFields: Object.keys(data),
+                changedFields: [...Object.keys(data), ...(nextStatus ? ["status"] : [])],
                 before: {
                   title: existing.title,
                   status: existing.status,
@@ -1068,9 +1085,11 @@ async function executeToolLegacy(
         });
         if (!existing) return { success: false, data: null, error: `Issue ${args.issueId} not found` };
 
-        // MEMBER can only assign their own issues or unassigned issues
-        if (!isAdmin(ctx) && existing.assigneeId && existing.assigneeId !== ctx.userId && existing.creatorId !== ctx.userId) {
-          return { success: false, data: null, error: "You can only reassign issues assigned to you or created by you" };
+        // Same ownership rule as update_issue. The old condition short-circuited
+        // on `existing.assigneeId`, so ANY unassigned issue a MEMBER could see
+        // was theirs to hand out (F-07).
+        if (!isAdmin(ctx) && existing.assigneeId !== ctx.userId && existing.creatorId !== ctx.userId) {
+          return { success: false, data: null, error: "You can only assign issues assigned to you or created by you" };
         }
 
         const assigneeId = resolveUserId(args.assigneeId, ctx);
@@ -1088,6 +1107,29 @@ async function executeToolLegacy(
           ctx,
           async () => {
             await prisma.issue.update({ where: { id: existing.id }, data: { assigneeId: assigneeId ?? null } });
+
+            // The raw write skips the notification the REST path sends, so the
+            // assignee would only find out by accident (F-07).
+            if (assigneeId && assigneeId !== existing.assigneeId) {
+              await createNotification({
+                workspaceId: ctx.workspaceId,
+                recipientUserId: assigneeId,
+                actorUserId: ctx.userId,
+                type: "ASSIGNMENT",
+                category: "assignment",
+                title: "New issue assignment",
+                message: `You were assigned issue ${existing.id}`,
+                target: { type: "issue", id: existing.id, publicId: existing.id, url: `/issues/${existing.id}` },
+                metadata: {
+                  issueId: existing.id,
+                  entityId: existing.id,
+                  fromAssignee: existing.assigneeId,
+                  toAssignee: assigneeId,
+                  workspaceId: ctx.workspaceId,
+                  url: `/issues/${existing.id}`,
+                },
+              });
+            }
 
             await recordAiMutationActivity({
               ctx,
@@ -1220,7 +1262,7 @@ async function executeToolLegacy(
           { issueId, title, order: args.order ? num(args.order, 0) : null },
           ctx,
           async () => {
-            const subtask = await createSubtask(ctx.workspaceId, issueId, {
+            const subtask = await createSubtask(ctx.workspaceId, { userId: ctx.userId, role: workspaceRole(ctx) }, issueId, {
               title,
               ...(args.order ? { order: num(args.order, 0) } : {}),
             });
@@ -1278,7 +1320,7 @@ async function executeToolLegacy(
           },
           ctx,
           async () => {
-            const subtask = await updateSubtask(ctx.workspaceId, issueId, subtaskId, ctx.userId, {
+            const subtask = await updateSubtask(ctx.workspaceId, { userId: ctx.userId, role: workspaceRole(ctx) }, issueId, subtaskId, ctx.userId, {
               ...(args.title ? { title: str(args.title).trim() } : {}),
               ...(completed !== undefined ? { completed } : {}),
               ...(args.order ? { order: num(args.order, 0) } : {}),
@@ -1331,7 +1373,7 @@ async function executeToolLegacy(
           { issueId, items },
           ctx,
           async () => {
-            const subtasks = await reorderSubtasks(ctx.workspaceId, issueId, items);
+            const subtasks = await reorderSubtasks(ctx.workspaceId, { userId: ctx.userId, role: workspaceRole(ctx) }, issueId, items);
 
             await recordAiMutationActivity({
               ctx,
@@ -1377,7 +1419,7 @@ async function executeToolLegacy(
           { issueId, userIds },
           ctx,
           async () => {
-            const result = await addWatchers(ctx.workspaceId, issueId, userIds, ctx.userId);
+            const result = await addWatchers(ctx.workspaceId, { userId: ctx.userId, role: workspaceRole(ctx) }, issueId, userIds, ctx.userId);
 
             await recordAiMutationActivity({
               ctx,
@@ -1402,7 +1444,7 @@ async function executeToolLegacy(
         if (!issueId) return { success: false, data: null, error: "issueId is required" };
         await assertIssueVisible(issueId, ctx);
 
-        const watchers = await listWatchers(ctx.workspaceId, issueId);
+        const watchers = await listWatchers(ctx.workspaceId, { userId: ctx.userId, role: workspaceRole(ctx) }, issueId);
         return { success: true, data: { issueId, watchers } };
       }
 
@@ -1423,7 +1465,7 @@ async function executeToolLegacy(
           { issueId, relatedIssueId, relation },
           ctx,
           async () => {
-            const dependency = await addDependency(ctx.workspaceId, issueId, relatedIssueId, relation, ctx.userId);
+            const dependency = await addDependency(ctx.workspaceId, issueId, relatedIssueId, relation, { userId: ctx.userId, role: workspaceRole(ctx) }, ctx.userId);
 
             await recordAiMutationActivity({
               ctx,
@@ -1457,14 +1499,20 @@ async function executeToolLegacy(
         const issueId = str(args.issueId);
         const provider = str(args.provider);
         if (!issueId) return { success: false, data: null, error: "issueId is required" };
-        if (!provider) return { success: false, data: null, error: "provider is required" };
+        if (!INTEGRATION_PROVIDERS.includes(provider as never)) {
+          return { success: false, data: null, error: `provider must be one of: ${INTEGRATION_PROVIDERS.join(", ")}` };
+        }
+        const url = args.url ? str(args.url).trim() : "";
+        if (url && (url.length > 500 || !isWebLink(url))) {
+          return { success: false, data: null, error: "url must be a web link starting with http or https" };
+        }
         await assertIssueVisible(issueId, ctx);
 
         const integrationRef = {
           provider,
           ...(args.label ? { label: str(args.label).slice(0, 100) } : {}),
           ...(args.externalId ? { externalId: str(args.externalId).slice(0, 255) } : {}),
-          ...(args.url ? { url: str(args.url).slice(0, 500) } : {}),
+          ...(url ? { url } : {}),
         };
 
         return withMutationGuard(
@@ -1472,15 +1520,14 @@ async function executeToolLegacy(
           { issueId, integrationRef },
           ctx,
           async () => {
-            await updateIntegrationRefs(ctx.workspaceId, issueId, [
-              {
-                id: "ai-ref",
+            // Adds to the issue's links; never replaces or removes them (F-46).
+            const integrationRefs = await updateIntegrationRefs(ctx.workspaceId, { userId: ctx.userId, role: workspaceRole(ctx) }, issueId,
+              (existing) => mergeIntegrationRef(existing, {
                 provider: integrationRef.provider,
                 label: integrationRef.label ?? null,
                 externalId: integrationRef.externalId ?? null,
                 url: integrationRef.url ?? null,
-              },
-            ], ctx.userId);
+              }), ctx.userId);
 
             await recordAiMutationActivity({
               ctx,
@@ -1502,7 +1549,7 @@ async function executeToolLegacy(
               reason: "updated",
             });
 
-            return { success: true, data: { issueId, integrationRefs: [integrationRef] } };
+            return { success: true, data: { issueId, integrationRefs } };
           },
         );
       }
@@ -1877,7 +1924,7 @@ async function executeToolLegacy(
           { userId },
           ctx,
           async () => {
-            await removeWorkspaceMember(ctx.workspaceId, userId);
+            await removeWorkspaceMember(ctx.workspaceId, userId, ctx.userId);
             await recordAiMutationActivity({
               ctx,
               toolName: "remove_workspace_member",
@@ -2068,7 +2115,7 @@ async function executeToolLegacy(
           },
           ctx,
           async () => {
-            const team = await createTeam(ctx.workspaceId, ctx.userId, {
+            const team = await createTeam(ctx.workspaceId, ctx.userId, workspaceRole(ctx), {
               name,
               leadId,
               ...(args.departmentId ? { departmentId: str(args.departmentId) } : {}),
@@ -2138,7 +2185,7 @@ async function executeToolLegacy(
               ...(args.departmentId !== undefined ? { departmentId: str(args.departmentId) || null } : {}),
               ...(args.description !== undefined ? { description: str(args.description) || null } : {}),
               ...(args.visibility ? { visibility: str(args.visibility).toUpperCase() as "PUBLIC" | "PRIVATE" } : {}),
-            });
+            }, ctx.userId);
 
             invalidateContextCache(ctx.workspaceId);
             await upsertEntityAliases({
@@ -2273,11 +2320,13 @@ async function executeToolLegacy(
           // Verify user can see this team (private team check)
           const team = await prisma.team.findFirst({
             where: { id: str(args.teamId), workspaceId: ctx.workspaceId },
-            select: { id: true, visibility: true, memberships: { select: { userId: true } } },
+            select: { id: true, leadId: true },
           });
           if (!team) return { success: false, data: null, error: "Team not found" };
-          if (team.visibility === "PRIVATE" && !isAdmin(ctx) && !team.memberships.some((m) => m.userId === ctx.userId)) {
-            return { success: false, data: null, error: "You don't have access to this team" };
+          // Per-person workload is the same data as team analytics, which only
+          // admins and the team lead may see (F-43).
+          if (!isAdmin(ctx) && team.leadId !== ctx.userId) {
+            return { success: false, data: null, error: "Only admins and the team lead can see workload per person" };
           }
           where.teamId = str(args.teamId);
         } else if (!isAdmin(ctx)) {
@@ -2801,11 +2850,21 @@ async function executeToolLegacy(
       case "get_cycle_progress": {
         const cycle = await prisma.cycle.findFirst({
           where: { id: str(args.cycleId), workspaceId: ctx.workspaceId },
-          select: { id: true, name: true, status: true, startsAt: true, endsAt: true, goal: true },
+          select: { id: true, name: true, status: true, startsAt: true, endsAt: true, goal: true, teamId: true },
         });
         if (!cycle) return { success: false, data: null, error: "Cycle not found" };
 
-        const statusCounts = await prisma.issue.groupBy({ by: ["status"], where: { cycleId: cycle.id }, _count: true });
+        // A cycle belongs to a team, and the name/goal/dates leak that team's work.
+        // Without this the tool hands a GUEST the cycles of PRIVATE teams (F-06 v).
+        await assertTeamVisible(cycle.teamId, ctx);
+
+        // Counts are scoped too — an otherwise visible cycle can still contain
+        // issues from private projects the caller is not a member of.
+        const statusCounts = await prisma.issue.groupBy({
+          by: ["status"],
+          where: { cycleId: cycle.id, ...issueVisibilityWhere(ctx) },
+          _count: true,
+        });
         const stats = Object.fromEntries(statusCounts.map((s) => [s.status, s._count]));
         const total = statusCounts.reduce((sum, s) => sum + s._count, 0);
         const done = stats["done"] ?? stats["DONE"] ?? 0;
@@ -3375,7 +3434,7 @@ async function executeToolLegacy(
         const allowed = await hasAnyRoadmapManageAccess(ctx.workspaceId, ctx.userId, workspaceRole(ctx), [blockingProjectId, blockedProjectId]);
         if (!allowed) return { success: false, data: null, error: "You do not have permission to manage roadmap dependencies for these projects" };
         return withMutationGuard("create_roadmap_dependency", { blockingProjectId, blockedProjectId }, ctx, async () => {
-          const dependency = await createRoadmapDependency(ctx.workspaceId, ctx.userId, {
+          const dependency = await createRoadmapDependency(ctx.workspaceId, ctx.userId, { userId: ctx.userId, role: workspaceRole(ctx) }, {
             blockingProjectId,
             blockedProjectId,
             ...(args.note !== undefined ? { note: str(args.note) || null } : {}),
@@ -3484,58 +3543,14 @@ async function executeToolLegacy(
       }
 
       case "create_api_key": {
-        if (!isAdmin(ctx)) return { success: false, data: null, error: "Only admins and owners can create API keys" };
-
-        const name = str(args.name);
-        if (!name) return { success: false, data: null, error: "name is required" };
-
-        const expiresAt = args.expiresAt !== undefined ? str(args.expiresAt) : "";
-        if (expiresAt) {
-          const expiresDate = new Date(expiresAt);
-          if (Number.isNaN(expiresDate.getTime())) {
-            return { success: false, data: null, error: "expiresAt must be a valid ISO-8601 timestamp" };
-          }
-          if (expiresDate <= new Date()) {
-            return { success: false, data: null, error: "expiresAt must be in the future" };
-          }
-        }
-
-        return withMutationGuard(
-          "create_api_key",
-          { name, expiresAt: expiresAt || null },
-          ctx,
-          async () => {
-            const apiKey = await createApiKey(ctx.workspaceId, ctx.userId, {
-              name,
-              ...(expiresAt ? { expiresAt } : {}),
-            });
-
-            await recordAiMutationActivity({
-              ctx,
-              toolName: "create_api_key",
-              targetType: "WORKSPACE",
-              targetId: ctx.workspaceId,
-              message: `AI created API key "${apiKey.name}"`,
-              metadata: {
-                apiKeyId: apiKey.id,
-                entityId: apiKey.id,
-                entityTitle: apiKey.name,
-                keyPrefix: apiKey.keyPrefix,
-              },
-            });
-
-            return {
-              success: true,
-              data: {
-                ...apiKey,
-                secretShownOnce: true,
-              },
-            };
-          },
-          {
-            persistResult: sanitizeApiKeyReplayResult,
-          },
-        );
+        // API keys are never created through the AI. Its reply was the only way
+        // to show the one-time secret, so the raw key went to the model
+        // provider and was saved in plain text in chat history (F-45).
+        return {
+          success: false,
+          data: null,
+          error: "API keys can only be created in Settings, under Personal Access Tokens, so the key is shown only to you.",
+        };
       }
 
       case "get_api_key": {
@@ -3918,7 +3933,9 @@ async function executeToolLegacy(
       }
 
       case "activity_summary": {
-        const items = await prisma.activity.findMany({
+        const limit = Math.min(num(args.limit, 15), 30);
+
+        const rows = await prisma.activity.findMany({
           where: { workspaceId: ctx.workspaceId },
           select: {
             id: true,
@@ -3929,8 +3946,14 @@ async function executeToolLegacy(
             createdAt: true,
           },
           orderBy: { createdAt: "desc" },
-          take: Math.min(num(args.limit, 15), 30),
+          // Over-fetch: entries the caller may not see are dropped below, and we
+          // still want `limit` visible ones back.
+          take: isAdmin(ctx) ? limit : limit * 4,
         });
+
+        // Activity descriptions carry issue keys, titles and project names, so a
+        // workspace-wide feed leaks private projects to any GUEST (F-06 m).
+        const items = (await filterVisibleActivityRows(rows, ctx.workspaceId, { userId: ctx.userId, role: ctx.userRole as WorkspaceRole })).slice(0, limit);
 
         return {
           success: true,
@@ -4013,19 +4036,23 @@ async function executeToolLegacy(
         return { success: false, data: null, error: `Unknown tool: ${toolName}` };
     }
   } catch (error) {
-    logAiError("tool_executor_failed", {
-      workspaceId: ctx.workspaceId,
-      userId: ctx.userId,
-      conversationId: ctx.conversationId,
-      feature: "chat",
-      toolName,
-      success: false,
-      errorCode: error instanceof AppError ? error.code : "TOOL_EXECUTION_FAILED",
-      errorMessage: error instanceof Error ? error.message : "Tool execution failed",
-    });
-    const message = error instanceof AppError ? error.message : "Tool execution failed";
-    return { success: false, data: null, error: message };
+    return toolFailure(toolName, ctx, error);
   }
+}
+
+function toolFailure(toolName: string, ctx: ToolContext, error: unknown): LegacyToolResult {
+  logAiError("tool_executor_failed", {
+    workspaceId: ctx.workspaceId,
+    userId: ctx.userId,
+    conversationId: ctx.conversationId,
+    feature: "chat",
+    toolName,
+    success: false,
+    errorCode: error instanceof AppError ? error.code : "TOOL_EXECUTION_FAILED",
+    errorMessage: error instanceof Error ? error.message : "Tool execution failed",
+  });
+  const message = error instanceof AppError ? error.message : "Tool execution failed";
+  return { success: false, data: null, error: message };
 }
 
 export async function executeTool(
@@ -4033,6 +4060,8 @@ export async function executeTool(
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<ToolExecutorResult> {
-  const result = await executeToolLegacy(toolName, args, ctx);
+  // Mutation tools return withMutationGuard(...) unawaited, so their errors
+  // skip the catch inside executeToolLegacy. Catch them here too.
+  const result = await executeToolLegacy(toolName, args, ctx).catch((error) => toolFailure(toolName, ctx, error));
   return normalizeExecutorResult(result);
 }

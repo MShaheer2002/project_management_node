@@ -5,7 +5,9 @@
  * Every query is scoped by workspaceId to preserve tenant isolation.
  */
 
+import { visibleIssueWhere, visibleProjectWhere, filterVisibleActivityRows, type Viewer } from "../../shared/utils/visibility.js";
 import { prisma } from "../../shared/utils/prisma.js";
+import { publicWorkspaceLogo } from "../workspace/workspace-logo.js";
 
 function formatDueTime(value: Date | string | null | undefined) {
   if (value === undefined) return undefined;
@@ -54,7 +56,10 @@ function getIssueProgress(total: number, completed: number) {
  *
  * Returns all data needed to render the dashboard after signup/login.
  */
-export async function getDashboardData(workspaceId: string, userId: string) {
+export async function getDashboardData(workspaceId: string, userId: string, viewer: Viewer) {
+  // Aggregate counters stay workspace-wide (they reveal no project content);
+  // every list below is scoped to what this viewer may actually see (F-06 d).
+  const visibleIssues = visibleIssueWhere(viewer);
   const days = getLastSevenDays();
   const rangeStart = days[0]!;
   const rangeEnd = addDays(days[days.length - 1]!, 1);
@@ -125,7 +130,7 @@ export async function getDashboardData(workspaceId: string, userId: string) {
       },
     }),
     prisma.project.findMany({
-      where: { workspaceId, status: "ACTIVE" },
+      where: { workspaceId, status: "ACTIVE", ...visibleProjectWhere(viewer) },
       orderBy: { updatedAt: "desc" },
       take: LIST_LIMIT,
       select: {
@@ -147,6 +152,7 @@ export async function getDashboardData(workspaceId: string, userId: string) {
         workspaceId,
         status: { not: "DONE" },
         dueDate: { gte: today },
+        ...visibleIssues,
       },
       orderBy: [{ dueDate: "asc" }, { priority: "desc" }],
       take: LIST_LIMIT,
@@ -165,7 +171,8 @@ export async function getDashboardData(workspaceId: string, userId: string) {
     prisma.activity.findMany({
       where: { workspaceId },
       orderBy: { createdAt: "desc" },
-      take: ACTIVITY_LIMIT,
+      // Over-fetch, then drop entries targeting hidden issues/projects below.
+      take: ACTIVITY_LIMIT * 4,
       select: {
         id: true,
         type: true,
@@ -228,7 +235,7 @@ export async function getDashboardData(workspaceId: string, userId: string) {
   });
 
   return {
-    workspace,
+    workspace: { ...workspace, logo: publicWorkspaceLogo(workspace) },
     stats: {
       issuesCompleted,
       activeProjects: activeProjectsCount,
@@ -280,6 +287,6 @@ export async function getDashboardData(workspaceId: string, userId: string) {
       };
     }),
     upcomingDeadlines,
-    teamActivity,
+    teamActivity: (await filterVisibleActivityRows(teamActivity, workspaceId, viewer)).slice(0, ACTIVITY_LIMIT),
   };
 }

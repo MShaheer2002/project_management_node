@@ -279,15 +279,18 @@ async function buildMemberContent(userId: string, workspaceId: string): Promise<
   });
   if (!membership?.user) return null;
 
+  // Public teams and departments only. This text is searchable by anyone in
+  // the workspace, so a private department listed here disclosed its name and
+  // who is in it to people the Departments page hides it from (F-44).
   const [teams, departments] = await Promise.all([
     prisma.teamMembership.findMany({
-      where: { userId, team: { workspaceId } },
+      where: { userId, team: { workspaceId, visibility: "PUBLIC" } },
       select: { team: { select: { name: true } } },
       orderBy: { teamId: "asc" },
       take: 20,
     }),
     prisma.departmentMembership.findMany({
-      where: { userId, department: { workspaceId } },
+      where: { userId, department: { workspaceId, visibility: "PUBLIC" } },
       select: { department: { select: { name: true } } },
       orderBy: { departmentId: "asc" },
       take: 20,

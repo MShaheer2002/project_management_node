@@ -3,6 +3,7 @@ import { buildUploadKey, createPresignedGetUrl, createPresignedPutUrl } from "..
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { prisma } from "../../shared/utils/prisma.js";
+import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 import type {
   BatchUploadFileInput,
   CreatePresignedUrlInput,
@@ -147,15 +148,27 @@ async function buildPresignedUpload(workspaceId: string, input: CreatePresignedU
   const contentType = validateUploadInput(input);
   const key = buildUploadKey(workspaceId, input.kind, input.fileName, contentType);
 
-  return createPresignedPutUrl(key, contentType);
+  return createPresignedPutUrl(key, contentType, input.size);
 }
 
-export async function createPresignedUrl(workspaceId: string, input: CreatePresignedUrlInput) {
+/**
+ * The logo folder is what the public sign-in and invite pages serve, so only
+ * the people who can set the logo may put files there.
+ */
+function assertMayUploadKind(kind: string, role: WorkspaceRole) {
+  if (kind === "workspace-logo" && role !== "ADMIN" && role !== "OWNER") {
+    throw new AppError(403, ERROR_CODES.INSUFFICIENT_ROLE, "Only admins and owners can upload the workspace logo");
+  }
+}
+
+export async function createPresignedUrl(workspaceId: string, role: WorkspaceRole, input: CreatePresignedUrlInput) {
+  assertMayUploadKind(input.kind, role);
   await enforceStorageLimit(workspaceId, input.size);
   return buildPresignedUpload(workspaceId, input);
 }
 
-export async function createPresignedUrls(workspaceId: string, input: CreatePresignedUrlsInput) {
+export async function createPresignedUrls(workspaceId: string, role: WorkspaceRole, input: CreatePresignedUrlsInput) {
+  for (const file of input.files) assertMayUploadKind(file.kind, role);
   const totalSize = input.files.reduce((sum, file) => sum + file.size, 0);
   await enforceStorageLimit(workspaceId, totalSize);
 

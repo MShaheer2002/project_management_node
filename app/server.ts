@@ -21,6 +21,7 @@ import app from "./app.js";
 import { env } from "../config/env.js";
 import { prisma } from "../shared/utils/prisma.js";
 import { initializeSocket } from "../socket/index.js";
+import { startWorkspaceLifecycleWorker, stopWorkspaceLifecycleWorker } from "../modules/workspace/workspace-lifecycle.worker.js";
 
 // ─── Start Server ────────────────────────────────────────────────────────────
 
@@ -33,6 +34,8 @@ async function start() {
     // Start the HTTP server
     const httpServer = createServer(app);
     initializeSocket(httpServer);
+
+    startWorkspaceLifecycleWorker();
 
     httpServer.listen(env.PORT, () => {
       console.log(
@@ -54,6 +57,10 @@ async function start() {
       httpServer.close(() => {
         console.log("🔌 HTTP server closed");
       });
+
+      // Let a running lifecycle job finish (a purge is mid-way through
+      // external deletions) before the DB goes away.
+      await stopWorkspaceLifecycleWorker();
 
       // Disconnect Prisma (release DB connection pool)
       await prisma.$disconnect();

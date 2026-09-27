@@ -1,5 +1,7 @@
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { executeTool } from "../modules/ai/tools/tool-executor.js";
+import { MCP_TOOL_SPECS } from "./mcp.tools.js";
+import { hasScope } from "../shared/utils/scopes.js";
 import { logAiError, logAiInfo } from "../modules/ai/ai.observability.js";
 import { recordAiConnectionSessionStep } from "../modules/ai-connection/ai-connection.service.js";
 import type { McpSessionContext } from "./mcp.auth.js";
@@ -7,6 +9,16 @@ import type { McpSessionContext } from "./mcp.auth.js";
 function stringifyResource(payload: unknown) {
   return JSON.stringify(payload, null, 2);
 }
+
+/**
+ * Scope required to read a resource, derived from the tool it is backed by.
+ *
+ * Every resource is a thin wrapper over an MCP tool, and `MCP_TOOL_SPECS` already
+ * declares that tool's scope — so this reads the same table `mcp.tools.ts`
+ * enforces rather than restating it. A second hand-maintained list is how the two
+ * paths would drift apart again.
+ */
+const scopeForTool = new Map(MCP_TOOL_SPECS.map((spec) => [spec.name, spec.scope] as const));
 
 function getVariable(variables: Record<string, string | string[]>, key: string) {
   const value = variables[key];
@@ -21,6 +33,30 @@ async function readResourceThroughTool(input: {
   args: Record<string, unknown>;
   resourceUri: string;
 }) {
+  // Resources went straight to executeTool, so a connection scoped to
+  // ["issues:read"] could still read trussen://workspace (analytics:read),
+  // trussen://projects/{id} and /analytics — the scopes on an AI connection were
+  // unenforceable through this transport (F-09).
+  //
+  // Unknown tool => no declared scope => refuse, rather than allow by omission.
+  const requiredScope = scopeForTool.get(input.toolName);
+  if (!requiredScope || !hasScope(input.session.scopes, requiredScope)) {
+    return {
+      contents: [
+        {
+          uri: input.resourceUri,
+          mimeType: "application/json",
+          text: stringifyResource({
+            success: false,
+            error: requiredScope
+              ? `Permission denied: this connection does not have the "${requiredScope}" scope required to read ${input.resourceUri}.`
+              : `Permission denied: no scope is declared for ${input.resourceUri}.`,
+          }),
+        },
+      ],
+    };
+  }
+
   const result = await executeTool(input.toolName, input.args, {
     workspaceId: input.session.workspaceId,
     userId: input.session.userId,

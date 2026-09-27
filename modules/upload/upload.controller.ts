@@ -20,6 +20,7 @@ export const createPresignedUrl: RequestHandler = async (req, res) => {
 
   const upload = await createPresignedUrlService(
     req.workspace!.id,
+    req.workspace!.role,
     req.body as CreatePresignedUrlInput,
   );
 
@@ -50,6 +51,7 @@ export const createPresignedUrls: RequestHandler = async (req, res) => {
 
   const uploads = await createPresignedUrlsService(
     req.workspace!.id,
+    req.workspace!.role,
     req.body as CreatePresignedUrlsInput,
   );
 

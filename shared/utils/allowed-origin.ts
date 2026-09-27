@@ -43,3 +43,14 @@ export function isAllowedFrontendOrigin(origin: string | undefined, nodeEnv: str
   if (nodeEnv !== "production") return isDevelopmentOrigin(origin);
   return false;
 }
+
+/**
+ * A Clerk session token names the site it was made for in `azp`. Only accept
+ * tokens made for our own frontend (N-12). Clerk's own authorizedParties needs
+ * an exact list, which can't cover a subdomain per workspace. Tokens without
+ * azp are only made server side with our secret key, so they're allowed.
+ */
+export function isAllowedTokenParty(azp: unknown, nodeEnv: string): boolean {
+  if (azp === undefined || azp === null || azp === "") return true;
+  return typeof azp === "string" && isAllowedFrontendOrigin(azp, nodeEnv);
+}

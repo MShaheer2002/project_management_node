@@ -12,6 +12,8 @@ import { Prisma, type IntegrationProvider } from "../../app/generated/prisma/cli
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { logActivity } from "../../shared/utils/activity.js";
+import { assertIntegrationAllowedForPlan } from "../billing/billing.service.js";
+import { decryptSecretOrLegacy } from "../../shared/utils/secret-box.js";
 
 // ─── Provider Mapping ────────────────────────────────────────────────────────
 
@@ -81,14 +83,19 @@ export async function getIntegrationConnectionStatus(workspaceId: string) {
 export async function disconnectProvider(workspaceId: string, provider: string, actorId: string) {
   const dbProvider = resolveProvider(provider);
 
-  const integration = await prisma.integration.findUnique({
+  const stored = await prisma.integration.findUnique({
     where: { workspaceId_provider: { workspaceId, provider: dbProvider } },
     select: { id: true, connected: true, accessToken: true, providerMeta: true },
   });
 
-  if (!integration || !integration.connected) {
+  if (!stored || !stored.connected) {
     throw new AppError(404, ERROR_CODES.INTEGRATION_NOT_CONNECTED, `${provider} is not connected`);
   }
+
+  // Needs the real token to call GitHub/Slack during teardown below (F-15).
+  const integration = stored.accessToken
+    ? { ...stored, accessToken: decryptSecretOrLegacy(stored.accessToken) }
+    : stored;
 
   // Clean up GitHub webhooks on disconnect (best-effort)
   if (dbProvider === "GITHUB" && integration.accessToken) {
@@ -113,6 +120,31 @@ export async function disconnectProvider(workspaceId: string, provider: string, 
             }
           }
         } catch { /* best-effort */ }
+      }
+    }
+  }
+
+  // Uninstall the Slack app on disconnect (best-effort). Flipping connected=false
+  // alone leaves the app installed in the customer's Slack, so Slack keeps signing
+  // their /trussen requests with the shared app secret (F-03).
+  if (dbProvider === "SLACK" && integration.accessToken) {
+    const { env } = await import("../../config/env.js");
+    if (env.SLACK_CLIENT_ID && env.SLACK_CLIENT_SECRET) {
+      try {
+        const params = new URLSearchParams({
+          client_id: env.SLACK_CLIENT_ID,
+          client_secret: env.SLACK_CLIENT_SECRET,
+        });
+        const response = await fetch(`https://slack.com/api/apps.uninstall?${params.toString()}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${integration.accessToken}` },
+        });
+        const result = (await response.json()) as { ok: boolean; error?: string };
+        if (!result.ok) {
+          console.warn(`[Slack] apps.uninstall failed for workspace ${workspaceId}:`, result.error);
+        }
+      } catch (err) {
+        console.warn(`[Slack] apps.uninstall errored for workspace ${workspaceId}:`, err);
       }
     }
   }
@@ -183,9 +215,61 @@ export async function initDefaultSettings(integrationId: string, defaults: Recor
 export async function findConnectedIntegration(workspaceId: string, provider: IntegrationProvider) {
   const integration = await prisma.integration.findUnique({
     where: { workspaceId_provider: { workspaceId, provider } },
-    select: { id: true, connected: true, accessToken: true, providerMeta: true, connectedById: true },
+    select: {
+      id: true,
+      connected: true,
+      accessToken: true,
+      providerMeta: true,
+      connectedById: true,
+      workspace: { select: { deactivatedAt: true } },
+    },
   });
 
-  if (!integration?.connected) return null;
-  return integration;
+  // A deactivated workspace sends nothing out (Slack/Discord posts, GitHub
+  // calls) — the purge tears these connections down via disconnectProvider,
+  // which reads the row directly.
+  if (!integration?.connected || integration.workspace.deactivatedAt) return null;
+
+  // Tokens are encrypted at rest (F-15). Decrypt here, at the single accessor
+  // every provider goes through, so callers keep receiving a usable token.
+  return integration.accessToken
+    ? { ...integration, accessToken: decryptSecretOrLegacy(integration.accessToken) }
+    : integration;
+}
+
+// ─── Connect Authorization ───────────────────────────────────────────────────
+
+/**
+ * Re-check that `userId` may connect `provider` for `workspaceId`.
+ *
+ * OAuth callbacks arrive with no session, minutes after `/connect` ran its role
+ * and plan gates, so those gates must run again here against the identity the
+ * signed state carries — otherwise a demoted member or a downgraded plan can
+ * still land an integration (audit F-01 / F-02).
+ */
+export async function assertCanConnectIntegration(
+  workspaceId: string,
+  userId: string,
+  provider: IntegrationProvider,
+) {
+  const membership = await prisma.workspaceMembership.findUnique({
+    where: { userId_workspaceId: { userId, workspaceId } },
+    select: { role: true, workspace: { select: { deactivatedAt: true } } },
+  });
+
+  // The callback arrives minutes after /connect; the owner may have
+  // deactivated the workspace in between.
+  if (membership?.workspace.deactivatedAt) {
+    throw new AppError(403, ERROR_CODES.WORKSPACE_DEACTIVATED, "Deactivated by Owner");
+  }
+
+  if (!membership || (membership.role !== "ADMIN" && membership.role !== "OWNER")) {
+    throw new AppError(
+      403,
+      ERROR_CODES.INSUFFICIENT_ROLE,
+      "Connecting an integration requires the ADMIN or OWNER role in this workspace",
+    );
+  }
+
+  await assertIntegrationAllowedForPlan(workspaceId, provider);
 }

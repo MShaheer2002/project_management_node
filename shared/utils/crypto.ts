@@ -39,3 +39,8 @@ export function hashToken(token: string): string {
 export function normalizeEmail(email: string): string {
   return email.toLowerCase().trim();
 }
+
+/** Stored for unverified or deleted accounts (N-02). ".invalid" never receives mail. */
+export function isPlaceholderEmail(email: string): boolean {
+  return email.endsWith(".invalid");
+}

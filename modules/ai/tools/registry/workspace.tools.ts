@@ -413,13 +413,12 @@ export const apiKeysManage: ConsolidatedTool = {
   domain: "integrations",
   readOnly: false,
   description:
-    "List or create API keys. Admin only. Revoking must be done in workspace settings.",
+    "List API keys. Admin only. Creating and revoking keys is done in Settings, so a new key is only ever shown to the person creating it.",
   parameters: {
     type: "object",
     properties: {
-      action: { type: "string", description: "What to do.", enum: ["list", "get", "create"] },
+      action: { type: "string", description: "What to do.", enum: ["list", "get"] },
       apiKeyId: { type: "string", description: "Key to fetch (action=get)." },
-      name: { type: "string", description: "Label for the new key (action=create)." },
     },
     required: ["action"],
   },
@@ -432,11 +431,8 @@ export const apiKeysManage: ConsolidatedTool = {
         if (!apiKeyId) return fail("apiKeyId is required");
         return callLegacy("get_api_key", { apiKeyId }, ctx);
       }
-      case "create": {
-        const name = optionalStr(args.name);
-        if (!name) return fail("name is required to create an API key");
-        return callLegacy("create_api_key", { name }, ctx);
-      }
+      case "create":
+        return fail("API keys can only be created in Settings, under Personal Access Tokens, so the key is shown only to you.");
       default:
         return fail(`Unknown API key action: ${str(args.action)}`);
     }

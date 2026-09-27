@@ -1,3 +1,4 @@
+import { visibleIssueWhere } from "../../shared/utils/visibility.js";
 import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
@@ -531,7 +532,8 @@ export async function getCycleById(workspaceId: string, cycleId: string, userId:
       : Promise.resolve(null),
     computeCycleStats(workspaceId, cycle.id, cycle.startsAt, cycle.endsAt),
     prisma.issue.findMany({
-      where: { workspaceId, cycleId: cycle.id },
+      // Same rule as listCycleIssues — the detail view embeds the issue list (F-06 l).
+      where: { workspaceId, cycleId: cycle.id, ...visibleIssueWhere({ userId, role }) },
       orderBy: [{ updatedAt: "desc" }],
       include: {
         assignee: { select: { id: true, name: true, email: true, avatar: true } },
@@ -886,8 +888,8 @@ function getCycleIssueOrderBy(sort: ListCycleIssuesQuery["sort"]) {
 export async function listCycleIssues(
   workspaceId: string,
   cycleId: string,
-  _userId: string,
-  _role: WorkspaceRole,
+  userId: string,
+  role: WorkspaceRole,
   query: ListCycleIssuesQuery,
 ) {
   await assertCycleInWorkspace(workspaceId, cycleId);
@@ -896,6 +898,9 @@ export async function listCycleIssues(
   const where: any = {
     workspaceId,
     cycleId,
+    // A cycle spans projects, so membership of the cycle's team says nothing
+    // about the private projects its issues belong to (F-06 c).
+    ...visibleIssueWhere({ userId, role }),
     ...(query.q
       ? {
           OR: [
@@ -958,8 +963,10 @@ export async function planIssuesIntoCycle(
   for (const issueRouteId of uniqueIssueIds) {
     try {
       const resolvedId = await resolveIssueRouteId(workspaceId, issueRouteId);
+      // Same scoping as assignIssueToCycle — bulk planning must not be a way
+      // around the per-issue check (F-06 r).
       const existing = await prisma.issue.findFirst({
-        where: { id: resolvedId, workspaceId },
+        where: { id: resolvedId, workspaceId, ...visibleIssueWhere({ userId, role }) },
         select: { id: true, cycleId: true },
       });
 
@@ -992,8 +999,10 @@ export async function planIssuesIntoCycle(
 export async function assignIssueToCycle(workspaceId: string, issueRouteId: string, userId: string, role: WorkspaceRole, input: AssignIssueCycleInput) {
   const issueId = await resolveIssueRouteId(workspaceId, issueRouteId);
   const [issue, cycle] = await Promise.all([
+    // Team membership says nothing about the private projects the team's issues
+    // belong to, so scope the lookup itself (F-06 r).
     prisma.issue.findFirst({
-      where: { id: issueId, workspaceId },
+      where: { id: issueId, workspaceId, ...visibleIssueWhere({ userId, role }) },
       select: { id: true, teamId: true, assigneeId: true, title: true, creatorId: true, status: true, projectId: true },
     }),
     assertCycleInWorkspace(workspaceId, input.cycleId),

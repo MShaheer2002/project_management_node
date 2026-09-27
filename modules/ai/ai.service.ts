@@ -14,6 +14,7 @@
  * The user reviews and submits — the normal issue creation flow handles persistence.
  */
 
+import { visibleIssueWhere, visibleProjectWhere, type Viewer } from "../../shared/utils/visibility.js";
 import { callAI, createEmbedding } from "./ai.provider.js";
 import { AiCallAbortedError } from "./ai.tool-runtime.js";
 import { assertAiAccess } from "./ai.access.js";
@@ -197,16 +198,32 @@ function buildPreviewLabelSuggestion(labels: string[]) {
 
 async function buildPreviewDuplicateSuggestion(input: {
   workspaceId: string;
+  viewer: Viewer;
   title: string;
   description?: string | null;
 }) {
-  const matches = await findSimilarIssuesByText({
+  const found = await findSimilarIssuesByText({
     workspaceId: input.workspaceId,
     issueId: "__draft__",
     title: input.title,
     description: input.description,
     limit: 3,
   });
+
+  if (found.length === 0) return null;
+
+  // Similarity search is workspace-wide and returns titles, so filter to what
+  // this caller may actually see before echoing any of it back (F-06 k).
+  const visible = await prisma.issue.findMany({
+    where: {
+      workspaceId: input.workspaceId,
+      id: { in: found.map((m) => m.issueId) },
+      ...visibleIssueWhere(input.viewer),
+    },
+    select: { id: true },
+  });
+  const visibleIds = new Set(visible.map((i) => i.id));
+  const matches = found.filter((m) => visibleIds.has(m.issueId));
 
   if (matches.length === 0) return null;
 
@@ -223,11 +240,14 @@ async function buildPreviewDuplicateSuggestion(input: {
 
 async function buildPreviewAssigneeSuggestion(input: {
   workspaceId: string;
+  viewer: Viewer;
   projectId: string;
 }) {
   const [project, members, workloads] = await Promise.all([
+    // Scoped read: an arbitrary projectId otherwise returns the member list and
+    // per-person workload of any private project (F-06 k).
     prisma.project.findFirst({
-      where: { id: input.projectId, workspaceId: input.workspaceId },
+      where: { id: input.projectId, workspaceId: input.workspaceId, ...visibleProjectWhere(input.viewer) },
       select: { leadId: true, teamId: true },
     }),
     prisma.projectMembership.findMany({
@@ -297,6 +317,7 @@ async function buildPreviewAssigneeSuggestion(input: {
 
 async function buildDraftDuplicateSuggestion(input: {
   workspaceId: string;
+  viewer: Viewer;
   title: string;
   description?: string | null;
 }) {
@@ -331,10 +352,14 @@ async function buildDraftDuplicateSuggestion(input: {
   const candidateIds = [...new Set([...textMatches.map((item) => item.issueId), ...embeddingMatches.map((item) => item.issueId)])];
   if (candidateIds.length === 0) return null;
 
+  // Similarity search runs workspace-wide, so this lookup is what decides what
+  // the caller is told about. Unfiltered it is a search oracle over private
+  // issues: type text, get back matching private titles (F-06 k).
   const issues = await prisma.issue.findMany({
     where: {
       workspaceId: input.workspaceId,
       id: { in: candidateIds },
+      ...visibleIssueWhere(input.viewer),
     },
     select: {
       id: true,
@@ -575,6 +600,7 @@ export async function generateIssue(
   workspaceId: string,
   options?: {
     userId?: string | undefined;
+    viewer?: Viewer | undefined;
     modelOverride?: string | undefined;
     resolvedAssigneeId?: string | undefined;
     resolvedProjectId?: string | undefined;
@@ -638,7 +664,10 @@ export async function generateIssue(
 
   // Step 2: Fetch minimal workspace context (DB queries)
   const detectedType = ruleDetections.type ?? undefined;
-  const context = await buildIssueGenerationContext(workspaceId, detectedType);
+  // Fall back to the narrowest scope if no viewer was supplied, rather than
+  // silently showing every project (F-06 n).
+  const contextViewer: Viewer = options?.viewer ?? { userId: options?.userId ?? "", role: "GUEST" };
+  const context = await buildIssueGenerationContext(workspaceId, contextViewer, detectedType);
 
   // Step 3: Build prompt and call AI
   const systemPrompt = buildSystemPrompt(context, ruleDetections);
@@ -864,12 +893,14 @@ export async function generateIssue(
       Promise.resolve(buildPreviewLabelSuggestion(validLabels)),
       buildPreviewDuplicateSuggestion({
         workspaceId,
+        viewer: contextViewer,
         title: aiData.title,
         description: aiData.description,
       }),
       !suggestedAssigneeId && suggestedProjectId
         ? buildPreviewAssigneeSuggestion({
             workspaceId,
+            viewer: contextViewer,
             projectId: suggestedProjectId,
           })
         : Promise.resolve(null),
@@ -934,8 +965,20 @@ export async function generateIssue(
 export async function getDraftSuggestions(
   workspaceId: string,
   input: DraftSuggestionsInput,
-  options?: { userId?: string | undefined },
+  options?: { userId?: string | undefined; viewer?: Viewer | undefined },
 ): Promise<DraftSuggestionResult> {
+  const viewer: Viewer = options?.viewer ?? { userId: options?.userId ?? "", role: "GUEST" };
+
+  // Gated like every other provider-calling feature. This endpoint ran an
+  // embedding + similarity search on every keystroke-ish draft update without
+  // ever consulting plan entitlement or daily quota (F-23).
+  if (options?.userId) {
+    await assertAiAccess({
+      workspaceId,
+      userId: options.userId,
+      feature: "draft_suggestions",
+    });
+  }
   const startedAt = Date.now();
 
   logAiInfo("draft_suggestions_started", {
@@ -962,12 +1005,14 @@ export async function getDraftSuggestions(
       }),
       buildDraftDuplicateSuggestion({
         workspaceId,
+        viewer,
         title: input.title,
         ...(input.description !== undefined ? { description: input.description } : {}),
       }),
       !input.assigneeId && input.projectId
         ? buildPreviewAssigneeSuggestion({
             workspaceId,
+            viewer,
             projectId: input.projectId,
           })
         : Promise.resolve(null),

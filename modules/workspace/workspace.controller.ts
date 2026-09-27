@@ -10,6 +10,7 @@ import type { RequestHandler } from "express";
 import * as workspaceService from "./workspace.service.js";
 import * as membershipService from "./membership.service.js";
 import * as invitationService from "./invitation.service.js";
+import * as lifecycleService from "./workspace-lifecycle.service.js";
 import { sendList, sendSuccess } from "../../shared/utils/api-response.js";
 import type { ListWorkspaceMembersQuery } from "./workspace.schemas.js";
 
@@ -68,10 +69,38 @@ export const update: RequestHandler = async (req, res, next) => {
   }
 };
 
-/** DELETE /workspaces/:workspaceId — Delete workspace (OWNER only, cascades everything) */
+/** GET /workspaces/:workspaceId/logo — PUBLIC redirect to a signed link for the uploaded logo (F-36) */
+export const logo: RequestHandler = async (req, res, next) => {
+  try {
+    const { url } = await workspaceService.getWorkspaceLogoRedirect(req.params.workspaceId as string);
+    // Shorter than the signed link's lifetime, so a cached redirect never points at an expired link.
+    res.set("Cache-Control", `public, max-age=${workspaceService.LOGO_LINK_TTL_SECONDS - 60}`);
+    // helmet's default same-origin policy would stop the app (another origin) from showing it.
+    res.set("Cross-Origin-Resource-Policy", "cross-origin");
+    res.redirect(302, url);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** DELETE /workspaces/:workspaceId — Deactivate workspace (OWNER only); deleted for good after 30 days */
 export const remove: RequestHandler = async (req, res, next) => {
   try {
-    await workspaceService.deleteWorkspace(req.params.workspaceId as string);
+    const result = await lifecycleService.deactivateWorkspace(
+      req.params.workspaceId as string,
+      req.user!.id,
+      req.body.confirmName,
+    );
+    sendSuccess(res, 200, result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/** POST /workspaces/:workspaceId/restore — Restore a deactivated workspace (OWNER only) */
+export const restore: RequestHandler = async (req, res, next) => {
+  try {
+    await lifecycleService.restoreWorkspace(req.params.workspaceId as string);
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -120,6 +149,7 @@ export const getStatusUsage: RequestHandler = async (req, res, next) => {
     const query = (req.validated?.query ?? req.query) as { limit?: number };
     const usage = await workspaceService.getWorkspaceStatusUsage(
       req.params.workspaceId as string,
+      { userId: req.user!.id, role: req.workspace!.role },
       req.params.statusKey as string,
       query.limit,
     );
@@ -228,7 +258,7 @@ export const changeMemberRole: RequestHandler = async (req, res, next) => {
 /** DELETE /workspaces/:workspaceId/members/:userId — Remove member */
 export const removeMember: RequestHandler = async (req, res, next) => {
   try {
-    await membershipService.removeMember(req.params.workspaceId as string, req.params.userId as string);
+    await membershipService.removeMember(req.params.workspaceId as string, req.params.userId as string, req.user!.id);
     res.status(204).send();
   } catch (error) {
     next(error);

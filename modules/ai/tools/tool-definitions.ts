@@ -266,7 +266,7 @@ export const AI_TOOLS: ToolDefinition[] = [
     type: "function",
     function: {
       name: "update_issue_integration_ref",
-      description: "Link or update an external integration reference on an issue. Does not unlink or delete references.",
+      description: "Add an external link to an issue, or update the one with the same URL. Existing links are kept. Never removes links. The URL must start with http or https.",
       parameters: {
         type: "object",
         properties: {
@@ -274,7 +274,7 @@ export const AI_TOOLS: ToolDefinition[] = [
           provider: { type: "string", description: "Provider", enum: ["github", "jira", "slack", "notion", "figma", "custom"] },
           label: { type: "string", description: "Display label" },
           externalId: { type: "string", description: "External object ID" },
-          url: { type: "string", description: "External URL" },
+          url: { type: "string", description: "External URL (http or https)" },
         },
         required: ["issueId", "provider"],
       },
@@ -649,7 +649,7 @@ export const AI_TOOLS: ToolDefinition[] = [
         type: "object",
         properties: {
           name: { type: "string", description: "Workspace name" },
-          logo: { type: "string", description: "Workspace logo URL" },
+          logo: { type: "string", description: "Workspace logo: only an image already uploaded to this workspace (its asset URL). Links to other sites are rejected." },
         },
       },
     },
@@ -1433,21 +1433,6 @@ export const AI_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "create_api_key",
-      description: "Create a new API key for the current workspace. Admins and owners only. The raw key is shown once and is not available again on replay.",
-      parameters: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Human-readable API key name" },
-          expiresAt: { type: "string", description: "Optional future ISO-8601 expiry timestamp" },
-        },
-        required: ["name"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "get_api_key",
       description: "Get a single API key by ID. Returns masked prefix only.",
       parameters: {
@@ -1697,7 +1682,7 @@ const TOOL_DOMAIN_MAP: Record<ToolDomain, string[]> = {
     "update_milestone", "create_roadmap_dependency", "reorder_milestones",
     "resolve_roadmap_dependency", "cancel_roadmap_dependency",
   ],
-  integrations: ["list_api_keys", "create_api_key", "get_api_key", "list_integrations", "get_integration_status"],
+  integrations: ["list_api_keys", "get_api_key", "list_integrations", "get_integration_status"],
   analytics: [
     "get_workspace_analytics", "get_project_analytics", "get_team_analytics",
     "get_member_analytics", "get_cycle_analytics", "export_analytics_report",

@@ -36,6 +36,7 @@ import { errorHandler } from "../shared/middleware/error-handler.js";
 import { sendSuccess } from "../shared/utils/api-response.js";
 import { prisma } from "../shared/utils/prisma.js";
 import { openApiSpec } from "../docs/api/openapi.js";
+import { env } from "../config/env.js";
 import { getBullBoardRouter } from "../infra/queue/dashboard.js";
 import authRoutes from "../modules/auth/auth.routes.js";
 import workspaceRoutes from "../modules/workspace/workspace.routes.js";
@@ -110,26 +111,26 @@ app.use(clerkMiddleware());
 // ─── API Documentation (Swagger UI) ──────────────────────────────────────────
 
 /**
- * GET /api-docs
+ * GET /api-docs and GET /api-docs.json
  *
- * Serves the interactive Swagger UI for exploring and testing all API endpoints.
- * Only available in development — disabled in production to avoid exposing internals.
- * Visit http://localhost:8000/api-docs to browse the full API spec.
+ * Interactive Swagger UI plus the raw OpenAPI spec, for exploring the API and
+ * for importing into Postman, Insomnia or code generators.
+ *
+ * Mounted in development and staging only. The docblock here already claimed it
+ * was "disabled in production", but nothing enforced that — both routes were
+ * mounted unconditionally, publishing the full internal API map of a production
+ * deployment to anyone who asked (F-13).
  */
-app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(openApiSpec, {
-  customSiteTitle: "Project Management API Docs",
-  customCss: ".swagger-ui .topbar { display: none }",
-}));
+if (env.NODE_ENV !== "production") {
+  app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(openApiSpec, {
+    customSiteTitle: "Project Management API Docs",
+    customCss: ".swagger-ui .topbar { display: none }",
+  }));
 
-/**
- * GET /api-docs.json
- *
- * Returns the raw OpenAPI spec as JSON.
- * Useful for importing into Postman, Insomnia, or code generators.
- */
-app.get("/api-docs.json", (_req, res) => {
-  res.json(openApiSpec);
-});
+  app.get("/api-docs.json", (_req, res) => {
+    res.json(openApiSpec);
+  });
+}
 
 // ─── Health Check ────────────────────────────────────────────────────────────
 

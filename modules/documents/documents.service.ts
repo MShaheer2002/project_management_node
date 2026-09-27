@@ -221,6 +221,40 @@ async function assertScopeExists(workspaceId: string, context: ScopeContext) {
   }
 }
 
+/**
+ * A folder id from the URL path must actually belong to the scope in that path.
+ *
+ * The scoped wrappers checked access to the *scope* (this team, this project)
+ * and then resolved the folder id workspace-wide, so a folder belonging to a
+ * private project could be read, renamed, moved or deleted through a public
+ * team's URL by anyone who knew its UUID (F-31).
+ *
+ * Reuses buildScopeWhere, which already encodes the scope/teamId/projectId
+ * triple — so the constraint cannot drift from the one listing uses.
+ */
+async function assertFolderInScope(workspaceId: string, context: ScopeContext, folderId: string) {
+  const folder = await (prisma as any).documentFolder.findFirst({
+    where: { id: folderId, ...buildScopeWhere(workspaceId, context) },
+    select: { id: true },
+  });
+
+  if (!folder) {
+    throw new AppError(404, ERROR_CODES.FOLDER_NOT_FOUND, "Folder not found");
+  }
+}
+
+/** Same rule for a document id taken from a scoped URL. */
+async function assertDocumentInScope(workspaceId: string, context: ScopeContext, documentId: string) {
+  const document = await (prisma as any).entityDocument.findFirst({
+    where: { id: documentId, ...buildScopeWhere(workspaceId, context) },
+    select: { id: true },
+  });
+
+  if (!document) {
+    throw new AppError(404, ERROR_CODES.DOCUMENT_NOT_FOUND, "Document not found");
+  }
+}
+
 async function listDocuments(workspaceId: string, context: ScopeContext, query: ListDocumentsQuery) {
   const limit = clampListLimit(query.limit);
   const folderFilter: any =
@@ -295,6 +329,12 @@ async function createDocumentsForScope(
   const created: DocumentRecord[] = [];
 
   for (const document of documents) {
+    // folderId came from the request body and was stored unverified, so a
+    // document could be filed into another scope's — or another tenant's —
+    // folder (F-31).
+    if (document.folderId) {
+      await assertFolderInScope(workspaceId, context, document.folderId);
+    }
     const file = validateDocumentRef(workspaceId, document.file);
     const record = await tx.entityDocument.create({
       data: {
@@ -750,10 +790,18 @@ export async function moveFolder(
     throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "Cannot move a folder into itself");
   }
 
-  // Validate new parent exists and check for circular reference
+  // Validate new parent exists and check for circular reference.
+  // The destination must share this folder's scope — resolving it workspace-wide
+  // let a folder be moved into another team's or project's tree (F-31).
   if (newParentId) {
     const newParent = await (prisma as any).documentFolder.findFirst({
-      where: { id: newParentId, workspaceId },
+      where: {
+        id: newParentId,
+        workspaceId,
+        scope: folder.scope,
+        teamId: folder.teamId,
+        projectId: folder.projectId,
+      },
       select: { id: true },
     });
 
@@ -815,7 +863,7 @@ export async function moveDocument(
 ) {
   const document = await prisma.entityDocument.findFirst({
     where: { id: documentId, workspaceId },
-    select: { id: true, folderId: true },
+    select: { id: true, folderId: true, scope: true, teamId: true, projectId: true },
   });
 
   if (!document) {
@@ -823,8 +871,15 @@ export async function moveDocument(
   }
 
   if (input.folderId) {
+    // Destination folder must share the document's scope (F-31).
     const folder = await (prisma as any).documentFolder.findFirst({
-      where: { id: input.folderId, workspaceId },
+      where: {
+        id: input.folderId,
+        workspaceId,
+        scope: document.scope,
+        teamId: document.teamId,
+        projectId: document.projectId,
+      },
       select: { id: true },
     });
 
@@ -856,7 +911,12 @@ export async function moveDocument(
 export async function getFolderBreadcrumbs(
   workspaceId: string,
   folderId: string,
+  context?: ScopeContext,
 ) {
+  // The starting folder must belong to the scope in the URL; its ancestors are
+  // then reached only through parentId, which cannot leave that scope (F-31).
+  if (context) await assertFolderInScope(workspaceId, context, folderId);
+
   const breadcrumbs: { id: string; name: string }[] = [];
   let currentId: string | null = folderId;
 
@@ -900,11 +960,12 @@ export async function moveWorkspaceFolder(workspaceId: string, folderId: string,
 }
 
 export async function moveWorkspaceDocument(workspaceId: string, documentId: string, input: MoveDocumentInput, actorId: string) {
+  await assertDocumentInScope(workspaceId, { scope: "WORKSPACE" }, documentId);
   return moveDocument(workspaceId, documentId, input, actorId);
 }
 
 export async function getWorkspaceFolderBreadcrumbs(workspaceId: string, folderId: string) {
-  return getFolderBreadcrumbs(workspaceId, folderId);
+  return getFolderBreadcrumbs(workspaceId, folderId, { scope: "WORKSPACE" });
 }
 
 export async function listTeamFolders(workspaceId: string, workspaceRole: WorkspaceRole, userId: string, teamId: string, query: ListFoldersQuery) {
@@ -917,25 +978,29 @@ export async function createTeamFolder(workspaceId: string, teamId: string, inpu
   return createFolder(workspaceId, { scope: "TEAM", teamId }, input, actorId);
 }
 
-export async function renameTeamFolder(workspaceId: string, _teamId: string, folderId: string, input: RenameFolderInput, actorId: string) {
+export async function renameTeamFolder(workspaceId: string, teamId: string, folderId: string, input: RenameFolderInput, actorId: string) {
+  await assertFolderInScope(workspaceId, { scope: "TEAM", teamId }, folderId);
   return renameFolder(workspaceId, folderId, input, actorId);
 }
 
-export async function deleteTeamFolder(workspaceId: string, _teamId: string, folderId: string, actorId: string) {
+export async function deleteTeamFolder(workspaceId: string, teamId: string, folderId: string, actorId: string) {
+  await assertFolderInScope(workspaceId, { scope: "TEAM", teamId }, folderId);
   return deleteFolder(workspaceId, folderId, actorId);
 }
 
-export async function moveTeamFolder(workspaceId: string, _teamId: string, folderId: string, input: MoveFolderInput, actorId: string) {
+export async function moveTeamFolder(workspaceId: string, teamId: string, folderId: string, input: MoveFolderInput, actorId: string) {
+  await assertFolderInScope(workspaceId, { scope: "TEAM", teamId }, folderId);
   return moveFolder(workspaceId, folderId, input, actorId);
 }
 
-export async function moveTeamDocument(workspaceId: string, _teamId: string, documentId: string, input: MoveDocumentInput, actorId: string) {
+export async function moveTeamDocument(workspaceId: string, teamId: string, documentId: string, input: MoveDocumentInput, actorId: string) {
+  await assertDocumentInScope(workspaceId, { scope: "TEAM", teamId }, documentId);
   return moveDocument(workspaceId, documentId, input, actorId);
 }
 
 export async function getTeamFolderBreadcrumbs(workspaceId: string, workspaceRole: WorkspaceRole, userId: string, teamId: string, folderId: string) {
   await assertScopeAccessible(workspaceId, workspaceRole, userId, { scope: "TEAM", teamId });
-  return getFolderBreadcrumbs(workspaceId, folderId);
+  return getFolderBreadcrumbs(workspaceId, folderId, { scope: "TEAM", teamId });
 }
 
 export async function listProjectFolders(workspaceId: string, workspaceRole: WorkspaceRole, userId: string, projectId: string, query: ListFoldersQuery) {
@@ -948,23 +1013,27 @@ export async function createProjectFolder(workspaceId: string, projectId: string
   return createFolder(workspaceId, { scope: "PROJECT", projectId }, input, actorId);
 }
 
-export async function renameProjectFolder(workspaceId: string, _projectId: string, folderId: string, input: RenameFolderInput, actorId: string) {
+export async function renameProjectFolder(workspaceId: string, projectId: string, folderId: string, input: RenameFolderInput, actorId: string) {
+  await assertFolderInScope(workspaceId, { scope: "PROJECT", projectId }, folderId);
   return renameFolder(workspaceId, folderId, input, actorId);
 }
 
-export async function deleteProjectFolder(workspaceId: string, _projectId: string, folderId: string, actorId: string) {
+export async function deleteProjectFolder(workspaceId: string, projectId: string, folderId: string, actorId: string) {
+  await assertFolderInScope(workspaceId, { scope: "PROJECT", projectId }, folderId);
   return deleteFolder(workspaceId, folderId, actorId);
 }
 
-export async function moveProjectFolder(workspaceId: string, _projectId: string, folderId: string, input: MoveFolderInput, actorId: string) {
+export async function moveProjectFolder(workspaceId: string, projectId: string, folderId: string, input: MoveFolderInput, actorId: string) {
+  await assertFolderInScope(workspaceId, { scope: "PROJECT", projectId }, folderId);
   return moveFolder(workspaceId, folderId, input, actorId);
 }
 
-export async function moveProjectDocument(workspaceId: string, _projectId: string, documentId: string, input: MoveDocumentInput, actorId: string) {
+export async function moveProjectDocument(workspaceId: string, projectId: string, documentId: string, input: MoveDocumentInput, actorId: string) {
+  await assertDocumentInScope(workspaceId, { scope: "PROJECT", projectId }, documentId);
   return moveDocument(workspaceId, documentId, input, actorId);
 }
 
 export async function getProjectFolderBreadcrumbs(workspaceId: string, workspaceRole: WorkspaceRole, userId: string, projectId: string, folderId: string) {
   await assertScopeAccessible(workspaceId, workspaceRole, userId, { scope: "PROJECT", projectId });
-  return getFolderBreadcrumbs(workspaceId, folderId);
+  return getFolderBreadcrumbs(workspaceId, folderId, { scope: "PROJECT", projectId });
 }

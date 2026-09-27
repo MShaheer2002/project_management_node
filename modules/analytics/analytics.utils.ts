@@ -157,10 +157,33 @@ export function msToReadableUnit(ms: number): { value: number; unit: "hours" | "
   return { value: Number((ms / (60 * 60 * 1000)).toFixed(1)), unit: "hours" };
 }
 
-function csvEscape(value: unknown): string {
-  const raw = value == null ? "" : typeof value === "string" ? value : String(value);
-  const safe = raw.replace(/"/g, '""');
-  return /[",\n]/.test(safe) ? `"${safe}"` : safe;
+/**
+ * Characters that make Excel / Sheets / LibreOffice treat a cell as a formula.
+ * Tab and CR are included because they can lead a cell that then starts with
+ * one of the others.
+ */
+const FORMULA_LEAD = /^[=+\-@\t\r]/;
+
+/**
+ * Escape a value for CSV, including neutralising spreadsheet formulas.
+ *
+ * Quote/comma escaping alone is not enough: project names, member names and
+ * issue titles are member-controlled, so a project named
+ * `=HYPERLINK("https://evil.example","Open")` executed when an admin opened the
+ * export (audit F-26). Prefixing with an apostrophe makes the spreadsheet treat
+ * the cell as text; the apostrophe itself is not displayed.
+ *
+ * Numbers and booleans skip the guard so legitimate negatives (`-5`) stay
+ * numeric rather than becoming text — only caller-supplied strings are at risk.
+ */
+export function csvEscape(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+
+  const raw = typeof value === "string" ? value : String(value);
+  const guarded = FORMULA_LEAD.test(raw) ? `'${raw}` : raw;
+  const safe = guarded.replace(/"/g, '""');
+  return /[",\n\r]/.test(safe) ? `"${safe}"` : safe;
 }
 
 function csvRow(cells: unknown[]): string {

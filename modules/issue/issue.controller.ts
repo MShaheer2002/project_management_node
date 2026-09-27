@@ -46,7 +46,11 @@ export const checkAssignmentEligibility: RequestHandler = async (req, res, next)
 export const getStatusCounts: RequestHandler = async (req, res, next) => {
   try {
     const query = (req.validated?.query ?? req.query) as GetStatusCountsQuery;
-    const counts = await issueService.getStatusCounts(req.workspace!.id, { projectId: query.projectId });
+    const counts = await issueService.getStatusCounts(
+      req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
+      { projectId: query.projectId },
+    );
     sendSuccess(res, 200, counts);
   } catch (error) {
     next(error);
@@ -81,7 +85,7 @@ export const update: RequestHandler = async (req, res, next) => {
 export const remove: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    await issueService.deleteIssue(req.workspace!.id, issueId);
+    await issueService.deleteIssue(req.workspace!.id, { userId: req.user!.id, role: req.workspace!.role }, issueId);
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -137,7 +141,7 @@ export const revokeApproval: RequestHandler = async (req, res, next) => {
 export const createSubtask: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    const subtask = await subtaskService.createSubtask(req.workspace!.id, issueId, req.body);
+    const subtask = await subtaskService.createSubtask(req.workspace!.id, { userId: req.user!.id, role: req.workspace!.role }, issueId, req.body);
     sendSuccess(res, 201, subtask);
   } catch (error) {
     next(error);
@@ -149,6 +153,7 @@ export const updateSubtask: RequestHandler = async (req, res, next) => {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
     const subtask = await subtaskService.updateSubtask(
       req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
       issueId,
       req.params.sid as string,
       req.user!.id,
@@ -163,7 +168,7 @@ export const updateSubtask: RequestHandler = async (req, res, next) => {
 export const deleteSubtask: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    await subtaskService.deleteSubtask(req.workspace!.id, issueId, req.params.sid as string);
+    await subtaskService.deleteSubtask(req.workspace!.id, { userId: req.user!.id, role: req.workspace!.role }, issueId, req.params.sid as string);
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -173,7 +178,7 @@ export const deleteSubtask: RequestHandler = async (req, res, next) => {
 export const reorderSubtasks: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    const subtasks = await subtaskService.reorderSubtasks(req.workspace!.id, issueId, req.body.items);
+    const subtasks = await subtaskService.reorderSubtasks(req.workspace!.id, { userId: req.user!.id, role: req.workspace!.role }, issueId, req.body.items);
     sendSuccess(res, 200, subtasks);
   } catch (error) {
     next(error);
@@ -185,6 +190,7 @@ export const addAttachments: RequestHandler = async (req, res, next) => {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
     const issue = await issueService.addAttachments(
       req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
       issueId,
       req.user!.id,
       req.body.attachments,
@@ -214,6 +220,7 @@ export const addDependency: RequestHandler = async (req, res, next) => {
       issueId,
       relatedIssueId,
       req.body.relation,
+      { userId: req.user!.id, role: req.workspace!.role },
       req.user!.id,
     );
     sendSuccess(res, 201, dependency);
@@ -226,7 +233,7 @@ export const removeDependency: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
     const relatedIssueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.relatedId as string);
-    await issueService.removeDependency(req.workspace!.id, issueId, relatedIssueId, req.user!.id);
+    await issueService.removeDependency(req.workspace!.id, { userId: req.user!.id, role: req.workspace!.role }, issueId, relatedIssueId, req.user!.id);
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -236,7 +243,11 @@ export const removeDependency: RequestHandler = async (req, res, next) => {
 export const listWatchers: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    const watchers = await issueService.listWatchers(req.workspace!.id, issueId);
+    const watchers = await issueService.listWatchers(
+      req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
+      issueId,
+    );
     sendSuccess(res, 200, watchers);
   } catch (error) {
     next(error);
@@ -246,7 +257,13 @@ export const listWatchers: RequestHandler = async (req, res, next) => {
 export const addWatchers: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    const added = await issueService.addWatchers(req.workspace!.id, issueId, req.body.userIds, req.user!.id);
+    const added = await issueService.addWatchers(
+      req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
+      issueId,
+      req.body.userIds,
+      req.user!.id,
+    );
     sendSuccess(res, 200, added);
   } catch (error) {
     next(error);
@@ -256,7 +273,13 @@ export const addWatchers: RequestHandler = async (req, res, next) => {
 export const removeWatcher: RequestHandler = async (req, res, next) => {
   try {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
-    await issueService.removeWatcher(req.workspace!.id, issueId, req.params.userId as string, req.user!.id);
+    await issueService.removeWatcher(
+      req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
+      issueId,
+      req.params.userId as string,
+      req.user!.id,
+    );
     res.status(204).send();
   } catch (error) {
     next(error);
@@ -268,6 +291,7 @@ export const updateIntegrationRef: RequestHandler = async (req, res, next) => {
     const issueId = await issueService.resolveIssueRouteId(req.workspace!.id, req.params.id as string);
     const integrationRefs = await issueService.updateIntegrationRefs(
       req.workspace!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
       issueId,
       req.body.integrationRefs,
       req.user!.id,

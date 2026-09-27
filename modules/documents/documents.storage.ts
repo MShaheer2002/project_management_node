@@ -1,4 +1,5 @@
 import { env } from "../../config/env.js";
+import { isWebLink } from "../../shared/utils/web-link.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import type { DocumentDraftInput } from "./documents.schemas.js";
@@ -47,6 +48,6 @@ export function validateDocumentRef(workspaceId: string, file: DocumentDraftInpu
     fileName: file.fileName,
     mimeType: normalizedType,
     sizeBytes: file.size,
-    fileUrl: file.assetUrl ?? null,
+    fileUrl: file.assetUrl && isWebLink(file.assetUrl) ? file.assetUrl : null,
   };
 }

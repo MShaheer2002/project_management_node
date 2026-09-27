@@ -12,6 +12,7 @@ import { prisma } from "../../../../shared/utils/prisma.js";
 import { filterVisibleHits, searchWorkspace } from "../../ai.search.js";
 import { captureBeforeState, describeChange } from "./capture.js";
 import { callLegacy } from "./shared.js";
+import { INTEGRATION_PROVIDERS } from "../../../issue/issue.schemas.js";
 import {
   fail,
   ISSUE_PRIORITY_ENUM,
@@ -435,8 +436,8 @@ export const issuesLinks: ConsolidatedTool = {
       kind: { type: "string", description: "What kind of link.", enum: ["dependency", "external"] },
       issueId: { type: "string", description: "Issue ID such as TRU-42." },
       dependsOnIssueId: { type: "string", description: "Issue that must finish first (kind=dependency)." },
-      provider: { type: "string", description: "External provider (kind=external).", enum: ["github", "slack", "figma", "discord"] },
-      url: { type: "string", description: "External URL (kind=external)." },
+      provider: { type: "string", description: "External provider (kind=external).", enum: [...INTEGRATION_PROVIDERS] },
+      url: { type: "string", description: "External URL, http or https (kind=external). Adds to existing links, never replaces them." },
       label: { type: "string", description: "Display label for the external link." },
     },
     required: ["kind", "issueId"],
