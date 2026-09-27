@@ -306,9 +306,14 @@ export interface SearchViewer {
  * | ISSUE             | its project is public, led by, or joined by the user   |
  * | COMMENT, DOCUMENT | inherits its parent issue's / project's visibility     |
  * | PROJECT           | public, led by, or joined by the user                  |
- * | TEAM, DEPARTMENT  | GUEST sees public only; everyone else sees all         |
+ * | TEAM              | GUEST sees public only; everyone else sees all         |
+ * | DEPARTMENT        | public, headed by, or joined by the user               |
  * | CYCLE             | inherits its team's visibility                         |
  * | MEMBER            | workspace-scoped — anyone in the workspace may see     |
+ *
+ * Every kept hit's label is then replaced by the entity's own name (see
+ * labelHits): labels used to be the first 120 characters of the indexed text,
+ * which for a person listed all their teams and departments (F-44).
  *
  * Comments and documents are the ones easy to get wrong: their own row carries
  * no visibility, so without the parent lookup a comment on a private project's
@@ -320,7 +325,7 @@ export async function filterVisibleHits(
   viewer: SearchViewer,
 ): Promise<SearchHit[]> {
   if (hits.length === 0) return hits;
-  if (viewer.role === "OWNER" || viewer.role === "ADMIN") return hits;
+  if (viewer.role === "OWNER" || viewer.role === "ADMIN") return labelHits(hits, viewer.workspaceId);
 
   const idsOf = (type: IndexableEntityType) =>
     hits.filter((hit) => hit.entityType === type).map((hit) => hit.entityId);
@@ -345,22 +350,30 @@ export async function filterVisibleHits(
       id: { in: commentIds },
       issue: { workspaceId, project: visibleProjectWhere(userId) },
     }),
+    // A document follows its scope: workspace documents are workspace-wide,
+    // team documents follow the team rule (a PRIVATE team's documents used to
+    // reach GUESTs because only `projectId: null` was checked), project
+    // documents follow the project rule.
     allowedIds(prisma.entityDocument, documentIds, {
       workspaceId,
       id: { in: documentIds },
-      OR: [{ projectId: null }, { project: visibleProjectWhere(userId) }],
+      OR: [
+        { scope: "WORKSPACE" },
+        { scope: "TEAM", ...(isGuest ? { team: { visibility: "PUBLIC" } } : {}) },
+        { scope: "PROJECT", project: visibleProjectWhere(userId) },
+      ],
     }),
     allowedIds(prisma.project, projectIds, { workspaceId, id: { in: projectIds }, ...visibleProjectWhere(userId) }),
     isGuest
       ? allowedIds(prisma.team, teamIds, { workspaceId, id: { in: teamIds }, visibility: "PUBLIC" })
       : Promise.resolve(null),
-    isGuest
-      ? allowedIds(prisma.department, departmentIds, {
-          workspaceId,
-          id: { in: departmentIds },
-          visibility: "PUBLIC",
-        })
-      : Promise.resolve(null),
+    // Same rule as buildDepartmentWhere: PRIVATE departments are hidden from
+    // members too, not only guests (F-44).
+    allowedIds(prisma.department, departmentIds, {
+      workspaceId,
+      id: { in: departmentIds },
+      OR: [{ visibility: "PUBLIC" }, { headId: userId }, { memberships: { some: { userId } } }],
+    }),
     isGuest
       ? allowedIds(prisma.cycle, cycleIds, { workspaceId, id: { in: cycleIds }, team: { visibility: "PUBLIC" } })
       : Promise.resolve(null),
@@ -377,9 +390,53 @@ export async function filterVisibleHits(
     MEMBER: null, // workspace scope is the only rule
   };
 
-  return hits.filter((hit) => {
-    const permitted = allowed[hit.entityType];
-    return permitted === null || permitted === undefined || permitted.has(hit.entityId);
+  return labelHits(
+    hits.filter((hit) => {
+      const permitted = allowed[hit.entityType];
+      return permitted === null || permitted === undefined || permitted.has(hit.entityId);
+    }),
+    workspaceId,
+  );
+}
+
+/**
+ * Titles for search results from each entity's own name, never from the
+ * indexed text. A hit whose entity no longer exists is dropped.
+ */
+async function labelHits(hits: SearchHit[], workspaceId: string): Promise<SearchHit[]> {
+  if (hits.length === 0) return hits;
+  const idsOf = (type: IndexableEntityType) => hits.filter((hit) => hit.entityType === type).map((hit) => hit.entityId);
+  const some = <T>(ids: string[], load: () => Promise<T[]>) => (ids.length > 0 ? load() : Promise.resolve([] as T[]));
+
+  const [issues, comments, documents, projects, teams, departments, members, cycles] = await Promise.all([
+    some(idsOf("ISSUE"), () => prisma.issue.findMany({ where: { workspaceId, id: { in: idsOf("ISSUE") } }, select: { id: true, title: true } })),
+    some(idsOf("COMMENT"), () => prisma.comment.findMany({ where: { id: { in: idsOf("COMMENT") }, issue: { workspaceId } }, select: { id: true, issueId: true } })),
+    some(idsOf("DOCUMENT"), () => prisma.entityDocument.findMany({ where: { workspaceId, id: { in: idsOf("DOCUMENT") } }, select: { id: true, name: true } })),
+    some(idsOf("PROJECT"), () => prisma.project.findMany({ where: { workspaceId, id: { in: idsOf("PROJECT") } }, select: { id: true, name: true } })),
+    some(idsOf("TEAM"), () => prisma.team.findMany({ where: { workspaceId, id: { in: idsOf("TEAM") } }, select: { id: true, name: true } })),
+    some(idsOf("DEPARTMENT"), () => prisma.department.findMany({ where: { workspaceId, id: { in: idsOf("DEPARTMENT") } }, select: { id: true, name: true } })),
+    // Through membership: a person's index entry can outlive their membership.
+    some(idsOf("MEMBER"), async () => (await prisma.workspaceMembership.findMany({
+      where: { workspaceId, userId: { in: idsOf("MEMBER") }, user: { deletedAt: null } },
+      select: { user: { select: { id: true, name: true } } },
+    })).map((m) => m.user)),
+    some(idsOf("CYCLE"), () => prisma.cycle.findMany({ where: { workspaceId, id: { in: idsOf("CYCLE") } }, select: { id: true, name: true } })),
+  ]);
+
+  const labels = new Map<string, string>([
+    ...issues.map((i) => [`ISSUE:${i.id}`, `${i.id} — ${i.title}`] as const),
+    ...comments.map((c) => [`COMMENT:${c.id}`, `Comment on ${c.issueId}`] as const),
+    ...documents.map((d) => [`DOCUMENT:${d.id}`, d.name] as const),
+    ...projects.map((p) => [`PROJECT:${p.id}`, p.name] as const),
+    ...teams.map((t) => [`TEAM:${t.id}`, t.name] as const),
+    ...departments.map((d) => [`DEPARTMENT:${d.id}`, d.name] as const),
+    ...members.map((m) => [`MEMBER:${m.id}`, m.name] as const),
+    ...cycles.map((c) => [`CYCLE:${c.id}`, c.name] as const),
+  ]);
+
+  return hits.flatMap((hit) => {
+    const label = labels.get(`${hit.entityType}:${hit.entityId}`);
+    return label === undefined ? [] : [{ ...hit, label }];
   });
 }
 

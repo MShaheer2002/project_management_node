@@ -7,7 +7,7 @@ export const list: RequestHandler = async (req, res, next) => {
   try {
     const result = await activityService.listActivity(
       req.workspace!.id,
-      req.workspace!.role,
+      { userId: req.user!.id, role: req.workspace!.role },
       (req.validated?.query ?? req.query) as ListActivityQuery,
     );
     res.status(200).json({
@@ -27,7 +27,7 @@ export const listIssueActivity: RequestHandler = async (req, res, next) => {
   try {
     const result = await activityService.listIssueActivity(
       req.workspace!.id,
-      req.workspace!.role,
+      { userId: req.user!.id, role: req.workspace!.role },
       req.params.issueId as string,
       (req.validated?.query ?? req.query) as ListIssueActivityQuery,
     );

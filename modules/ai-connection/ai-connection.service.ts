@@ -2,6 +2,7 @@ import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { env } from "../../config/env.js";
 import { prisma } from "../../shared/utils/prisma.js";
+import { logActivity } from "../../shared/utils/activity.js";
 import {
   createApiKey,
   getApiKeyById,
@@ -12,12 +13,14 @@ import {
   listAiConnectionCatalog,
 } from "./ai-connection.catalog.js";
 import type { AiConnectionClientInput, CreateAiConnectionInput } from "./ai-connection.schemas.js";
+import { ADMIN_SCOPE, DEFAULT_OAUTH_SCOPES } from "./ai-connection.scopes.js";
 import {
   AiConnectionAuthType,
   AiConnectionClient,
   AiConnectionSessionStatus,
   AiConnectionStatus,
   AiConnectionVerificationStatus,
+  type WorkspaceRole,
 } from "../../app/generated/prisma/client.js";
 
 const AI_CONNECTION_SCOPES = ["mcp:v1"];
@@ -483,16 +486,30 @@ export function resolveMcpBaseUrl() {
   return new URL("/mcp", baseUrl).toString();
 }
 
-export function resolveCodexMcpUrl(token: string) {
-  const url = new URL(resolveMcpBaseUrl());
-  url.searchParams.set("api_key", token);
-  return url.toString();
-}
-
+/**
+ * Codex setup, using a header instead of `?api_key=<token>` in the URL.
+ *
+ * The old form put a long-lived PAT in a URL, so it leaked into every
+ * reverse-proxy, CDN and tunnel access log, plus shell history and Referer
+ * headers. This app's own request logger redacts those query keys
+ * (shared/middleware/request-logger.ts:22) but upstream logs do not (F-14).
+ *
+ * `http_headers` matches how every other client config here carries the token,
+ * so the exposure is now the config file only — the same as Claude Desktop,
+ * Windsurf and VS Code. Codex also supports `bearer_token_env_var = "NAME"`,
+ * which keeps the token out of the file entirely; that needs the user to export
+ * the variable separately, so it is offered as a comment rather than the
+ * default one-paste path.
+ */
 export function buildCodexConfig(token: string) {
   return [
     '[mcp_servers.trussen]',
-    `url = "${resolveCodexMcpUrl(token)}"`,
+    `url = "${resolveMcpBaseUrl()}"`,
+    `http_headers = { Authorization = "Bearer ${token}" }`,
+    '',
+    '# Prefer keeping the token out of this file? Replace the http_headers line with:',
+    '#   bearer_token_env_var = "TRUSSEN_MCP_TOKEN"',
+    '# then export TRUSSEN_MCP_TOKEN in your shell profile.',
   ].join("\n");
 }
 
@@ -834,9 +851,17 @@ export async function rotateAiConnection(workspaceId: string, id: string, actorI
       ? previousKey.expiresAt.toISOString()
       : undefined;
 
+  // The replacement key belongs to the CONNECTION'S OWNER, not to whoever
+  // rotated it. API-key auth resolves identity and role from `createdById`
+  // (api-key.service.ts), so creating it as the actor silently handed a
+  // member's MCP connection the rotating admin's role, and attributed every
+  // subsequent action by that member to the admin (F-28).
+  //
+  // Who performed the rotation belongs in the audit log below, not in the
+  // key's ownership.
   const created = await createApiKey(
     workspaceId,
-    actorId,
+    connection.userId,
     {
       name: connection.label,
       ...(expiresAt ? { expiresAt } : {}),
@@ -882,6 +907,25 @@ export async function rotateAiConnection(workspaceId: string, id: string, actorI
     throw error;
   }
 
+  // The new key is owned by the connection's owner, so createApiKey's own
+  // API_KEY_CREATED entry names them, not the rotator. Record who actually
+  // performed the rotation here (F-28).
+  await logActivity({
+    workspaceId,
+    actorId,
+    type: "API_KEY_REVOKED",
+    targetType: "WORKSPACE",
+    targetId: connection.id,
+    message: `AI connection "${connection.label}" token rotated`,
+    metadata: {
+      aiConnectionId: connection.id,
+      connectionOwnerUserId: connection.userId,
+      rotatedByUserId: actorId,
+      previousApiKeyId,
+      newApiKeyId: created.id,
+    },
+  });
+
   const refreshed = await getAiConnectionRecord(workspaceId, id);
   const summary = toSummary(refreshed);
   await persistVerification(id, summary.health);
@@ -911,6 +955,7 @@ export async function resolveOAuthConnection(userId: string, clientId: string) {
       status: true,
       scopes: true,
       label: true,
+      workspace: { select: { deactivatedAt: true } },
     },
   });
 
@@ -920,6 +965,10 @@ export async function resolveOAuthConnection(userId: string, clientId: string) {
 
   if (connection.status === AiConnectionStatus.REVOKED) {
     throw new AppError(401, ERROR_CODES.AI_CONNECTION_REVOKED, "This Trussen AI connection has been revoked.");
+  }
+
+  if (connection.workspace.deactivatedAt) {
+    throw new AppError(403, ERROR_CODES.WORKSPACE_DEACTIVATED, "Deactivated by Owner");
   }
 
   const membership = await prisma.workspaceMembership.findUnique({
@@ -959,6 +1008,7 @@ export async function resolveOAuthConnection(userId: string, clientId: string) {
 export async function completeOAuthSetup(
   workspaceId: string,
   userId: string,
+  userRole: WorkspaceRole,
   input: {
     clientId: string;
     name: string;
@@ -967,7 +1017,37 @@ export async function completeOAuthSetup(
   },
 ) {
   const primaryClient = input.primaryClient ?? "generic_mcp";
-  const scopes = input.scopes.length ? input.scopes : ["admin"];
+  const isAdmin = userRole === "OWNER" || userRole === "ADMIN";
+
+  // The wildcard bypasses every scope check, and this route is open to GUEST.
+  // Choosing scopes is an admin decision everywhere else (PAT create and
+  // PATCH /:id/scopes are both ADMIN/OWNER), so it is one here too (F-11).
+  if (!isAdmin && input.scopes.includes(ADMIN_SCOPE)) {
+    throw new AppError(
+      403,
+      ERROR_CODES.INSUFFICIENT_ROLE,
+      'Only an admin or owner can grant the "admin" scope to an AI connection.',
+    );
+  }
+
+  // Never store an empty list — hasScope() reads that as unrestricted.
+  const scopes = input.scopes.length ? input.scopes : DEFAULT_OAUTH_SCOPES;
+
+  // Revocation must survive a reconnect. The upsert below sets status ACTIVE
+  // unconditionally, so re-running OAuth setup used to undo an admin's revoke
+  // and re-provision the connection with whatever scopes were requested (F-11).
+  const existing = await prisma.aiConnection.findUnique({
+    where: { userId_oauthClientId: { userId, oauthClientId: input.clientId } },
+    select: { id: true, status: true },
+  });
+
+  if (existing?.status === AiConnectionStatus.REVOKED && !isAdmin) {
+    throw new AppError(
+      403,
+      ERROR_CODES.AI_CONNECTION_REVOKED,
+      "An admin revoked this AI connection. Ask an admin to re-enable it — reconnecting cannot restore it.",
+    );
+  }
 
   const connection = await prisma.aiConnection.upsert({
     where: { userId_oauthClientId: { userId, oauthClientId: input.clientId } },

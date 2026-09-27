@@ -7,6 +7,7 @@
 
 import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 import { prisma } from "../../shared/utils/prisma.js";
+import { publicWorkspaceLogo } from "../workspace/workspace-logo.js";
 
 function canAccessAdminArea(role: WorkspaceRole) {
   return role === "OWNER" || role === "ADMIN";
@@ -112,12 +113,14 @@ export async function getSidebarData(workspaceId: string, userId: string, role: 
     },
     workspaces: workspaces.map((membership) => ({
       ...membership.workspace,
+      logo: publicWorkspaceLogo(membership.workspace),
       role: membership.role,
       joinedAt: membership.joinedAt,
       active: membership.workspace.id === workspaceId,
     })),
     activeWorkspace: {
       ...activeWorkspace,
+      logo: publicWorkspaceLogo(activeWorkspace),
       role,
     },
     badges: {

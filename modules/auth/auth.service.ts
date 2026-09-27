@@ -10,9 +10,25 @@
  */
 
 import { prisma } from "../../shared/utils/prisma.js";
+import { releaseWorkspaceDrivesOf } from "../drive/drive.service.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { normalizeEmail } from "../../shared/utils/crypto.js";
 import type { ClerkUserPayload } from "./auth.schemas.js";
+
+/**
+ * The email we store, which invitations and everything else trust. Only a
+ * verified address counts: the primary one if verified, else any verified one
+ * (N-02). The first address could be one the person never proved they own.
+ * With none verified, a placeholder that matches no invitation is stored
+ * (email is unique, so it also can't take anyone's address); the next
+ * user.updated after verifying replaces it.
+ */
+export function verifiedEmailOf(data: ClerkUserPayload) {
+  const verified = data.email_addresses.filter((e) => e.verification?.status === "verified");
+  const email = verified.find((e) => e.id === data.primary_email_address_id) ?? verified[0];
+  return email ? normalizeEmail(email.email_address) : `${data.id}@unverified.invalid`;
+}
 
 /**
  * Create or update a user from Clerk webhook data.
@@ -20,7 +36,7 @@ import type { ClerkUserPayload } from "./auth.schemas.js";
  * Uses upsert for idempotency — if webhook fires twice, we don't fail.
  */
 export async function createUser(data: ClerkUserPayload) {
-  const primaryEmail = data.email_addresses[0]!.email_address;
+  const primaryEmail = verifiedEmailOf(data);
   const name = [data.first_name, data.last_name].filter(Boolean).join(" ") || "User";
 
   return prisma.user.upsert({
@@ -45,7 +61,7 @@ export async function createUser(data: ClerkUserPayload) {
  * Only updates fields that Clerk manages (name, email, avatar).
  */
 export async function updateUser(data: ClerkUserPayload) {
-  const primaryEmail = data.email_addresses[0]!.email_address;
+  const primaryEmail = verifiedEmailOf(data);
   const name = [data.first_name, data.last_name].filter(Boolean).join(" ") || "User";
 
   return prisma.user.upsert({
@@ -65,17 +81,52 @@ export async function updateUser(data: ClerkUserPayload) {
 }
 
 /**
- * Delete a user from our database.
- * Called on `user.deleted` event.
- * Cascades: removes all workspace memberships, team memberships, etc.
- * No-op if user doesn't exist (idempotent).
+ * Offboard a user whose Clerk account was deleted (`user.deleted`).
+ *
+ * This used to call `prisma.user.delete`, which ALWAYS threw: Activity,
+ * ApiKey, Issue, Comment, Workspace and Team all reference User with
+ * ON DELETE RESTRICT, and every member has at least one Activity row from
+ * joining. The webhook returned 500, Clerk's retries failed identically, and
+ * the account's API keys and memberships stayed live indefinitely (F-19).
+ *
+ * So the row is kept — authorship on issues and comments has to survive — and
+ * access is revoked instead, in one transaction:
+ *   - `deletedAt` stamped, so API-key auth can reject the creator
+ *   - workspace/team/department/project memberships removed (also frees seats)
+ *   - API keys deleted, AI connections revoked
+ *   - Google Drive tokens deleted
+ *
+ * Idempotent: re-running is a no-op for an already-offboarded user.
  */
 export async function deleteUser(clerkUserId: string) {
-  // Check if user exists before deleting (no-op if already gone)
-  const user = await prisma.user.findUnique({ where: { id: clerkUserId } });
-  if (!user) return;
+  const user = await prisma.user.findUnique({
+    where: { id: clerkUserId },
+    select: { id: true, deletedAt: true },
+  });
+  if (!user || user.deletedAt) return;
 
-  await prisma.user.delete({ where: { id: clerkUserId } });
+  await prisma.$transaction([
+    // Frees the email (it's unique) so the person can sign up again with it.
+    prisma.user.update({
+      where: { id: clerkUserId },
+      data: { deletedAt: new Date(), email: `${clerkUserId}@deleted.invalid` },
+    }),
+    // Deleted, as removeMember does: ApiKey has no revoked state to set, and
+    // AI connections/sessions pointing at a key are kept (their FK is SET NULL).
+    prisma.apiKey.deleteMany({ where: { createdById: clerkUserId } }),
+    prisma.aiConnection.updateMany({
+      where: { userId: clerkUserId, status: { not: "REVOKED" } },
+      data: { status: "REVOKED" },
+    }),
+    prisma.userDriveConnection.deleteMany({ where: { userId: clerkUserId } }),
+    prisma.projectMembership.deleteMany({ where: { userId: clerkUserId } }),
+    prisma.teamMembership.deleteMany({ where: { userId: clerkUserId } }),
+    prisma.departmentMembership.deleteMany({ where: { userId: clerkUserId } }),
+    prisma.workspaceMembership.deleteMany({ where: { userId: clerkUserId } }),
+  ]);
+
+  // Workspace Drives they connected live in their Google account.
+  await releaseWorkspaceDrivesOf(clerkUserId);
 }
 
 /**

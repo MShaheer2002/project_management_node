@@ -18,10 +18,13 @@ import { env } from "../../../config/env.js";
 import { extractIssueRefs } from "./github.utils.js";
 import { createNotification } from "../../notification/notification.service.js";
 import {
+  assertCanConnectIntegration,
   findConnectedIntegration,
   getSettings,
   initDefaultSettings,
 } from "../integration.service.js";
+import { createOAuthState, verifyOAuthState } from "../oauth-state.js";
+import { encryptSecret } from "../../../shared/utils/secret-box.js";
 import { getGithubAutomationTargets } from "../../../shared/workflow/workflow-automation-runtime.js";
 import { assertIntegrationAllowedForPlan } from "../../billing/billing.service.js";
 
@@ -49,8 +52,9 @@ export async function getGitHubAuthUrl(workspaceId: string, userId: string): Pro
 
   await assertIntegrationAllowedForPlan(workspaceId, "GITHUB");
 
-  // State encodes workspace + user for the callback to resolve
-  const state = Buffer.from(JSON.stringify({ workspaceId, userId })).toString("base64url");
+  // State encodes workspace + user for the callback to resolve — signed, because
+  // the callback is unauthenticated and trusts whatever comes back (F-01).
+  const state = createOAuthState(workspaceId, userId);
 
   const params = new URLSearchParams({
     client_id: env.GITHUB_CLIENT_ID,
@@ -70,15 +74,9 @@ export async function handleGitHubCallback(code: string, state: string) {
     throw new AppError(500, ERROR_CODES.GITHUB_NOT_CONFIGURED, "GitHub integration is not configured");
   }
 
-  // Decode state
-  let stateData: { workspaceId: string; userId: string };
-  try {
-    stateData = JSON.parse(Buffer.from(state, "base64url").toString());
-  } catch {
-    throw new AppError(400, ERROR_CODES.GITHUB_OAUTH_FAILED, "Invalid OAuth state parameter");
-  }
-
-  const { workspaceId, userId } = stateData;
+  // Verify state signature, then re-run the gates /connect applied
+  const { workspaceId, userId } = verifyOAuthState(state, ERROR_CODES.GITHUB_OAUTH_FAILED);
+  await assertCanConnectIntegration(workspaceId, userId, "GITHUB");
 
   // Exchange code for access token
   const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
@@ -212,14 +210,14 @@ export async function handleGitHubCallback(code: string, state: string) {
       workspaceId,
       provider: "GITHUB",
       connected: true,
-      accessToken: tokenData.access_token,
+      accessToken: encryptSecret(tokenData.access_token),
       providerMeta,
       connectedAt: new Date(),
       connectedById: userId,
     },
     update: {
       connected: true,
-      accessToken: tokenData.access_token,
+      accessToken: encryptSecret(tokenData.access_token),
       providerMeta,
       connectedAt: new Date(),
       connectedById: userId,

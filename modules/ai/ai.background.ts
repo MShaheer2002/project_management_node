@@ -936,14 +936,17 @@ const STALE_SCAN_PAGE_SIZE = 250;
  * scanned, with no error pointing at it. This has no upper bound.
  */
 async function* paginateWorkspaces(workspaceId?: string): AsyncGenerator<{ id: string }> {
+  // Deactivated workspaces get no stale scans or digests (and no digest emails).
   if (workspaceId) {
-    yield { id: workspaceId };
+    const workspace = await prisma.workspace.findFirst({ where: { id: workspaceId, deactivatedAt: null }, select: { id: true } });
+    if (workspace) yield workspace;
     return;
   }
 
   let cursor: string | null = null;
   for (;;) {
     const pageArgs: Parameters<typeof prisma.workspace.findMany>[0] = {
+      where: { deactivatedAt: null },
       select: { id: true },
       orderBy: { id: "asc" },
       take: STALE_SCAN_PAGE_SIZE,

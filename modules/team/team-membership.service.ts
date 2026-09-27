@@ -253,7 +253,7 @@ export async function addTeamMembers(workspaceId: string, teamId: string, actorU
 
   await Promise.all(added.userIds.map((memberId) => logActivity({
     workspaceId,
-    actorId: memberId,
+    actorId: actorUserId,
     type: "TEAM_MEMBER_JOINED",
     targetType: "TEAM",
     targetId: added.teamId,
@@ -338,7 +338,7 @@ export async function removeTeamMember(workspaceId: string, teamId: string, acto
 
   await logActivity({
     workspaceId,
-    actorId: userId,
+    actorId: actorUserId,
     type: "TEAM_MEMBER_REMOVED",
     targetType: "TEAM",
     targetId: teamId,

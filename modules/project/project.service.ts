@@ -231,6 +231,30 @@ function buildProjectWhere(
   };
 }
 
+/**
+ * A departmentId supplied directly by the caller must belong to this workspace.
+ *
+ * The teamId path derives the department from an already-validated team, but
+ * `updateProject` also accepts `departmentId` on its own and wrote it straight
+ * through — letting a project lead link their project to another tenant's
+ * department UUID, inflating that department's project count and creating a
+ * cross-tenant row (F-27).
+ */
+async function assertDepartmentInWorkspace(
+  tx: any,
+  workspaceId: string,
+  departmentId: string,
+) {
+  const department = await tx.department.findFirst({
+    where: { id: departmentId, workspaceId },
+    select: { id: true },
+  });
+
+  if (!department) {
+    throw new AppError(404, ERROR_CODES.DEPARTMENT_NOT_FOUND, "Department not found in workspace");
+  }
+}
+
 async function assertTeamInWorkspace(
   tx: any,
   workspaceId: string,
@@ -536,6 +560,10 @@ export async function updateProject(workspaceId: string, projectId: string, acto
       teamId = team.id;
       departmentId = team.departmentId ?? null;
     } else if (input.departmentId !== undefined) {
+      // null means "unlink", which needs no validation.
+      if (input.departmentId !== null) {
+        await assertDepartmentInWorkspace(tx, workspaceId, input.departmentId);
+      }
       departmentId = input.departmentId;
     }
 

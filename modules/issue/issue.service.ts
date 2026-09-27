@@ -1,14 +1,17 @@
+import { randomUUID } from "node:crypto";
+import { assertProjectVisible, visibleIssueWhere, isWorkspaceAdmin, type Viewer } from "../../shared/utils/visibility.js";
 import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { MAX_INTEGRATION_REFS } from "./issue.schemas.js";
 import { logActivity } from "../../shared/utils/activity.js";
 import { clampListLimit, slicePage } from "../../shared/utils/pagination.js";
 import { emitIssueCreated, emitIssueDeleted, emitIssueUpdated } from "../../socket/events.js";
 import { getSocketServer } from "../../socket/index.js";
 import { createNotification } from "../notification/notification.service.js";
-import { createIssueAttachments } from "./issue-attachment.service.js";
+import { createIssueAttachments, isStoredAttachment } from "./issue-attachment.service.js";
 import { dispatchIntegrationEvent } from "../integration/dispatcher.js";
 import { decrementStorageUsage } from "../billing/billing.service.js";
 import { triggerIssueBackgroundJobs } from "../ai/ai.background.js";
@@ -626,7 +629,7 @@ async function getAssignmentEligibility(
   };
 }
 
-async function syncIssueLabels(tx: any, workspaceId: string, issueId: string, labels: string[] | undefined) {
+async function syncIssueLabels(tx: any, workspaceId: string, viewer: Viewer, issueId: string, labels: string[] | undefined) {
   if (!labels) {
     return;
   }
@@ -638,22 +641,28 @@ async function syncIssueLabels(tx: any, workspaceId: string, issueId: string, la
     return;
   }
 
+  // Creating a workspace label is ADMIN-only (`POST /labels`). Upserting here
+  // let any MEMBER mint labels as a side effect of editing an issue, so only
+  // admins reach the create branch; everyone else may attach existing ones (F-07).
+  const canCreateLabels = isWorkspaceAdmin(viewer.role);
   const createdLabels: Array<{ id: string }> = [];
   for (const name of uniqueNames) {
-    const label = await tx.label.upsert({
-      where: {
-        workspaceId_normalizedName: {
-          workspaceId,
-          normalizedName: normalizeLabelKey(name),
-        },
-      },
-      update: {},
-      create: {
-        workspaceId,
-        name,
-        normalizedName: normalizeLabelKey(name),
-        color: "#6b7280",
-      },
+    const normalizedName = normalizeLabelKey(name);
+    const existing = await tx.label.findUnique({
+      where: { workspaceId_normalizedName: { workspaceId, normalizedName } },
+      select: { id: true },
+    });
+
+    if (existing) {
+      createdLabels.push(existing);
+      continue;
+    }
+    if (!canCreateLabels) {
+      throw new AppError(403, ERROR_CODES.FORBIDDEN, `Label "${name}" does not exist — only admins can create labels`);
+    }
+
+    const label = await tx.label.create({
+      data: { workspaceId, name, normalizedName, color: "#6b7280" },
       select: { id: true },
     });
     createdLabels.push(label);
@@ -665,7 +674,7 @@ async function syncIssueLabels(tx: any, workspaceId: string, issueId: string, la
   });
 }
 
-async function syncRelatedIssues(tx: any, workspaceId: string, issueId: string, relatedIssueKeys: string[] | undefined) {
+async function syncRelatedIssues(tx: any, workspaceId: string, viewer: Viewer, issueId: string, relatedIssueKeys: string[] | undefined) {
   if (!relatedIssueKeys) {
     return;
   }
@@ -681,8 +690,11 @@ async function syncRelatedIssues(tx: any, workspaceId: string, issueId: string, 
     if (relatedId === issueId) {
       continue;
     }
+    // Scoped to what the actor can see: the response maps relations back with
+    // title + status, so an unscoped link turns any guessable key (`PREFIX-N`)
+    // into a read of a private issue (F-06 o).
     const exists = await tx.issue.findFirst({
-      where: { id: relatedId, workspaceId },
+      where: { id: relatedId, workspaceId, ...visibleIssueWhere(viewer) },
       select: { id: true },
     });
     if (!exists) {
@@ -819,8 +831,9 @@ export async function createIssue(
     }
 
     if (input.parentIssueId) {
+      // `parent` is echoed back with title + status (F-06 o).
       const parent = await tx.issue.findFirst({
-        where: { id: input.parentIssueId, workspaceId },
+        where: { id: input.parentIssueId, workspaceId, ...visibleIssueWhere({ userId: creatorId, role: actorRole }) },
         select: { id: true },
       });
       if (!parent) {
@@ -900,7 +913,7 @@ export async function createIssue(
       });
     }
 
-    await syncIssueLabels(tx, workspaceId, issue.id, normalizedInput.labels);
+    await syncIssueLabels(tx, workspaceId, { userId: creatorId, role: actorRole }, issue.id, normalizedInput.labels);
     if ((!input.labels || input.labels.length === 0) && template?.defaultLabelIds?.length > 0) {
       const existingLabels = await tx.label.findMany({
         where: { workspaceId, id: { in: template.defaultLabelIds } },
@@ -913,7 +926,7 @@ export async function createIssue(
         });
       }
     }
-    await syncRelatedIssues(tx, workspaceId, issue.id, normalizedInput.relatedIssueKeys);
+    await syncRelatedIssues(tx, workspaceId, { userId: creatorId, role: actorRole }, issue.id, normalizedInput.relatedIssueKeys);
 
     if (input.attachments && input.attachments.length > 0) {
       await createIssueAttachments(tx, issue.id, workspaceId, creatorId, input.attachments);
@@ -1005,11 +1018,11 @@ export async function createIssue(
 
     const io = getSocketServer();
     if (io) {
-      emitIssueCreated(io, workspaceId, {
+      await emitIssueCreated(io, workspaceId, {
         issueId: created.id,
         publicId: created.id,
         full: mapped,
-      });
+      }, created.projectId);
     }
 
     // Integrations: notify on high/urgent issue creation (fire-and-forget)
@@ -1150,8 +1163,14 @@ export async function listIssues(workspaceId: string, workspaceRole: WorkspaceRo
  * other filter (search, team, department, assignee, etc.) should keep using
  * the `meta.total` a filtered `listIssues` call already returns.
  */
-export async function getStatusCounts(workspaceId: string, filters?: { projectId?: string | undefined }) {
+export async function getStatusCounts(
+  workspaceId: string,
+  viewer: Viewer,
+  filters?: { projectId?: string | undefined },
+) {
   if (filters?.projectId) {
+    // Per-status counts of a private project are still information about it (F-06 j).
+    await assertProjectVisible(workspaceId, filters.projectId, viewer);
     // Scope through the project relation, not just projectId — otherwise a
     // caller could read another workspace's project counts by guessing its id.
     const rows = await prisma.projectStatusCount.findMany({
@@ -1225,8 +1244,14 @@ export async function updateIssue(
   actorRole?: WorkspaceRole,
 ) {
   const mapped = await prisma.$transaction(async (tx) => {
+    // Scoped: this endpoint returns the full mapped issue, so an unscoped load
+    // makes PATCH a read of any private issue via a no-op edit (F-07).
     const current = await tx.issue.findFirst({
-      where: { id: issueId, workspaceId },
+      where: {
+        id: issueId,
+        workspaceId,
+        ...visibleIssueWhere({ userId: actorUserId, role: actorRole ?? "MEMBER" }),
+      },
       select: {
         id: true,
         title: true,
@@ -1282,7 +1307,7 @@ export async function updateIssue(
         throw new AppError(409, ERROR_CODES.INVALID_PARENT_ISSUE, "Issue cannot be its own parent");
       }
       const parent = await tx.issue.findFirst({
-        where: { id: input.parentIssueId, workspaceId },
+        where: { id: input.parentIssueId, workspaceId, ...visibleIssueWhere({ userId: actorUserId, role: actorRole ?? "MEMBER" }) },
         select: { id: true, parentIssueId: true },
       });
       if (!parent) {
@@ -1378,8 +1403,8 @@ export async function updateIssue(
       } as any,
     });
 
-    await syncIssueLabels(tx, workspaceId, issueId, input.labels);
-    await syncRelatedIssues(tx, workspaceId, issueId, input.relatedIssueKeys);
+    await syncIssueLabels(tx, workspaceId, { userId: actorUserId, role: actorRole ?? "MEMBER" }, issueId, input.labels);
+    await syncRelatedIssues(tx, workspaceId, { userId: actorUserId, role: actorRole ?? "MEMBER" }, issueId, input.relatedIssueKeys);
 
     if (input.attachments && input.attachments.length > 0) {
       const existing = await (tx as any).issueAttachment.findMany({
@@ -1749,12 +1774,12 @@ export async function updateIssue(
     const mapped = mapIssue(updated, true);
     const io = getSocketServer();
     if (io) {
-      emitIssueUpdated(io, workspaceId, {
+      await emitIssueUpdated(io, workspaceId, {
         issueId,
         publicId: updated.id,
         full: mapped,
         actorUserId,
-      });
+      }, updated.projectId);
     }
 
     // Integrations: notify on completion via updateIssue (fire-and-forget)
@@ -1803,8 +1828,11 @@ export async function updateIssueStatus(
   issueId: string,
   status: string,
 ) {
+  // Scoped here, at the top. The visibility check used to happen at the very
+  // end via getIssueById, so a write to a private issue succeeded and the
+  // caller merely received a 404 afterwards (F-07).
   const issue = await prisma.issue.findFirst({
-    where: { id: issueId, workspaceId },
+    where: { id: issueId, workspaceId, ...visibleIssueWhere({ userId, role: workspaceRole }) },
     select: {
       id: true,
       status: true,
@@ -1952,12 +1980,12 @@ export async function updateIssueStatus(
   const resolved = await getIssueById(workspaceId, workspaceRole, userId, issueId);
   const io = getSocketServer();
   if (io) {
-    emitIssueUpdated(io, workspaceId, {
+    await emitIssueUpdated(io, workspaceId, {
       issueId,
       publicId: (resolved as any)?.id ?? issueId,
       full: resolved,
       actorUserId: userId,
-    });
+    }, (resolved as any)?.project?.id ?? null);
   }
 
   // Integrations: notify channel when issue is completed (fire-and-forget)
@@ -1990,9 +2018,9 @@ export async function updateIssueStatus(
   return resolved;
 }
 
-export async function deleteIssue(workspaceId: string, issueId: string) {
+export async function deleteIssue(workspaceId: string, viewer: Viewer, issueId: string) {
   const issue = await prisma.issue.findFirst({
-    where: { id: issueId, workspaceId },
+    where: { id: issueId, workspaceId, ...visibleIssueWhere(viewer) },
     select: { id: true, creatorId: true },
   });
   if (!issue) {
@@ -2000,7 +2028,7 @@ export async function deleteIssue(workspaceId: string, issueId: string) {
   }
   await logActivity({
     workspaceId,
-    actorId: issue.creatorId,
+    actorId: viewer.userId,
     type: "ISSUE_ARCHIVED",
     targetType: "ISSUE",
     targetId: issueId,
@@ -2010,7 +2038,8 @@ export async function deleteIssue(workspaceId: string, issueId: string) {
   await prisma.issue.delete({ where: { id: issueId } });
   const io = getSocketServer();
   if (io) {
-    emitIssueDeleted(io, workspaceId, { issueId });
+    // Payload is just an id — nothing to leak, so the workspace room is fine.
+    await emitIssueDeleted(io, workspaceId, { issueId });
   }
 }
 
@@ -2019,15 +2048,19 @@ export async function addDependency(
   issueId: string,
   relatedId: string,
   relation: "blocks" | "blocked-by" | "related",
+  viewer: Viewer,
   actorUserId?: string,
 ) {
   if (issueId === relatedId) {
     throw new AppError(409, ERROR_CODES.INVALID_RELATED_ISSUE, "Issue cannot depend on itself");
   }
 
+  // Both ends scoped — the response maps the target back with title + status,
+  // so an unscoped link reads any private issue by guessable key (F-07).
+  const visible = visibleIssueWhere(viewer);
   const [source, target] = await Promise.all([
-    prisma.issue.findFirst({ where: { id: issueId, workspaceId }, select: { id: true, title: true, cycleId: true } }),
-    prisma.issue.findFirst({ where: { id: relatedId, workspaceId }, select: { id: true, title: true, status: true } }),
+    prisma.issue.findFirst({ where: { id: issueId, workspaceId, ...visible }, select: { id: true, title: true, cycleId: true } }),
+    prisma.issue.findFirst({ where: { id: relatedId, workspaceId, ...visible }, select: { id: true, title: true, status: true } }),
   ]);
   if (!source || !target) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
@@ -2071,9 +2104,9 @@ export async function addDependency(
   return { issueId, relatedId, relation };
 }
 
-export async function removeDependency(workspaceId: string, issueId: string, relatedId: string, actorUserId?: string) {
+export async function removeDependency(workspaceId: string, viewer: Viewer, issueId: string, relatedId: string, actorUserId?: string) {
   const [source, target] = await Promise.all([
-    prisma.issue.findFirst({ where: { id: issueId, workspaceId }, select: { id: true, title: true, cycleId: true } }),
+    prisma.issue.findFirst({ where: { id: issueId, workspaceId, ...visibleIssueWhere(viewer) }, select: { id: true, title: true, cycleId: true } }),
     prisma.issue.findFirst({ where: { id: relatedId, workspaceId }, select: { id: true, title: true, status: true } }),
   ]);
   if (!source || !target) {
@@ -2117,9 +2150,11 @@ export async function removeDependency(workspaceId: string, issueId: string, rel
   }
 }
 
-export async function listWatchers(workspaceId: string, issueId: string) {
+export async function listWatchers(workspaceId: string, viewer: Viewer, issueId: string) {
+  // Scoped through the project — workspace membership alone was enough to read
+  // the watcher list (and therefore emails) of a private issue (F-06 h).
   const issue = await prisma.issue.findFirst({
-    where: { id: issueId, workspaceId },
+    where: { id: issueId, workspaceId, ...visibleIssueWhere(viewer) },
     select: { id: true },
   });
   if (!issue) {
@@ -2153,10 +2188,17 @@ export async function listWatchers(workspaceId: string, issueId: string) {
   })));
 }
 
-export async function addWatchers(workspaceId: string, issueId: string, userIds: string[], actorUserId?: string) {
+export async function addWatchers(
+  workspaceId: string,
+  viewer: Viewer,
+  issueId: string,
+  userIds: string[],
+  actorUserId?: string,
+) {
+  // The actor must see the issue before they can wire anyone up to it.
   const issue = await prisma.issue.findFirst({
-    where: { id: issueId, workspaceId },
-    select: { id: true, title: true, cycleId: true },
+    where: { id: issueId, workspaceId, ...visibleIssueWhere(viewer) },
+    select: { id: true, title: true, cycleId: true, projectId: true },
   });
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
@@ -2165,10 +2207,27 @@ export async function addWatchers(workspaceId: string, issueId: string, userIds:
   const uniqueUserIds = [...new Set(userIds)];
   const memberships = await prisma.workspaceMembership.findMany({
     where: { workspaceId, userId: { in: uniqueUserIds } },
-    select: { userId: true },
+    select: { userId: true, role: true },
   });
   if (memberships.length !== uniqueUserIds.length) {
     throw new AppError(404, ERROR_CODES.WATCHER_NOT_WORKSPACE_MEMBER, "One or more users are not workspace members");
+  }
+
+  // ...and so must each recipient, or watching becomes a way to push private
+  // issue titles into a non-member's notifications (F-06 p). One query per
+  // recipient — the list is a handful of people, not a scan.
+  for (const member of memberships) {
+    const visible = await prisma.issue.findFirst({
+      where: {
+        id: issueId,
+        workspaceId,
+        ...visibleIssueWhere({ userId: member.userId, role: member.role }),
+      },
+      select: { id: true },
+    });
+    if (!visible) {
+      throw new AppError(403, ERROR_CODES.FORBIDDEN, "One or more users cannot access this issue");
+    }
   }
 
   await (prisma as any).issueWatcher.createMany({
@@ -2203,13 +2262,26 @@ export async function addWatchers(workspaceId: string, issueId: string, userIds:
   return { added: uniqueUserIds };
 }
 
-export async function removeWatcher(workspaceId: string, issueId: string, userId: string, actorUserId?: string) {
+export async function removeWatcher(
+  workspaceId: string,
+  viewer: Viewer,
+  issueId: string,
+  userId: string,
+  actorUserId?: string,
+) {
   const issue = await prisma.issue.findFirst({
-    where: { id: issueId, workspaceId },
+    where: { id: issueId, workspaceId, ...visibleIssueWhere(viewer) },
     select: { id: true, title: true, cycleId: true },
   });
   if (!issue) {
     throw new AppError(404, ERROR_CODES.ISSUE_NOT_FOUND, "Issue not found");
+  }
+
+  // You may unwatch yourself; removing someone else's subscription is an admin
+  // action. Previously any MEMBER could silently cut anyone out of their own
+  // issue's notifications (F-07).
+  if (userId !== viewer.userId && !isWorkspaceAdmin(viewer.role)) {
+    throw new AppError(403, ERROR_CODES.FORBIDDEN, "Only admins can remove another user's watch");
   }
 
   const watcher = await prisma.user.findUnique({
@@ -2239,9 +2311,34 @@ export async function removeWatcher(workspaceId: string, issueId: string, userId
   }
 }
 
-export async function updateIntegrationRefs(workspaceId: string, issueId: string, integrationRefs: any[], actorUserId?: string) {
+type IntegrationRef = ReturnType<typeof normalizeStoredIntegrationRefs>[number];
+
+/**
+ * Adds one link, or updates the one with the same URL (or same provider and
+ * external id). Never removes links: the AI and MCP use this (F-46).
+ */
+export function mergeIntegrationRef(existing: IntegrationRef[], ref: Omit<IntegrationRef, "id">): IntegrationRef[] {
+  const index = existing.findIndex((item) =>
+    (ref.url && item.url === ref.url)
+    || (!ref.url && ref.externalId && item.provider === ref.provider && item.externalId === ref.externalId));
+  if (index >= 0) {
+    return existing.map((item, i) => (i === index ? { ...item, ...ref, id: item.id } : item));
+  }
+  if (existing.length >= MAX_INTEGRATION_REFS) {
+    throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, `An issue can have at most ${MAX_INTEGRATION_REFS} links`);
+  }
+  return [...existing, { ...ref, id: `ref-${randomUUID().slice(0, 8)}` }];
+}
+
+export async function updateIntegrationRefs(
+  workspaceId: string,
+  viewer: Viewer,
+  issueId: string,
+  refsOrUpdate: any[] | ((previous: IntegrationRef[]) => IntegrationRef[]),
+  actorUserId?: string,
+) {
   const issue = await prisma.issue.findFirst({
-    where: { id: issueId, workspaceId },
+    where: { id: issueId, workspaceId, ...visibleIssueWhere(viewer) },
     select: { id: true, title: true, cycleId: true, integrationRef: true },
   });
   if (!issue) {
@@ -2249,6 +2346,7 @@ export async function updateIntegrationRefs(workspaceId: string, issueId: string
   }
 
   const previousRefs = normalizeStoredIntegrationRefs(issue.integrationRef);
+  const integrationRefs = typeof refsOrUpdate === "function" ? refsOrUpdate(previousRefs) : refsOrUpdate;
 
   await prisma.issue.update({
     where: { id: issueId },
@@ -2275,9 +2373,9 @@ export async function updateIntegrationRefs(workspaceId: string, issueId: string
   return integrationRefs;
 }
 
-export async function addAttachments(workspaceId: string, issueId: string, createdById: string, attachments: any[]) {
+export async function addAttachments(workspaceId: string, viewer: Viewer, issueId: string, createdById: string, attachments: any[]) {
   const issue = await prisma.issue.findFirst({
-    where: { id: issueId, workspaceId },
+    where: { id: issueId, workspaceId, ...visibleIssueWhere(viewer) },
     select: { id: true },
   });
   if (!issue) {
@@ -2294,11 +2392,12 @@ export async function addAttachments(workspaceId: string, issueId: string, creat
 export async function removeAttachment(workspaceId: string, issueId: string, attachmentId: string) {
   const attachment = await (prisma as any).issueAttachment.findFirst({
     where: { id: attachmentId, issueId, workspaceId },
-    select: { id: true, size: true },
+    select: { id: true, size: true, key: true },
   });
   if (!attachment) {
     throw new AppError(404, ERROR_CODES.ATTACHMENT_NOT_FOUND, "Attachment not found");
   }
   await (prisma as any).issueAttachment.delete({ where: { id: attachmentId } });
-  await decrementStorageUsage(workspaceId, attachment.size);
+  // Drive attachments never counted toward S3 storage.
+  if (isStoredAttachment(workspaceId, attachment.key)) await decrementStorageUsage(workspaceId, attachment.size);
 }

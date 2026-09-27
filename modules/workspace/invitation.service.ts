@@ -26,6 +26,7 @@ import {
   syncPaidSeatQuantityBestEffort,
 } from "../billing/billing.service.js";
 import { createNotification } from "../notification/notification.service.js";
+import { publicWorkspaceLogo } from "./workspace-logo.js";
 
 /** Invitations expire after 7 days */
 const INVITE_EXPIRY_DAYS = 7;
@@ -255,6 +256,16 @@ export async function createInvitation(params: {
  *   - Status is PENDING
  *   - Not expired
  */
+/**
+ * Invites into a soft-deleted workspace stay PENDING, so they work again if the
+ * owner restores it, but can't be opened or accepted in the meantime.
+ */
+function assertInvitedWorkspaceActive(workspace: { deactivatedAt: Date | null }) {
+  if (workspace.deactivatedAt) {
+    throw new AppError(410, ERROR_CODES.WORKSPACE_DEACTIVATED, "This workspace has been deactivated by its owner");
+  }
+}
+
 export async function resolveInvitation(rawToken: string) {
   const tokenHash = hashToken(rawToken);
 
@@ -262,7 +273,7 @@ export async function resolveInvitation(rawToken: string) {
     where: { tokenHash },
     include: {
       workspace: {
-        select: { id: true, name: true, slug: true, logo: true },
+        select: { id: true, name: true, slug: true, logo: true, deactivatedAt: true },
       },
       team: {
         select: { id: true, name: true },
@@ -276,6 +287,8 @@ export async function resolveInvitation(rawToken: string) {
   if (!invitation) {
     throw new AppError(404, ERROR_CODES.INVITATION_NOT_FOUND, "Invitation not found or has been revoked");
   }
+
+  assertInvitedWorkspaceActive(invitation.workspace);
 
   if (invitation.status === "ACCEPTED") {
     throw new AppError(400, ERROR_CODES.INVITATION_ALREADY_ACCEPTED, "This invitation has already been accepted");
@@ -302,7 +315,8 @@ export async function resolveInvitation(rawToken: string) {
     workspaceId: invitation.workspace.id,
     workspaceName: invitation.workspace.name,
     workspaceSlug: invitation.workspace.slug,
-    workspaceLogo: invitation.workspace.logo,
+    // Shown on the public invite page before sign-in: our own upload only (F-36).
+    workspaceLogo: publicWorkspaceLogo(invitation.workspace),
     role: invitation.role,
     designation: invitation.designation,
     teamName: invitation.team.name,
@@ -330,7 +344,7 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
     where: { tokenHash },
     include: {
       workspace: {
-        select: { id: true, name: true, slug: true, logo: true },
+        select: { id: true, name: true, slug: true, logo: true, deactivatedAt: true },
       },
     },
   });
@@ -359,11 +373,14 @@ async function acceptInvitationRecord(
       name: string;
       slug: string;
       logo: string | null;
+      deactivatedAt: Date | null;
     };
   },
   userId: string,
   userEmail: string,
 ) {
+  assertInvitedWorkspaceActive(invitation.workspace);
+
   const normalizedUserEmail = normalizeEmail(userEmail);
 
   // ─── Email ownership verification ──────────────────────────────────────
@@ -385,7 +402,7 @@ async function acceptInvitationRecord(
         id: invitation.workspace.id,
         name: invitation.workspace.name,
         slug: invitation.workspace.slug,
-        logo: invitation.workspace.logo,
+        logo: publicWorkspaceLogo(invitation.workspace),
       },
       role: invitation.role,
       alreadyAccepted: true,
@@ -430,7 +447,7 @@ async function acceptInvitationRecord(
         id: invitation.workspace.id,
         name: invitation.workspace.name,
         slug: invitation.workspace.slug,
-        logo: invitation.workspace.logo,
+        logo: publicWorkspaceLogo(invitation.workspace),
       },
       role: existingMembership.role,
       alreadyAccepted: true,
@@ -499,7 +516,7 @@ async function acceptInvitationRecord(
       id: invitation.workspace.id,
       name: invitation.workspace.name,
       slug: invitation.workspace.slug,
-      logo: invitation.workspace.logo,
+      logo: publicWorkspaceLogo(invitation.workspace),
     },
     role: invitation.role,
     alreadyAccepted: false,
@@ -520,7 +537,7 @@ export async function acceptInvitationById(invitationId: string, userId: string)
     where: { id: invitationId },
     include: {
       workspace: {
-        select: { id: true, name: true, slug: true, logo: true },
+        select: { id: true, name: true, slug: true, logo: true, deactivatedAt: true },
       },
     },
   });
@@ -614,10 +631,11 @@ export async function listPendingInvitationsForUser(userId: string) {
       email,
       status: "PENDING",
       expiresAt: { gte: new Date() },
+      workspace: { deactivatedAt: null },
     },
     include: {
       workspace: {
-        select: { id: true, name: true, slug: true, logo: true },
+        select: { id: true, name: true, slug: true, logo: true, deactivatedAt: true },
       },
       invitedBy: {
         select: { id: true, name: true, email: true },
@@ -634,7 +652,7 @@ export async function listPendingInvitationsForUser(userId: string) {
 
   return invitations.map((inv) => ({
     id: inv.id,
-    workspace: inv.workspace,
+    workspace: { id: inv.workspace.id, name: inv.workspace.name, slug: inv.workspace.slug, logo: publicWorkspaceLogo(inv.workspace) },
     email: inv.email,
     role: inv.role,
     designation: inv.designation,

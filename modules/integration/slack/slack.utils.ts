@@ -48,6 +48,25 @@ interface SlackBlock {
 /**
  * Build a Slack message for an issue event.
  */
+/**
+ * Escape user-supplied text for Slack mrkdwn.
+ *
+ * Slack's link syntax is `<url|label>`, so an issue titled
+ * `<https://evil.example|Action required: re-authenticate Slack>` rendered as a
+ * clickable link posted by the Trussen bot into a company channel (F-30).
+ *
+ * `&`, `<` and `>` are the three characters Slack documents as requiring
+ * escaping in message text. `*`/`_`/backtick are deliberately left alone: they
+ * only produce bold or italic, which is cosmetic, and escaping them would
+ * mangle ordinary titles containing underscores or asterisks.
+ */
+export function escapeSlackText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 export function buildIssueMessage(params: {
   emoji: string;
   title: string;
@@ -58,13 +77,14 @@ export function buildIssueMessage(params: {
   color?: string;
 }): { text: string; blocks: SlackBlock[] } {
   const issueUrl = `${params.frontendUrl}/issues/${params.issueId}`;
+  const issueTitle = escapeSlackText(params.issueTitle);
 
   const blocks: SlackBlock[] = [
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `${params.emoji} *${params.title}*\n<${issueUrl}|${params.issueId}> ${params.issueTitle}`,
+        text: `${params.emoji} *${params.title}*\n<${issueUrl}|${params.issueId}> ${issueTitle}`,
       },
     },
   ];
@@ -74,7 +94,7 @@ export function buildIssueMessage(params: {
       type: "section",
       fields: params.fields.map((f) => ({
         type: "mrkdwn",
-        text: `*${f.label}*\n${f.value}`,
+        text: `*${f.label}*\n${escapeSlackText(f.value)}`,
       })),
     });
   }
@@ -92,7 +112,7 @@ export function buildIssueMessage(params: {
   });
 
   return {
-    text: `${params.emoji} ${params.title}: ${params.issueId} ${params.issueTitle}`,
+    text: `${params.emoji} ${params.title}: ${params.issueId} ${issueTitle}`,
     blocks,
   };
 }
@@ -107,12 +127,14 @@ export function buildCycleMessage(params: {
   fields: Array<{ label: string; value: string }>;
   frontendUrl: string;
 }): { text: string; blocks: SlackBlock[] } {
+  const cycleName = escapeSlackText(params.cycleName);
+
   const blocks: SlackBlock[] = [
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `${params.emoji} *${params.title}*\n${params.cycleName}`,
+        text: `${params.emoji} *${params.title}*\n${cycleName}`,
       },
     },
   ];
@@ -122,13 +144,13 @@ export function buildCycleMessage(params: {
       type: "section",
       fields: params.fields.map((f) => ({
         type: "mrkdwn",
-        text: `*${f.label}*\n${f.value}`,
+        text: `*${f.label}*\n${escapeSlackText(f.value)}`,
       })),
     });
   }
 
   return {
-    text: `${params.emoji} ${params.title}: ${params.cycleName}`,
+    text: `${params.emoji} ${params.title}: ${cycleName}`,
     blocks,
   };
 }
@@ -172,4 +194,23 @@ export function parseCommandFlags(input: string): { text: string; flags: Record<
   }
 
   return { text: text.trim(), flags };
+}
+
+/**
+ * Pick the integration whose Slack team matches the incoming request.
+ *
+ * Returns undefined when nothing matches — deliberately. The Trussen Slack app
+ * stays installed in a tenant's Slack team after they disconnect in Trussen, so
+ * Slack keeps signing their `/trussen` requests with the shared app secret. Any
+ * fallback here (e.g. "just use the first integration") routes those requests
+ * into another customer's workspace (audit F-03).
+ */
+export function findIntegrationForTeam<T extends { providerMeta: unknown }>(
+  integrations: T[],
+  teamId: string,
+): T | undefined {
+  if (!teamId) return undefined;
+  return integrations.find(
+    (i) => (i.providerMeta as { team?: { id?: string } } | null)?.team?.id === teamId,
+  );
 }

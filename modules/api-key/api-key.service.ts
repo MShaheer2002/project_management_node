@@ -251,11 +251,18 @@ export async function authenticateWithApiKey(rawKey: string) {
       createdById: true,
       expiresAt: true,
       aiConnection: { select: { scopes: true } },
+      workspace: { select: { deactivatedAt: true } },
     },
   });
 
   if (!apiKey) {
     throw new AppError(401, ERROR_CODES.INVALID_API_KEY, "Invalid API key");
+  }
+
+  // Keys bypass requireWorkspace, so the soft-delete block is repeated here —
+  // this also covers MCP personal access tokens, which resolve through here.
+  if (apiKey.workspace.deactivatedAt) {
+    throw new AppError(403, ERROR_CODES.WORKSPACE_DEACTIVATED, "Deactivated by Owner");
   }
 
   if (apiKey.expiresAt && apiKey.expiresAt < new Date()) {
@@ -283,10 +290,14 @@ export async function authenticateWithApiKey(rawKey: string) {
 
   const creator = await prisma.user.findUnique({
     where: { id: apiKey.createdById },
-    select: { id: true, email: true, name: true },
+    select: { id: true, email: true, name: true, deletedAt: true },
   });
 
-  if (!creator) {
+  // A deleted Clerk account leaves the User row in place (authorship on issues
+  // and comments has to survive), so "row exists" is not proof of a live
+  // account. Without the deletedAt check, `lin_live_*` keys kept working after
+  // offboarding (F-19).
+  if (!creator || creator.deletedAt) {
     throw new AppError(401, ERROR_CODES.API_KEY_REVOKED, "This API key's creator no longer exists");
   }
 

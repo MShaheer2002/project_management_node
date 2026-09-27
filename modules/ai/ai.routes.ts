@@ -130,8 +130,10 @@ router.delete(
 
 // ── Reviewable AI changes (accept / undo) ───────────────────────────────────
 //
-// Authorization for the underlying revert is enforced in the domain services the
-// revert routes through, exactly as it would be for a manual edit.
+// Records are scoped to the actor the AI worked for (admins see all), and the
+// revert re-checks lead-or-admin for PROJECT/TEAM targets — `updateProject` and
+// `updateTeam` carry no authorization of their own, so the claim that "the domain
+// services enforce it" was only true for ISSUE targets (F-08).
 
 router.get(
   "/conversations/:id/mutations",
@@ -169,6 +171,10 @@ router.post(
   "/suggestions/:id/accept",
   authenticate,
   requireWorkspace,
+  // Applying a suggestion writes to issues and cycles, so it is not a
+  // read-only action — GUESTs could reassign issues and pull arbitrary
+  // issues into a cycle through this route (F-24).
+  requireRole("MEMBER", "ADMIN", "OWNER"),
   validate(acceptSuggestionSchema),
   controller.acceptSuggestion,
 );
@@ -177,6 +183,10 @@ router.post(
   "/suggestions/:id/dismiss",
   authenticate,
   requireWorkspace,
+  // Applying a suggestion writes to issues and cycles, so it is not a
+  // read-only action — GUESTs could reassign issues and pull arbitrary
+  // issues into a cycle through this route (F-24).
+  requireRole("MEMBER", "ADMIN", "OWNER"),
   validate(dismissSuggestionSchema),
   controller.dismissSuggestion,
 );

@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { webLinkSchema } from "../../shared/utils/web-link.js";
 
 const issueStatusSchema = z.string().trim().min(1).max(50);
 const issuePrioritySchema = z.enum(["low", "medium", "high", "urgent"]);
@@ -12,15 +13,20 @@ const attachmentRefSchema = z.object({
   contentType: z.string().min(1),
   size: z.number().int().positive(),
   kind: z.enum(["attachment", "video"]),
-  assetUrl: z.string().url().nullable().optional(),
+  assetUrl: webLinkSchema.nullable().optional(),
 });
+
+export const INTEGRATION_PROVIDERS = ["github", "jira", "slack", "notion", "figma", "custom"] as const;
+export const MAX_INTEGRATION_REFS = 25;
+
+const linkUrlSchema = webLinkSchema.max(500);
 
 const integrationRefInputSchema = z.object({
   id: z.string().trim().min(1).max(100),
-  provider: z.enum(["github", "jira", "slack", "notion", "figma", "custom"]),
+  provider: z.enum(INTEGRATION_PROVIDERS),
   label: z.string().trim().max(100).nullable().optional(),
   externalId: z.string().trim().max(255).nullable().optional(),
-  url: z.string().url().nullable().optional(),
+  url: linkUrlSchema.nullable().optional(),
 });
 
 const createSubtaskInlineSchema = z.object({
@@ -50,7 +56,7 @@ export const createIssueSchema = {
     acceptanceCriteria: z.string().trim().max(50000).optional(),
     relatedIssueKeys: z.array(z.string().trim().min(1)).max(100).optional(),
     notes: z.string().trim().max(50000).optional(),
-    integrationRefs: z.array(integrationRefInputSchema).max(25).optional(),
+    integrationRefs: z.array(integrationRefInputSchema).max(MAX_INTEGRATION_REFS).optional(),
     attachments: z.array(attachmentRefSchema).max(100).optional(),
     parentIssueId: z.string().min(1).nullable().optional(),
     templateId: z.string().uuid().optional(),
@@ -212,10 +218,10 @@ export const updateIntegrationRefSchema = {
     .object({
       integrationRef: z
         .object({
-          provider: z.enum(["github", "jira", "slack", "notion", "figma", "custom"]),
+          provider: z.enum(INTEGRATION_PROVIDERS),
           label: z.string().trim().max(100).nullable().optional(),
           externalId: z.string().trim().max(255).nullable().optional(),
-          url: z.string().url().nullable().optional(),
+          url: linkUrlSchema.nullable().optional(),
         })
         .nullable()
         .optional(),
@@ -223,13 +229,13 @@ export const updateIntegrationRefSchema = {
         .array(
           z.object({
             id: z.string().trim().min(1).max(100),
-            provider: z.enum(["github", "jira", "slack", "notion", "figma", "custom"]),
+            provider: z.enum(INTEGRATION_PROVIDERS),
             label: z.string().trim().max(100).nullable().optional(),
             externalId: z.string().trim().max(255).nullable().optional(),
-            url: z.string().url().nullable().optional(),
+            url: linkUrlSchema.nullable().optional(),
           }),
         )
-        .max(25)
+        .max(MAX_INTEGRATION_REFS)
         .optional(),
     })
     .transform(({ integrationRef, integrationRefs }) => ({

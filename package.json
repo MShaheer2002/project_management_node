@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsx watch app/server.ts",
     "build": "tsc",
-    "test": "node --import tsx --test modules/**/*.test.ts",
+    "test": "node --import tsx --test \"modules/**/*.test.ts\" \"shared/**/*.test.ts\" \"mcp/**/*.test.ts\" \"socket/**/*.test.ts\" \"infra/**/*.test.ts\"",
     "prestart": "npm run build",
     "start": "node dist/app/server.js",
     "premcp": "npm run build",
@@ -16,7 +16,9 @@
     "preworker": "npm run build",
     "worker": "node dist/workers/ai-background.worker.js",
     "worker:dev": "tsx workers/ai-background.worker.ts",
-    "backfill:embeddings": "tsx workers/embedding-backfill.ts"
+    "backfill:embeddings": "tsx workers/embedding-backfill.ts",
+    "backfill:integration-tokens": "tsx workers/encrypt-integration-tokens.ts",
+    "backfill:user-emails": "tsx workers/resync-user-emails.ts"
   },
   "repository": {
     "type": "git",

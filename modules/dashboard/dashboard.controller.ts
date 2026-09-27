@@ -14,6 +14,7 @@ export const getOverview: RequestHandler = async (req, res, next) => {
     const dashboard = await dashboardService.getDashboardData(
       req.workspace!.id,
       req.user!.id,
+      { userId: req.user!.id, role: req.workspace!.role },
     );
 
     sendSuccess(res, 200, dashboard);

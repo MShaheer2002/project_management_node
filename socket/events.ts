@@ -1,32 +1,66 @@
 import type { Server } from "socket.io";
 
 import { createRealtimeEnvelope } from "./serializers.js";
+import { prisma } from "../shared/utils/prisma.js";
+import { projectRoom } from "./rooms.js";
 
-export function emitIssueCreated(io: Server, workspaceId: string, payload: Record<string, unknown>) {
+/**
+ * Where an issue event may be broadcast.
+ *
+ * Issue payloads carry the full mapped issue (description, attachment keys,
+ * watcher emails). The workspace room holds every member including GUESTs, so
+ * events for a PRIVATE project go to that project's room instead — only members
+ * of that project are in it (F-06 e).
+ */
+async function issueEventRoom(workspaceId: string, projectId: string | null | undefined): Promise<string> {
+  if (!projectId) return `workspace:${workspaceId}`;
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, workspaceId },
+    select: { visibility: true },
+  });
+  return project?.visibility === "PRIVATE" ? projectRoom(projectId) : `workspace:${workspaceId}`;
+}
+
+export async function emitIssueCreated(
+  io: Server,
+  workspaceId: string,
+  payload: Record<string, unknown>,
+  projectId?: string | null,
+) {
   const envelope = createRealtimeEnvelope({
     type: "issue:created",
     workspaceId,
     payload,
   });
-  io.to(`workspace:${workspaceId}`).emit("issue:created", envelope);
+  io.to(await issueEventRoom(workspaceId, projectId)).emit("issue:created", envelope);
 }
 
-export function emitIssueUpdated(io: Server, workspaceId: string, payload: Record<string, unknown>) {
+export async function emitIssueUpdated(
+  io: Server,
+  workspaceId: string,
+  payload: Record<string, unknown>,
+  projectId?: string | null,
+) {
   const envelope = createRealtimeEnvelope({
     type: "issue:updated",
     workspaceId,
     payload,
   });
-  io.to(`workspace:${workspaceId}`).emit("issue:updated", envelope);
+  io.to(await issueEventRoom(workspaceId, projectId)).emit("issue:updated", envelope);
 }
 
-export function emitIssueDeleted(io: Server, workspaceId: string, payload: Record<string, unknown>) {
+export async function emitIssueDeleted(
+  io: Server,
+  workspaceId: string,
+  payload: Record<string, unknown>,
+  projectId?: string | null,
+) {
   const envelope = createRealtimeEnvelope({
     type: "issue:deleted",
     workspaceId,
     payload,
   });
-  io.to(`workspace:${workspaceId}`).emit("issue:deleted", envelope);
+  io.to(await issueEventRoom(workspaceId, projectId)).emit("issue:deleted", envelope);
 }
 
 export function emitCommentCreated(io: Server, workspaceId: string, issueId: string, payload: Record<string, unknown>) {

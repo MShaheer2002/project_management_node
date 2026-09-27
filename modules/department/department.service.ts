@@ -18,7 +18,7 @@ import type {
   ListDepartmentsQuery,
   UpdateDepartmentInput,
 } from "./department.schemas.js";
-import { indexEntity } from "../ai/ai.indexer.js";
+import { indexEntities, indexEntity } from "../ai/ai.indexer.js";
 
 const departmentSummarySelect = {
   id: true,
@@ -640,6 +640,13 @@ export async function updateDepartment(
     reason: "updated",
     triggeredByUserId: undefined,
   });
+
+  // Members' search text lists their public departments only, so a visibility
+  // change has to reach every member's entry too (F-44).
+  if (input.visibility !== undefined) {
+    const members = await prisma.departmentMembership.findMany({ where: { departmentId }, select: { userId: true } });
+    await indexEntities(members.map(({ userId }) => ({ workspaceId, entityType: "MEMBER", entityId: userId, reason: "updated" as const })));
+  }
 
   // Update is already gated by requireOwnership at the route — "OWNER" here
   // just bypasses the visibility check to fetch the just-updated record back.

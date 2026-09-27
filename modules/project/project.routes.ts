@@ -87,20 +87,16 @@ router.patch(
   controller.update,
 );
 
+// Deleting a project destroys every issue, comment and attachment in it, so it
+// is admin-only like deleting a single issue — not open to the project lead,
+// who can be any member (F-37).
 router.delete(
   "/:id",
   authenticate,
   validate(projectIdParamsSchema),
   requireWorkspace,
   requireScope("projects:write"),
-  requireOwnership(
-    (req) => projectService.getProjectOwnership(req.workspace!.id, req.params.id as string),
-    {
-      notFoundCode: "PROJECT_NOT_FOUND",
-      notFoundMessage: "Project not found",
-      forbiddenMessage: "You do not have permission to delete this project",
-    },
-  ),
+  requireRole("ADMIN", "OWNER"),
   controller.remove,
 );
 

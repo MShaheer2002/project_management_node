@@ -112,3 +112,37 @@ export const aiAssistWorkspaceRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+/**
+ * Invitation limiter — bounds how many invite emails one workspace can send.
+ *
+ * Invites go to arbitrary external addresses from Trussen's authenticated
+ * sender, so volume here is domain-reputation risk, not just cost. Only the
+ * global 100/min per-IP limit applied before, which an admin of a throwaway
+ * workspace could sit under comfortably while bulk-mailing (F-22).
+ *
+ * Keyed per workspace rather than per IP: rotating IPs is trivial, creating
+ * workspaces is not. Must run after authenticate + requireWorkspace.
+ *
+ * ponytail: in-memory store, so the limit is per server instance. Point
+ *   express-rate-limit at the existing Redis if this runs multi-instance.
+ */
+export const invitationRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 50,
+  keyGenerator: (req) => {
+    const workspaceId = req.workspace?.id;
+    return workspaceId ? `invite:workspace:${workspaceId}` : "invite:workspace:missing-context";
+  },
+  handler: (_req, res) => {
+    res.status(429).json({
+      success: false,
+      error: {
+        code: ERROR_CODES.RATE_LIMITED,
+        message: "This workspace has sent too many invitations recently. Please try again later.",
+      },
+    });
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

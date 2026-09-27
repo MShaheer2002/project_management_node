@@ -72,11 +72,11 @@ function getEntitlements(plan: SubscriptionPlan) {
   }
 }
 
-function hasPaidAccess(status: SubscriptionStatus) {
+export function hasPaidAccess(status: SubscriptionStatus) {
   return status === "ACTIVE" || status === "TRIALING" || status === "PAST_DUE";
 }
 
-function getAccessPlan(plan: SubscriptionPlan, status: SubscriptionStatus): SubscriptionPlan {
+export function getAccessPlan(plan: SubscriptionPlan, status: SubscriptionStatus): SubscriptionPlan {
   return hasPaidAccess(status) ? plan : "FREE";
 }
 
@@ -482,9 +482,14 @@ export async function createInitialWorkspaceSubscription(
 }
 
 export async function enforceFreeWorkspaceCapacity(workspaceId: string, email?: string) {
-  const subscription = await getSubscriptionRecord(workspaceId);
-
-  if (subscription.plan !== "FREE") {
+  // Access plan, not the stored plan — the same resolution enforceFreeTeamCapacity
+  // and assertWorkspaceAccessAllowed use. A subscription created with Stripe's
+  // `default_incomplete` has plan STANDARD/PREMIUM while status is INCOMPLETE, so
+  // comparing the stored plan let an owner skip the member cap without ever
+  // paying (F-29). getAccessPlan() treats anything but ACTIVE/TRIALING/PAST_DUE
+  // as FREE.
+  const accessPlan = await getAccessPlanForWorkspace(workspaceId);
+  if (accessPlan !== "FREE") {
     return;
   }
 
@@ -1145,6 +1150,87 @@ export async function cancelSubscription(workspaceId: string) {
   };
 }
 
+// ─── Workspace soft-delete lifecycle ─────────────────────────────────────────
+
+function isStripeResourceMissing(error: unknown) {
+  return (error as { code?: string } | null)?.code === "resource_missing";
+}
+
+/**
+ * Deactivation: stop a paid subscription from renewing. Returns true only when
+ * this call is what switched renewal off, so a restore switches it back on
+ * without undoing a cancellation the owner had already made themselves.
+ */
+export async function stopRenewalForDeactivation(workspaceId: string): Promise<boolean> {
+  const subscription = await prisma.subscription.findUnique({
+    where: { workspaceId },
+    select: { stripeSubscriptionId: true, cancelAtPeriodEnd: true, status: true, seatCount: true },
+  });
+  if (!subscription?.stripeSubscriptionId || subscription.cancelAtPeriodEnd) return false;
+
+  // Never paid for, so there is nothing to renew — end it now, as cancelSubscription does.
+  if (subscription.status === "INCOMPLETE" || subscription.status === "UNPAID") {
+    await cancelSubscription(workspaceId);
+    return false;
+  }
+
+  const stripeSubscription = await stripe.subscriptions.update(subscription.stripeSubscriptionId, {
+    cancel_at_period_end: true,
+  });
+  await updateWorkspaceSubscriptionFromStripe(workspaceId, stripeSubscription, subscription.seatCount);
+  return true;
+}
+
+/**
+ * Restore: switch renewal back on. A no-op when the period already ran out
+ * during the grace window (the subscription.deleted webhook cleared the
+ * record), so the workspace simply comes back on Free.
+ */
+export async function resumeRenewalAfterRestore(workspaceId: string) {
+  const subscription = await prisma.subscription.findUnique({
+    where: { workspaceId },
+    select: { stripeSubscriptionId: true, cancelAtPeriodEnd: true, status: true, seatCount: true },
+  });
+  if (!subscription?.stripeSubscriptionId || !subscription.cancelAtPeriodEnd || subscription.status === "CANCELED") return;
+
+  const stripeSubscription = await stripe.subscriptions.update(subscription.stripeSubscriptionId, {
+    cancel_at_period_end: false,
+  });
+  await updateWorkspaceSubscriptionFromStripe(workspaceId, stripeSubscription, subscription.seatCount);
+}
+
+/**
+ * Purge: end billing for good — cancel the subscription immediately and
+ * delete the Stripe customer, which also removes its saved payment methods.
+ * Idempotent: anything Stripe no longer has counts as done. Any other Stripe
+ * error throws, so the purge is retried instead of deleting a workspace that
+ * can still be charged (F-35).
+ */
+export async function endBillingForPurge(workspaceId: string) {
+  const subscription = await prisma.subscription.findUnique({
+    where: { workspaceId },
+    select: { stripeSubscriptionId: true, stripeCustomerId: true },
+  });
+  if (!subscription) return;
+
+  if (subscription.stripeSubscriptionId) {
+    try {
+      const current = await stripe.subscriptions.retrieve(subscription.stripeSubscriptionId);
+      if (current.status !== "canceled") await stripe.subscriptions.cancel(subscription.stripeSubscriptionId);
+    } catch (error) {
+      if (!isStripeResourceMissing(error)) throw error;
+    }
+  }
+
+  if (subscription.stripeCustomerId) {
+    try {
+      await stripe.customers.del(subscription.stripeCustomerId);
+    } catch (error) {
+      if (!isStripeResourceMissing(error)) throw error;
+    }
+  }
+}
+
 export async function listInvoices(workspaceId: string) {
   const invoices = await prisma.invoice.findMany({
     where: { workspaceId },
@@ -1180,7 +1266,12 @@ async function resolveWorkspaceIdForEvent(event: Stripe.Event) {
   const metadataWorkspaceId = getEventWorkspaceId(event);
 
   if (metadataWorkspaceId) {
-    return metadataWorkspaceId;
+    // Purging a workspace cancels its subscription and deletes its customer,
+    // and Stripe then sends events naming a workspace that no longer exists.
+    // Storing that id would violate the event's foreign key and fail the
+    // webhook, which Stripe would keep retrying for days.
+    const exists = await prisma.workspace.findUnique({ where: { id: metadataWorkspaceId }, select: { id: true } });
+    return exists ? metadataWorkspaceId : null;
   }
 
   const object = event.data.object as unknown as Record<string, unknown> & {

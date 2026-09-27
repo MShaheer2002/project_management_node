@@ -11,13 +11,6 @@ export const connectFigmaSchema = {
   }),
 };
 
-/** GET /integrations/figma/preview — Fetch file metadata from URL */
-export const previewFigmaSchema = {
-  query: z.object({
-    url: z.string().url("Must be a valid Figma URL"),
-  }),
-};
-
 /** PATCH /integrations/figma/settings */
 export const updateFigmaSettingsSchema = {
   body: z.object({

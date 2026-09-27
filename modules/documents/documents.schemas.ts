@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { webLinkSchema } from "../../shared/utils/web-link.js";
 
 const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -15,7 +16,7 @@ export const documentFileRefSchema = z.object({
   contentType: z.string().trim().min(1).max(100),
   size: z.number().int().positive().max(DOCUMENT_MAX_BYTES),
   kind: z.literal("document"),
-  assetUrl: z.string().url().nullable().optional(),
+  assetUrl: webLinkSchema.nullable().optional(),
 });
 
 export const documentDraftSchema = z.object({

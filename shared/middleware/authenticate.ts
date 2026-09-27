@@ -25,15 +25,24 @@ import { getAuth } from "@clerk/express";
 import { AppError } from "../utils/api-error.js";
 import { ERROR_CODES } from "../errors/error-codes.js";
 import { prisma } from "../utils/prisma.js";
+import { isAllowedTokenParty } from "../utils/allowed-origin.js";
+import { env } from "../../config/env.js";
 
 export const authenticate: RequestHandler = async (req, _res, next) => {
   try {
     // ─── Verify JWT via Clerk ─────────────────────────────────────────────
     // getAuth() reads the session from the request (set by clerkMiddleware in app.ts)
     // It returns { userId } if the token is valid, or { userId: null } if not
+    // Only a token in the Authorization header counts. clerkMiddleware would
+    // also accept Clerk's session cookie, which a form posted from another
+    // page would carry along (CSRF). Our app always sends the header (N-12).
+    if (!req.headers.authorization?.startsWith("Bearer ")) {
+      throw new AppError(401, ERROR_CODES.UNAUTHORIZED, "Authentication required");
+    }
+
     const auth = getAuth(req);
 
-    if (!auth.userId) {
+    if (!auth.userId || !isAllowedTokenParty(auth.sessionClaims?.azp, env.NODE_ENV)) {
       throw new AppError(401, ERROR_CODES.UNAUTHORIZED, "Authentication required");
     }
 
@@ -42,10 +51,14 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
     // If the user signed up 1 second ago, the webhook might not have fired yet.
     const user = await prisma.user.findUnique({
       where: { id: auth.userId },
-      select: { id: true, email: true, name: true },
+      select: { id: true, email: true, name: true, deletedAt: true },
     });
 
-    if (!user) {
+    // An offboarded account keeps its User row (authorship must survive), so
+    // existence alone is not proof of a live account (F-19). Clerk should stop
+    // issuing tokens for a deleted user anyway — this closes the window where
+    // an already-issued token is still within its lifetime.
+    if (!user || user.deletedAt) {
       throw new AppError(
         403,
         ERROR_CODES.USER_NOT_SYNCED,

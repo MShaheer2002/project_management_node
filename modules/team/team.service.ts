@@ -15,7 +15,7 @@ import type {
   ListTeamsQuery,
   UpdateTeamInput,
 } from "./team.schemas.js";
-import { indexEntity } from "../ai/ai.indexer.js";
+import { indexEntities, indexEntity } from "../ai/ai.indexer.js";
 
 const teamSummarySelect = {
   id: true,
@@ -224,7 +224,25 @@ async function assertDepartmentExists(
   }
 }
 
-export async function createTeam(workspaceId: string, actorUserId: string, input: CreateTeamInput) {
+export async function createTeam(
+  workspaceId: string,
+  actorUserId: string,
+  workspaceRole: WorkspaceRole,
+  input: CreateTeamInput,
+) {
+  // Same rule updateTeam applies when moving a team between departments (see
+  // below): filing a team under a department is a department-management action.
+  // Creating one skipped the check entirely, so a MEMBER could create a team
+  // inside a PRIVATE department and be added to it — along with anyone else
+  // named in memberIds — without the department head or an admin (F-25).
+  if (input.departmentId && workspaceRole !== "OWNER" && workspaceRole !== "ADMIN") {
+    throw new AppError(
+      403,
+      ERROR_CODES.FORBIDDEN,
+      "Only workspace admins and owners can create a team inside a department",
+    );
+  }
+
   await enforceFreeTeamCapacity(workspaceId);
 
   const existing = await prisma.team.findFirst({
@@ -359,6 +377,7 @@ export async function updateTeam(
   workspaceRole: WorkspaceRole,
   teamId: string,
   input: UpdateTeamInput,
+  actorUserId: string,
 ) {
   const current = await prisma.team.findFirst({
     where: { id: teamId, workspaceId },
@@ -518,7 +537,7 @@ export async function updateTeam(
   if (input.leadId !== undefined && input.leadId !== current.leadId) {
     await logActivity({
       workspaceId,
-      actorId: input.leadId ?? current.leadId ?? "system",
+      actorId: actorUserId,
       type: "TEAM_MEMBER_ROLE_CHANGED",
       targetType: "TEAM",
       targetId: teamId,
@@ -536,6 +555,12 @@ export async function updateTeam(
     reason: "updated",
     triggeredByUserId: undefined,
   });
+
+  // Members' search text lists their public teams only (F-44).
+  if (input.visibility !== undefined) {
+    const members = await prisma.teamMembership.findMany({ where: { teamId }, select: { userId: true } });
+    await indexEntities(members.map(({ userId }) => ({ workspaceId, entityType: "MEMBER", entityId: userId, reason: "updated" as const })));
+  }
 
   return getTeamById(workspaceId, "MEMBER", teamId);
 }

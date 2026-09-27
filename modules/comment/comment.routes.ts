@@ -11,6 +11,7 @@ import {
   deleteCommentAttachmentParamsSchema,
   deleteCommentSchema,
   listCommentsSchema,
+  mentionableMembersSchema,
   updateCommentSchema,
 } from "./comment.schemas.js";
 
@@ -18,6 +19,7 @@ const router = Router();
 
 router.post("/issues/:id/comments", authenticate, validate(createCommentSchema), requireWorkspace, requireRole("GUEST", "MEMBER", "ADMIN", "OWNER"), controller.create);
 router.get("/issues/:id/comments", authenticate, validate(listCommentsSchema), requireWorkspace, requireRole("GUEST", "MEMBER", "ADMIN", "OWNER"), controller.listByIssue);
+router.get("/issues/:id/mentionable-members", authenticate, validate(mentionableMembersSchema), requireWorkspace, requireRole("GUEST", "MEMBER", "ADMIN", "OWNER"), controller.mentionableMembers);
 router.patch("/comments/:id", authenticate, validate(updateCommentSchema), requireWorkspace, requireRole("GUEST", "MEMBER", "ADMIN", "OWNER"), controller.update);
 router.delete("/comments/:id", authenticate, validate(deleteCommentSchema), requireWorkspace, requireRole("GUEST", "MEMBER", "ADMIN", "OWNER"), controller.remove);
 router.post("/comments/:id/attachments", authenticate, validate(createCommentAttachmentsSchema), requireWorkspace, requireRole("GUEST", "MEMBER", "ADMIN", "OWNER"), controller.addAttachments);

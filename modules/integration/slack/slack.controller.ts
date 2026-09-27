@@ -8,6 +8,8 @@
 import type { RequestHandler } from "express";
 import { sendSuccess } from "../../../shared/utils/api-response.js";
 import { AppError } from "../../../shared/utils/api-error.js";
+import { oauthReturnUrl } from "../../../shared/utils/workspace-url.js";
+import { oauthStateWorkspaceId } from "../oauth-state.js";
 import { ERROR_CODES } from "../../../shared/errors/error-codes.js";
 import { env } from "../../../config/env.js";
 import { findConnectedIntegration, getSettings, upsertSettings } from "../integration.service.js";
@@ -30,10 +32,11 @@ export const callback: RequestHandler = async (req, res, next) => {
   try {
     const { code, state } = (req.validated?.query as { code: string; state: string }) ?? req.query;
     await slackService.handleSlackCallback(code as string, state as string);
-    res.redirect(`${env.FRONTEND_URL}/integrations?provider=slack&status=connected`);
+    res.redirect(await oauthReturnUrl(oauthStateWorkspaceId(state), `/integrations?provider=slack&status=connected`));
   } catch (error) {
     const message = error instanceof AppError ? error.message : "Connection failed";
-    res.redirect(`${env.FRONTEND_URL}/integrations?provider=slack&status=error&message=${encodeURIComponent(message)}`);
+    // Back to the workspace the flow started in — the bare domain may open a different one.
+    res.redirect(await oauthReturnUrl(oauthStateWorkspaceId(req.query.state), `/integrations?provider=slack&status=error&message=${encodeURIComponent(message)}`));
   }
 };
 

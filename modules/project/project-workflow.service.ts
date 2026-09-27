@@ -6,6 +6,9 @@
  * resolution of "which workflow applies" lives in shared/workflow/effective-workflow.ts
  * and is used by every issue/cycle flow that needs it.
  */
+import { assertProjectVisible, isWorkspaceAdmin, type Viewer } from "../../shared/utils/visibility.js";
+import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
+import { changesWorkflowStructure, isWorkflowStructureLocked } from "../../shared/workflow/workflow-governance.js";
 import { Prisma } from "../../app/generated/prisma/client.js";
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
@@ -21,6 +24,7 @@ import {
   validateWorkflowAutomationAgainstStatuses,
   validateWorkflowStatusList,
 } from "../../shared/workflow/status-validation.js";
+import { moveIssuesToStatus } from "../../shared/workflow/bulk-status.js";
 import type {
   ClearProjectWorkflowOverrideInput,
   UpdateProjectWorkflowAutomationInput,
@@ -29,6 +33,52 @@ import type {
 import type { WorkspaceStatusRecord } from "../../shared/workflow/workflow-automation.js";
 
 type StatusRemovalResolution = UpdateProjectWorkflowStatusesInput["removalResolutions"][number];
+
+// ─── Who may change what (F-37) ───────────────────────────────────────────────
+// Every write below is also reachable by a project *lead* of any role
+// (requireOwnership). Admin-only parts are enforced here, in the service, so
+// every caller is held to them.
+
+/**
+ * What the viewer may do with this project's workflow, returned with every
+ * workflow response so the UI shows only the actions the API would allow.
+ */
+function withPermissions(workflow: EffectiveWorkflow, role: WorkspaceRole, workspace: { customStatuses: unknown }) {
+  const structureLocked = isWorkflowStructureLocked(isWorkspaceAdmin(role), workflow.statuses);
+  return {
+    ...workflow,
+    permissions: {
+      structureLocked,
+      canDeleteIssues: isWorkspaceAdmin(role),
+      // Same test clearProjectWorkflowOverride applies.
+      canRevert: workflow.source === "project" && (
+        !structureLocked ||
+        !changesWorkflowStructure(workflow.statuses, normalizeWorkspaceStatuses(workspace.customStatuses as any[]))
+      ),
+    },
+  };
+}
+
+function assertMayRestructure(role: WorkspaceRole, current: WorkspaceStatusRecord[], next: WorkspaceStatusRecord[]) {
+  if (isWorkflowStructureLocked(isWorkspaceAdmin(role), current) && changesWorkflowStructure(current, next)) {
+    throw new AppError(
+      403,
+      ERROR_CODES.WORKFLOW_POLICY_LOCKED,
+      "This workflow has approval or transition rules set by an admin. Only admins can add, remove, merge or reorder its statuses or change their rules.",
+    );
+  }
+}
+
+/** Deleting issues in bulk is admin-only, like deleting a single issue. */
+function assertMayDeleteIssues(role: WorkspaceRole, resolutions: StatusRemovalResolution[]) {
+  if (!isWorkspaceAdmin(role) && resolutions.some((resolution) => resolution.action === "delete")) {
+    throw new AppError(
+      403,
+      ERROR_CODES.INSUFFICIENT_ROLE,
+      "Only admins can delete issues. Move them to another status instead.",
+    );
+  }
+}
 
 async function getWorkspaceAndProject(workspaceId: string, projectId: string) {
   const [workspace, project] = await Promise.all([
@@ -135,14 +185,7 @@ async function applyStatusRemovals(
     const resolution = resolutionMap.get(removedKey)!;
 
     if (resolution.action === "move") {
-      const targetStatus = nextStatusMap.get(resolution.targetStatusKey!)!;
-      await tx.issue.updateMany({
-        where: { projectId, status: removedKey },
-        data: {
-          status: targetStatus.key,
-          completedAt: targetStatus.isFinal ? new Date() : null,
-        },
-      });
+      await moveIssuesToStatus(tx, { projectId }, removedKey, nextStatusMap.get(resolution.targetStatusKey!)!);
       continue;
     }
 
@@ -150,9 +193,12 @@ async function applyStatusRemovals(
   }
 }
 
-export async function getProjectWorkflow(workspaceId: string, projectId: string): Promise<EffectiveWorkflow> {
+export async function getProjectWorkflow(workspaceId: string, viewer: Viewer, projectId: string) {
+  // The workflow config names reviewers and `allowedUserIds`, i.e. who works on
+  // a private project — visible to any GUEST before this check (F-06 q).
+  await assertProjectVisible(workspaceId, projectId, viewer);
   const { workspace, project } = await getWorkspaceAndProject(workspaceId, projectId);
-  return resolveEffectiveWorkflow(workspace, project);
+  return withPermissions(resolveEffectiveWorkflow(workspace, project), viewer.role, workspace);
 }
 
 const STATUS_USAGE_PREVIEW_LIMIT = 25;
@@ -160,10 +206,14 @@ const STATUS_USAGE_EXPORT_LIMIT = 1000;
 
 export async function getProjectWorkflowStatusUsage(
   workspaceId: string,
+  viewer: Viewer,
   projectId: string,
   statusKey: string,
   limit?: number,
 ) {
+  // Scoped to one project, so a single visibility check covers every issue it
+  // would otherwise list the titles of (F-06 i).
+  await assertProjectVisible(workspaceId, projectId, viewer);
   const { workspace, project } = await getWorkspaceAndProject(workspaceId, projectId);
   const effective = resolveEffectiveWorkflow(workspace, project);
   const status = effective.statuses.find((candidate) => candidate.key === statusKey);
@@ -205,6 +255,7 @@ export async function mergeProjectWorkflowStatus(
   projectId: string,
   sourceKey: string,
   targetKey: string,
+  actorRole: WorkspaceRole,
 ) {
   if (sourceKey === targetKey) {
     throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, "Merge source and target must be different");
@@ -239,12 +290,13 @@ export async function mergeProjectWorkflowStatus(
     showOnBoard: statusVisibleOnBoard(status),
   }));
 
+  // A merge removes a status and bulk-moves its issues past its rules.
+  assertMayRestructure(actorRole, statuses, nextStatuses);
+
   const updated = await prisma.$transaction(async (tx) => {
-    await tx.issue.updateMany({
-      where: { projectId, status: sourceKey },
-      data: { status: targetKey, completedAt: targetStatus.isFinal ? new Date() : null },
-    });
-    await tx.issueApproval.deleteMany({ where: { workspaceId, statusKey: sourceKey } });
+    // Approvals are cleared for this project's moved issues only — this used to
+    // delete every approval for the key across the workspace (F-34).
+    await moveIssuesToStatus(tx, { projectId }, sourceKey, targetStatus);
 
     return tx.project.update({
       where: { id: projectId },
@@ -260,7 +312,7 @@ export async function mergeProjectWorkflowStatus(
     });
   });
 
-  return resolveEffectiveWorkflow(workspace, updated);
+  return withPermissions(resolveEffectiveWorkflow(workspace, updated), actorRole, workspace);
 }
 
 /**
@@ -271,6 +323,7 @@ export async function updateProjectWorkflowStatuses(
   workspaceId: string,
   projectId: string,
   input: UpdateProjectWorkflowStatusesInput,
+  actorRole: WorkspaceRole,
 ) {
   const { workspace, project } = await getWorkspaceAndProject(workspaceId, projectId);
   const currentEffective = resolveEffectiveWorkflow(workspace, project);
@@ -283,6 +336,9 @@ export async function updateProjectWorkflowStatuses(
     order: index,
     showOnBoard: statusVisibleOnBoard(status),
   }));
+
+  assertMayRestructure(actorRole, currentEffective.statuses, nextStatuses);
+  assertMayDeleteIssues(actorRole, input.removalResolutions ?? []);
 
   const { removedKeys, resolutionMap, removedStatusCountMap, nextStatusMap } = await reconcileStatusRemovals(
     projectId,
@@ -310,7 +366,7 @@ export async function updateProjectWorkflowStatuses(
     });
   });
 
-  return resolveEffectiveWorkflow(workspace, updated);
+  return withPermissions(resolveEffectiveWorkflow(workspace, updated), actorRole, workspace);
 }
 
 /**
@@ -322,6 +378,7 @@ export async function clearProjectWorkflowOverride(
   workspaceId: string,
   projectId: string,
   input: ClearProjectWorkflowOverrideInput,
+  actorRole: WorkspaceRole,
 ) {
   const { workspace, project } = await getWorkspaceAndProject(workspaceId, projectId);
 
@@ -331,6 +388,10 @@ export async function clearProjectWorkflowOverride(
 
   const currentEffective = resolveEffectiveWorkflow(workspace, project);
   const nextStatuses = normalizeWorkspaceStatuses(workspace.customStatuses as any[]);
+
+  // Reverting can drop rules an admin put on this project's own workflow.
+  assertMayRestructure(actorRole, currentEffective.statuses, nextStatuses);
+  assertMayDeleteIssues(actorRole, input.removalResolutions ?? []);
 
   const { removedKeys, resolutionMap, removedStatusCountMap, nextStatusMap } = await reconcileStatusRemovals(
     projectId,
@@ -349,7 +410,7 @@ export async function clearProjectWorkflowOverride(
     });
   });
 
-  return resolveEffectiveWorkflow(workspace, updated);
+  return withPermissions(resolveEffectiveWorkflow(workspace, updated), actorRole, workspace);
 }
 
 /**
@@ -361,6 +422,7 @@ export async function updateProjectWorkflowAutomation(
   workspaceId: string,
   projectId: string,
   input: UpdateProjectWorkflowAutomationInput,
+  actorRole: WorkspaceRole,
 ) {
   const { workspace, project } = await getWorkspaceAndProject(workspaceId, projectId);
 
@@ -377,5 +439,5 @@ export async function updateProjectWorkflowAutomation(
     select: { workflowAutomation: true, customStatuses: true },
   });
 
-  return resolveEffectiveWorkflow(workspace, updated);
+  return withPermissions(resolveEffectiveWorkflow(workspace, updated), actorRole, workspace);
 }

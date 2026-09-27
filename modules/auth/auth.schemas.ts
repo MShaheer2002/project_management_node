@@ -19,9 +19,11 @@ export const clerkUserSchema = z.object({
       z.object({
         email_address: z.string().email(),
         id: z.string(),
+        verification: z.object({ status: z.string() }).nullable().optional(),
       }),
     )
     .min(1),
+  primary_email_address_id: z.string().nullable().optional(),
   first_name: z.string().nullable(),
   last_name: z.string().nullable(),
   image_url: z.string().nullable(),

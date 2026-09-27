@@ -11,9 +11,11 @@
  *   - Update/delete workspace with permission enforcement
  */
 
+import { visibleIssueWhere, type Viewer } from "../../shared/utils/visibility.js";
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { isPlaceholderEmail } from "../../shared/utils/crypto.js";
 import {
   normalizeWorkflowAutomation,
   normalizeWorkspaceStatuses,
@@ -24,7 +26,10 @@ import {
   validateWorkflowAutomationAgainstStatuses,
   validateWorkflowStatusList,
 } from "../../shared/workflow/status-validation.js";
+import { moveIssuesToStatus, workspaceWorkflowIssueScope } from "../../shared/workflow/bulk-status.js";
 import { createInitialWorkspaceSubscription } from "../billing/billing.service.js";
+import { createPresignedGetUrl, isWorkspaceLogoUrl, workspaceLogoKey } from "../../infra/storage/s3.js";
+import { publicWorkspaceLogo } from "./workspace-logo.js";
 import type {
   CreateWorkspaceInput,
   UpdateWorkspaceInput,
@@ -228,6 +233,9 @@ export async function updateInviteDomainPolicy(
     if (!owner) {
       throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "Workspace owner not found");
     }
+    if (isPlaceholderEmail(owner.user.email)) {
+      throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "The owner needs a verified email before invites can be limited to the company domain");
+    }
     allowedEmailDomains = [domainFromEmail(owner.user.email)];
   } else if (input.inviteDomainPolicy === "CUSTOM") {
     if (!input.allowedEmailDomains || input.allowedEmailDomains.length === 0) {
@@ -269,9 +277,12 @@ export async function listWorkspaces(userId: string) {
           customStatuses: true,
           workflowAutomation: true,
           uploadPolicy: true,
+          allowPublicDriveLinks: true,
           inviteDomainPolicy: true,
           allowedEmailDomains: true,
           createdAt: true,
+          deactivatedAt: true,
+          purgeAt: true,
         },
       },
     },
@@ -314,7 +325,7 @@ export async function listWorkspaces(userId: string) {
     id: m.workspace.id,
     name: m.workspace.name,
     slug: m.workspace.slug,
-    logo: m.workspace.logo,
+    logo: publicWorkspaceLogo(m.workspace),
     teamSize: m.workspace.teamSize,
     issuePrefix: m.workspace.issuePrefix,
     customStatuses: normalizeWorkspaceStatuses(m.workspace.customStatuses as any[]),
@@ -323,6 +334,7 @@ export async function listWorkspaces(userId: string) {
       m.workspace.customStatuses as any[],
     ),
     uploadPolicy: m.workspace.uploadPolicy,
+    allowPublicDriveLinks: m.workspace.allowPublicDriveLinks,
     inviteDomainPolicy: m.workspace.inviteDomainPolicy,
     allowedEmailDomains: m.workspace.allowedEmailDomains,
     role: m.role,
@@ -330,6 +342,11 @@ export async function listWorkspaces(userId: string) {
     unreadNotifications: unreadMap.get(m.workspace.id) ?? 0,
     joinedAt: m.joinedAt,
     createdAt: m.workspace.createdAt,
+    // Soft delete: the picker shows "Deactivated by Owner", or a restore
+    // screen for an OWNER (canRestore), instead of opening the workspace.
+    deactivatedAt: m.workspace.deactivatedAt,
+    purgeAt: m.workspace.purgeAt,
+    canRestore: m.workspace.deactivatedAt !== null && m.role === "OWNER",
   }));
 }
 
@@ -351,6 +368,7 @@ export async function getWorkspaceById(workspaceId: string) {
       customStatuses: true,
       workflowAutomation: true,
       uploadPolicy: true,
+      allowPublicDriveLinks: true,
       inviteDomainPolicy: true,
       allowedEmailDomains: true,
       createdById: true,
@@ -374,6 +392,7 @@ export async function getWorkspaceById(workspaceId: string) {
 
   return {
     ...workspace,
+    logo: publicWorkspaceLogo(workspace),
     customStatuses: normalizeWorkspaceStatuses(workspace.customStatuses as any[]),
     workflowAutomation: normalizeWorkflowAutomation(workspace.workflowAutomation, workspace.customStatuses as any[]),
   };
@@ -384,12 +403,33 @@ export async function getWorkspaceById(workspaceId: string) {
  * Slug cannot be changed after creation.
  */
 export async function updateWorkspace(workspaceId: string, input: UpdateWorkspaceInput) {
+  // Checked here rather than in the route schema so the AI update_workspace
+  // tool, which calls this directly, is held to the same rule (F-36).
+  let logo = input.logo === undefined ? undefined : input.logo?.trim() || null;
+  if (logo && !isWorkspaceLogoUrl(workspaceId, logo)) {
+    // Clients (and the AI, via get_workspace) only ever see the served
+    // address; sending that back unchanged means "keep the current logo".
+    const current = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: { id: true, logo: true } });
+    if (current && logo === publicWorkspaceLogo(current)) {
+      logo = undefined;
+    } else {
+      throw new AppError(
+        422,
+        ERROR_CODES.VALIDATION_ERROR,
+        "The workspace logo must be an image uploaded to this workspace. Links to other sites aren't allowed.",
+      );
+    }
+  }
+
   const workspace = await prisma.workspace.update({
     where: { id: workspaceId },
     data: {
       ...(input.name !== undefined && { name: input.name }),
-      ...(input.logo !== undefined && { logo: input.logo }),
+      ...(logo !== undefined && { logo }),
       ...(input.uploadPolicy !== undefined && { uploadPolicy: input.uploadPolicy }),
+      // Turning it off doesn't touch files already shared publicly — they're
+      // listed in Settings for their uploaders to tighten (F-39).
+      ...(input.allowPublicDriveLinks !== undefined && { allowPublicDriveLinks: input.allowPublicDriveLinks }),
     },
     select: {
       id: true,
@@ -400,24 +440,20 @@ export async function updateWorkspace(workspaceId: string, input: UpdateWorkspac
       customStatuses: true,
       workflowAutomation: true,
       uploadPolicy: true,
+      allowPublicDriveLinks: true,
       updatedAt: true,
     },
   });
 
   return {
     ...workspace,
+    logo: publicWorkspaceLogo(workspace),
     customStatuses: normalizeWorkspaceStatuses(workspace.customStatuses as any[]),
     workflowAutomation: normalizeWorkflowAutomation(workspace.workflowAutomation, workspace.customStatuses as any[]),
   };
 }
 
-/**
- * Delete a workspace and ALL its data (cascade).
- * This is irreversible — departments, teams, projects, issues, comments, everything is gone.
- */
-export async function deleteWorkspace(workspaceId: string) {
-  await prisma.workspace.delete({ where: { id: workspaceId } });
-}
+// Deleting a workspace is a soft delete: see workspace-lifecycle.service.ts.
 
 /**
  * Check if a slug is available.
@@ -432,6 +468,23 @@ export async function checkSlugAvailability(slug: string) {
   return { available: !existing };
 }
 
+/** Signed logo links live 5 minutes; browsers may cache the redirect for 4. */
+export const LOGO_LINK_TTL_SECONDS = 300;
+
+/**
+ * Signed, short-lived link to a workspace's uploaded logo — PUBLIC, it's shown
+ * on the sign-in and invite pages. Only ever our own upload for this
+ * workspace (F-36); anything else is treated as "no logo".
+ */
+export async function getWorkspaceLogoRedirect(workspaceId: string) {
+  const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: { logo: true } });
+  const key = workspace?.logo ? workspaceLogoKey(workspaceId, workspace.logo) : null;
+  if (!key) {
+    throw new AppError(404, ERROR_CODES.NOT_FOUND, "No logo");
+  }
+  return createPresignedGetUrl(key, LOGO_LINK_TTL_SECONDS);
+}
+
 /**
  * Look up a workspace by its subdomain slug — PUBLIC, unauthenticated.
  *
@@ -444,16 +497,17 @@ export async function checkSlugAvailability(slug: string) {
 export async function resolveWorkspaceBySlug(slug: string) {
   const workspace = await prisma.workspace.findUnique({
     where: { slug },
-    // No `id` — an anonymous, pre-login caller has no use for the internal
-    // workspace UUID, so it isn't handed out even though it isn't secret.
-    select: { name: true, slug: true, logo: true },
+    // `id` is read only to check the logo — an anonymous, pre-login caller has
+    // no use for the internal workspace UUID, so it isn't handed out.
+    select: { id: true, name: true, slug: true, logo: true },
   });
 
   if (!workspace) {
     throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "No workspace found for this address");
   }
 
-  return workspace;
+  // Public, pre-login page: only our own uploaded logo, never a third-party URL (F-36).
+  return { name: workspace.name, slug: workspace.slug, logo: publicWorkspaceLogo(workspace) };
 }
 
 /**
@@ -475,7 +529,7 @@ export async function getWorkspaceStatuses(workspaceId: string) {
 const STATUS_USAGE_PREVIEW_LIMIT = 25;
 const STATUS_USAGE_EXPORT_LIMIT = 1000;
 
-export async function getWorkspaceStatusUsage(workspaceId: string, statusKey: string, limit?: number) {
+export async function getWorkspaceStatusUsage(workspaceId: string, viewer: Viewer, statusKey: string, limit?: number) {
   const statuses = await getWorkspaceStatuses(workspaceId);
   const status = statuses.find((item) => item.key === statusKey);
 
@@ -485,12 +539,19 @@ export async function getWorkspaceStatusUsage(workspaceId: string, statusKey: st
 
   const take = Math.min(limit ?? STATUS_USAGE_PREVIEW_LIMIT, STATUS_USAGE_EXPORT_LIMIT);
 
+  // Spans every project, so it must be filtered per viewer — unfiltered this
+  // returned up to 1000 issue keys + titles + project names to a GUEST (F-06 a).
+  // Only issues this workflow governs — projects with their own override keep
+  // their issues even when they reuse the key, so counting them here would
+  // misreport what a merge or removal is about to touch (F-34).
+  const where = {
+    AND: [await workspaceWorkflowIssueScope(prisma, workspaceId), { status: statusKey }, visibleIssueWhere(viewer)],
+  };
+
   const [issueCount, issues] = await Promise.all([
-    prisma.issue.count({
-      where: { workspaceId, status: statusKey },
-    }),
+    prisma.issue.count({ where }),
     prisma.issue.findMany({
-      where: { workspaceId, status: statusKey },
+      where,
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       take: take + 1,
       select: {
@@ -572,11 +633,8 @@ export async function mergeWorkspaceStatus(workspaceId: string, sourceKey: strin
   }
 
   const updated = await prisma.$transaction(async (tx) => {
-    await tx.issue.updateMany({
-      where: { workspaceId, status: sourceKey },
-      data: { status: targetKey, completedAt: targetStatus.isFinal ? new Date() : null },
-    });
-    await tx.issueApproval.deleteMany({ where: { workspaceId, statusKey: sourceKey } });
+    // Scope resolved inside the transaction so it matches the rows written.
+    await moveIssuesToStatus(tx, await workspaceWorkflowIssueScope(tx, workspaceId), sourceKey, targetStatus);
 
     return tx.workspace.update({
       where: { id: workspaceId },
@@ -634,11 +692,13 @@ export async function updateWorkspaceStatuses(workspaceId: string, input: Update
     }
   }
 
+  // Projects with their own workflow are unaffected by removing a workspace
+  // status, so their issues neither block the removal nor get resolved (F-34).
   const removedStatusCounts =
     removedKeys.length > 0
       ? await (prisma as any).issue.groupBy({
           by: ["status"],
-          where: { workspaceId, status: { in: removedKeys } },
+          where: { AND: [await workspaceWorkflowIssueScope(prisma, workspaceId), { status: { in: removedKeys } }] },
           _count: { _all: true },
         })
       : [];
@@ -694,6 +754,8 @@ export async function updateWorkspaceStatuses(workspaceId: string, input: Update
   const nextStatusMap = new Map(nextStatuses.map((status) => [status.key, status]));
 
   const workspace = await prisma.$transaction(async (tx) => {
+    const scope = removedKeys.length > 0 ? await workspaceWorkflowIssueScope(tx, workspaceId) : { workspaceId };
+
     for (const removedKey of removedKeys) {
       const affectedCount = removedStatusCountMap.get(removedKey) ?? 0;
       if (affectedCount === 0) continue;
@@ -706,18 +768,12 @@ export async function updateWorkspaceStatuses(workspaceId: string, input: Update
           throw new AppError(422, ERROR_CODES.INVALID_WORKSPACE_STATUSES, `Destination workflow ${resolution.targetStatusKey} was not found`);
         }
 
-        await tx.issue.updateMany({
-          where: { workspaceId, status: removedKey },
-          data: {
-            status: targetStatus.key,
-            completedAt: targetStatus.isFinal ? new Date() : null,
-          },
-        });
+        await moveIssuesToStatus(tx, scope, removedKey, targetStatus);
         continue;
       }
 
       await tx.issue.deleteMany({
-        where: { workspaceId, status: removedKey },
+        where: { AND: [scope, { status: removedKey }] },
       });
     }
 

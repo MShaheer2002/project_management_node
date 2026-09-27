@@ -99,6 +99,9 @@ const envSchema = z.object({
   AI_CHAT_MODEL_FALLBACK_1: z.preprocess(emptyStringToUndefined, z.string().optional()),
   AI_CHAT_MODEL_FALLBACK_2: z.preprocess(emptyStringToUndefined, z.string().optional()),
   AI_CHAT_MODEL_FALLBACK_3: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  // Free OpenRouter models (":free") may keep or train on prompts, so they are
+  // never used as automatic fallbacks unless this is turned on (F-42).
+  AI_ALLOW_FREE_FALLBACKS: stringBoolean.default(false),
 
   // AI Billing & safety controls — monitor mode by default until plan limits are finalized
   AI_ENFORCE_BILLING: stringBoolean.default(false),

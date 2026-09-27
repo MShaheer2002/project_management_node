@@ -83,3 +83,22 @@ export interface GitHubReview {
   user: { login: string };
   body: string | null;
 }
+
+/**
+ * Does this integration actually own the repo the event came from?
+ *
+ * The webhook secret is a single global `GITHUB_WEBHOOK_SECRET` installed on
+ * every tenant's repos, so a valid signature proves only "some Trussen customer
+ * sent this" — not which one. Without this check a PR titled `VICTIM-12` in the
+ * attacker's own repo resolves against every workspace, and issue prefixes are
+ * globally unique, so it lands on the victim's issues (audit F-04).
+ *
+ * Matching is case-insensitive: GitHub treats owner/name that way.
+ */
+export function integrationCoversRepo(providerMeta: unknown, repoFullName: string): boolean {
+  if (!repoFullName) return false;
+  const repos = (providerMeta as { repos?: unknown } | null)?.repos;
+  if (!Array.isArray(repos)) return false;
+  const target = repoFullName.toLowerCase();
+  return repos.some((r) => typeof r === "string" && r.toLowerCase() === target);
+}
