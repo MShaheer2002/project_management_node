@@ -15,6 +15,7 @@ import { visibleIssueWhere, type Viewer } from "../../shared/utils/visibility.js
 import { prisma } from "../../shared/utils/prisma.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { isPlaceholderEmail } from "../../shared/utils/crypto.js";
 import {
   normalizeWorkflowAutomation,
   normalizeWorkspaceStatuses,
@@ -231,6 +232,9 @@ export async function updateInviteDomainPolicy(
     });
     if (!owner) {
       throw new AppError(404, ERROR_CODES.WORKSPACE_NOT_FOUND, "Workspace owner not found");
+    }
+    if (isPlaceholderEmail(owner.user.email)) {
+      throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "The owner needs a verified email before invites can be limited to the company domain");
     }
     allowedEmailDomains = [domainFromEmail(owner.user.email)];
   } else if (input.inviteDomainPolicy === "CUSTOM") {

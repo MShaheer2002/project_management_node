@@ -13,7 +13,22 @@ import { prisma } from "../../shared/utils/prisma.js";
 import { releaseWorkspaceDrivesOf } from "../drive/drive.service.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
+import { normalizeEmail } from "../../shared/utils/crypto.js";
 import type { ClerkUserPayload } from "./auth.schemas.js";
+
+/**
+ * The email we store, which invitations and everything else trust. Only a
+ * verified address counts: the primary one if verified, else any verified one
+ * (N-02). The first address could be one the person never proved they own.
+ * With none verified, a placeholder that matches no invitation is stored
+ * (email is unique, so it also can't take anyone's address); the next
+ * user.updated after verifying replaces it.
+ */
+export function verifiedEmailOf(data: ClerkUserPayload) {
+  const verified = data.email_addresses.filter((e) => e.verification?.status === "verified");
+  const email = verified.find((e) => e.id === data.primary_email_address_id) ?? verified[0];
+  return email ? normalizeEmail(email.email_address) : `${data.id}@unverified.invalid`;
+}
 
 /**
  * Create or update a user from Clerk webhook data.
@@ -21,7 +36,7 @@ import type { ClerkUserPayload } from "./auth.schemas.js";
  * Uses upsert for idempotency — if webhook fires twice, we don't fail.
  */
 export async function createUser(data: ClerkUserPayload) {
-  const primaryEmail = data.email_addresses[0]!.email_address;
+  const primaryEmail = verifiedEmailOf(data);
   const name = [data.first_name, data.last_name].filter(Boolean).join(" ") || "User";
 
   return prisma.user.upsert({
@@ -46,7 +61,7 @@ export async function createUser(data: ClerkUserPayload) {
  * Only updates fields that Clerk manages (name, email, avatar).
  */
 export async function updateUser(data: ClerkUserPayload) {
-  const primaryEmail = data.email_addresses[0]!.email_address;
+  const primaryEmail = verifiedEmailOf(data);
   const name = [data.first_name, data.last_name].filter(Boolean).join(" ") || "User";
 
   return prisma.user.upsert({
@@ -91,9 +106,10 @@ export async function deleteUser(clerkUserId: string) {
   if (!user || user.deletedAt) return;
 
   await prisma.$transaction([
+    // Frees the email (it's unique) so the person can sign up again with it.
     prisma.user.update({
       where: { id: clerkUserId },
-      data: { deletedAt: new Date() },
+      data: { deletedAt: new Date(), email: `${clerkUserId}@deleted.invalid` },
     }),
     // Deleted, as removeMember does: ApiKey has no revoked state to set, and
     // AI connections/sessions pointing at a key are kept (their FK is SET NULL).

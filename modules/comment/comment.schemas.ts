@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { webLinkSchema } from "../../shared/utils/web-link.js";
 
 const attachmentRefSchema = z.object({
   key: z.string().min(1),
@@ -6,7 +7,7 @@ const attachmentRefSchema = z.object({
   contentType: z.string().min(1),
   size: z.number().int().positive(),
   kind: z.enum(["attachment", "video"]),
-  assetUrl: z.string().url().nullable().optional(),
+  assetUrl: webLinkSchema.nullable().optional(),
 });
 
 export const issueCommentsParamsSchema = {

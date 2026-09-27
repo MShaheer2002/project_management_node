@@ -3,6 +3,7 @@ import { verifyToken } from "@clerk/express";
 
 import { env } from "../config/env.js";
 import { prisma } from "../shared/utils/prisma.js";
+import { isAllowedTokenParty } from "../shared/utils/allowed-origin.js";
 
 export type SocketAuthContext = {
   userId: string;
@@ -38,6 +39,10 @@ export async function socketAuth(socket: Socket, next: NextFn) {
     });
 
     const userId = String((verified as any)?.sub ?? "");
+    if (!isAllowedTokenParty((verified as any)?.azp, env.NODE_ENV)) {
+      console.warn("[socket] auth rejected: token made for another site");
+      return next(new Error("UNAUTHORIZED"));
+    }
     if (!userId) {
       console.warn("[socket] auth rejected: invalid token subject");
       return next(new Error("UNAUTHORIZED"));

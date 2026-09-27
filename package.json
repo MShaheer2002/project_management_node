@@ -17,7 +17,8 @@
     "worker": "node dist/workers/ai-background.worker.js",
     "worker:dev": "tsx workers/ai-background.worker.ts",
     "backfill:embeddings": "tsx workers/embedding-backfill.ts",
-    "backfill:integration-tokens": "tsx workers/encrypt-integration-tokens.ts"
+    "backfill:integration-tokens": "tsx workers/encrypt-integration-tokens.ts",
+    "backfill:user-emails": "tsx workers/resync-user-emails.ts"
   },
   "repository": {
     "type": "git",

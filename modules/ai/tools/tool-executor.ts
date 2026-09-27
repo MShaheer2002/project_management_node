@@ -44,7 +44,8 @@ import {
   updateIssueStatus,
 } from "../../issue/issue.service.js";
 import type { CreateIssueInput } from "../../issue/issue.schemas.js";
-import { INTEGRATION_PROVIDERS, isWebLink } from "../../issue/issue.schemas.js";
+import { INTEGRATION_PROVIDERS } from "../../issue/issue.schemas.js";
+import { isWebLink } from "../../../shared/utils/web-link.js";
 import {
   createSubtask,
   reorderSubtasks,

@@ -1,4 +1,5 @@
 import { env } from "../../config/env.js";
+import { isWebLink } from "../../shared/utils/web-link.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { incrementStorageUsage } from "../billing/billing.service.js";
@@ -70,6 +71,8 @@ type Db = { driveUpload: typeof prisma.driveUpload };
  * can't point anywhere else.
  */
 export async function resolveAttachmentRefs<T extends AttachmentInput>(db: Db, workspaceId: string, attachments: T[]): Promise<T[]> {
+  // A client supplied link on an upload must be a web link (N-06).
+  attachments = attachments.map((a) => (a.assetUrl && !isWebLink(a.assetUrl) ? { ...a, assetUrl: null } : a));
   const stored = attachments.filter((a) => isStoredAttachment(workspaceId, a.key));
   validateAttachmentRefs(workspaceId, stored);
 

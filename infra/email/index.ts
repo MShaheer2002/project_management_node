@@ -12,6 +12,7 @@ import { Resend } from "resend";
 import { env } from "../../config/env.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import { AppError } from "../../shared/utils/api-error.js";
+import { isPlaceholderEmail } from "../../shared/utils/crypto.js";
 
 const resend = new Resend(env.RESEND_API_KEY);
 
@@ -26,6 +27,10 @@ interface SendEmailParams {
  * In development with placeholder key, logs to console instead of sending.
  */
 export async function sendEmail({ to, subject, html }: SendEmailParams) {
+  // Unverified or deleted accounts have a placeholder address that can't
+  // receive mail (N-02). Sending would only bounce.
+  if (isPlaceholderEmail(to)) return;
+
   // If using placeholder key, log instead of sending (development convenience)
   if (env.RESEND_API_KEY === "re_placeholder") {
     console.log(`📧 [DEV] Email to: ${to}`);

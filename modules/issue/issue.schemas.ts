@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { webLinkSchema } from "../../shared/utils/web-link.js";
 
 const issueStatusSchema = z.string().trim().min(1).max(50);
 const issuePrioritySchema = z.enum(["low", "medium", "high", "urgent"]);
@@ -12,21 +13,13 @@ const attachmentRefSchema = z.object({
   contentType: z.string().min(1),
   size: z.number().int().positive(),
   kind: z.enum(["attachment", "video"]),
-  assetUrl: z.string().url().nullable().optional(),
+  assetUrl: webLinkSchema.nullable().optional(),
 });
 
 export const INTEGRATION_PROVIDERS = ["github", "jira", "slack", "notion", "figma", "custom"] as const;
 export const MAX_INTEGRATION_REFS = 25;
 
-/** Only web links, so a saved link can never run code when clicked (F-46). */
-export function isWebLink(value: string) {
-  try {
-    return ["http:", "https:"].includes(new URL(value).protocol);
-  } catch {
-    return false;
-  }
-}
-const linkUrlSchema = z.string().trim().max(500).refine(isWebLink, "Link must start with http or https");
+const linkUrlSchema = webLinkSchema.max(500);
 
 const integrationRefInputSchema = z.object({
   id: z.string().trim().min(1).max(100),
