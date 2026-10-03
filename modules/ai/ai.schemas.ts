@@ -62,6 +62,16 @@ export const assistSchema = {
 };
 
 /** GET/DELETE /ai/conversations/:id — Conversation-scoped operations */
+/** POST /ai/assist/answers/:id/feedback */
+export const assistFeedbackSchema = {
+  params: z.object({ id: z.string().uuid("Invalid answer id") }),
+  body: z.object({
+    rating: z.enum(["up", "down"]),
+    reason: z.enum(["wrong", "unclear", "not_helpful", "other"]).optional(),
+    comment: z.string().trim().max(500, "Keep it under 500 characters").optional(),
+  }),
+};
+
 export const conversationParamsSchema = {
   params: z.object({
     id: z.string().uuid("Conversation ID must be a valid UUID"),
@@ -199,6 +209,15 @@ export const aiAssistResponseSchema = z.object({
     label: z.string().min(1).max(80),
   }).optional(),
   facts: z.array(aiAssistFactSchema).max(6).default([]),
+  // Set by the server, never taken from the model:
+  /** Help articles the answer is based on ("Learn more"). */
+  sources: z.array(z.object({ articleId: z.string(), title: z.string() })).max(3).optional(),
+  /** False when the assistant couldn't find a basis for an answer. */
+  grounded: z.boolean().optional(),
+  /** Offered when the assistant couldn't help. */
+  support: z.object({ email: z.string() }).optional(),
+  /** Id for thumbs up/down (POST /ai/assist/answers/:id/feedback). */
+  answerId: z.string().optional(),
 });
 
 // ─── Inferred Types ─────────────────────────────────────────────────────────

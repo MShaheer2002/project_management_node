@@ -9,6 +9,11 @@ import { prisma } from "../../shared/utils/prisma.js";
 // metered like the rest (F-23).
 export type AiFeature = "chat" | "issue_generation" | "assist" | "draft_suggestions";
 
+// The help assistant only explains the app and reads nothing beyond the user's
+// own assigned-issue count, so every plan gets it. Its use still counts toward
+// the plan's daily limits. Everything else is Premium.
+const ALL_PLAN_FEATURES: ReadonlySet<AiFeature> = new Set(["assist"]);
+
 type LimitConfig = {
   requestLimit: number | null;
   tokenLimit: number | null;
@@ -160,7 +165,7 @@ export async function assertAiAccess(input: {
     return access;
   }
 
-  if (!access.planAllowsAi) {
+  if (!access.planAllowsAi && !ALL_PLAN_FEATURES.has(input.feature)) {
     throw new AppError(
       403,
       ERROR_CODES.AI_PLAN_UPGRADE_REQUIRED,
@@ -196,4 +201,14 @@ export async function assertAiAccess(input: {
   }
 
   return access;
+}
+
+/**
+ * What the app should show to any member: the help assistant always, and
+ * Trussen AI (chat, issue generation, AI suggestions) only when the workspace
+ * may use it. Follows the same rule as assertAiAccess.
+ */
+export async function getAiAvailability(workspaceId: string) {
+  const policy = await getAiWorkspacePolicy(workspaceId);
+  return { assistant: true, trussenAi: policy.effectiveAccess };
 }

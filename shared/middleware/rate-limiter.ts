@@ -114,6 +114,29 @@ export const aiAssistWorkspaceRateLimiter = rateLimit({
 });
 
 /**
+ * Help search limiter — every search embeds the query once (a provider call),
+ * so one user can't run up cost by typing fast. The page debounces, so 60/min
+ * is far above normal use. Must run after authenticate + requireWorkspace.
+ */
+export const helpSearchUserRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  keyGenerator: (req) => {
+    const workspaceId = req.workspace?.id;
+    const userId = req.user?.id;
+    return workspaceId && userId ? `help-search:${workspaceId}:${userId}` : "help-search:missing-context";
+  },
+  handler: (_req, res) => {
+    res.status(429).json({
+      success: false,
+      error: { code: ERROR_CODES.RATE_LIMITED, message: "Too many searches. Please wait a moment." },
+    });
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+/**
  * Invitation limiter — bounds how many invite emails one workspace can send.
  *
  * Invites go to arbitrary external addresses from Trussen's authenticated

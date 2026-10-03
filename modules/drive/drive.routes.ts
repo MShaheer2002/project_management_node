@@ -28,10 +28,10 @@ import { strictRateLimiter } from "../../shared/middleware/rate-limiter.js";
 import { AppError } from "../../shared/utils/api-error.js";
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
 import * as controller from "./drive.controller.js";
+import { DRIVE_UPLOAD_MAX_BYTES } from "./drive.limits.js";
 
 const router = Router();
 
-const DRIVE_UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
 
 // Written to a temp file and streamed to Google from there — memoryStorage
 // held every in-flight upload in RAM, so parallel 50 MB uploads could take the
