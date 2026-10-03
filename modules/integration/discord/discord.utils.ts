@@ -55,13 +55,14 @@ export function escapeDiscordText(value: string): string {
 }
 
 export function buildIssueEmbed(params: {
+  appBase: string;
   title: string;
   issueId: string;
   issueTitle: string;
   color: number;
   fields: Array<{ name: string; value: string }>;
 }): DiscordEmbed {
-  const issueUrl = `${env.FRONTEND_URL}/issues/${params.issueId}`;
+  const issueUrl = `${params.appBase}/issues/${params.issueId}`;
   // Truncate first, then escape, so a backslash is never left dangling at the
   // cut point (which would escape the character after it).
   const truncated =

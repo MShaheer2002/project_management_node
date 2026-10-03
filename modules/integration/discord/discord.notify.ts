@@ -13,7 +13,7 @@ import {
   DISCORD_EMBED_COLORS,
   type DiscordEmbed,
 } from "./discord.utils.js";
-import { env } from "../../../config/env.js";
+import { workspaceAppBase } from "../../../shared/utils/workspace-url.js";
 
 // ─── Event Types ────────────────────────────────────────────────────────────
 
@@ -77,31 +77,33 @@ export async function handleEvent(workspaceId: string, event: IntegrationEvent):
   if (!integration) return;
 
   const settings = await getSettings(integration.id);
+  // Links open in this workspace's own app, not whichever one the browser used last.
+  const appBase = await workspaceAppBase(workspaceId);
 
   switch (event.type) {
     case "issue.created":
-      await notifyIssueCreated(integration.id, settings, event.payload);
+      await notifyIssueCreated(integration.id, appBase, settings, event.payload);
       break;
     case "issue.completed":
-      await notifyIssueCompleted(integration.id, settings, event.payload);
+      await notifyIssueCompleted(integration.id, appBase, settings, event.payload);
       break;
     case "issue.assigned":
-      await notifyIssueAssigned(integration.id, settings, event.payload);
+      await notifyIssueAssigned(integration.id, appBase, settings, event.payload);
       break;
     case "issue.status_changed":
       if (!settings.notifyOnStatusChange) return;
       // Status change uses same embed style as assignment
-      await notifyStatusChanged(integration.id, settings, event.payload);
+      await notifyStatusChanged(integration.id, appBase, settings, event.payload);
       break;
     case "cycle.started":
-      await notifyCycleEvent(integration.id, settings, "started", event.payload);
+      await notifyCycleEvent(integration.id, appBase, settings, "started", event.payload);
       break;
     case "cycle.completed":
-      await notifyCycleEvent(integration.id, settings, "completed", event.payload);
+      await notifyCycleEvent(integration.id, appBase, settings, "completed", event.payload);
       break;
     case "project.completed":
       if (!settings.notifyOnProjectCompleted) return;
-      await notifyProjectCompleted(integration.id, settings, event.payload);
+      await notifyProjectCompleted(integration.id, appBase, settings, event.payload);
       break;
   }
 }
@@ -110,6 +112,7 @@ export async function handleEvent(workspaceId: string, event: IntegrationEvent):
 
 async function notifyIssueCreated(
   integrationId: string,
+  appBase: string,
   settings: Record<string, boolean>,
   payload: Record<string, any>,
 ): Promise<void> {
@@ -129,6 +132,7 @@ async function notifyIssueCreated(
   const emoji = priorityLower === "urgent" ? "\ud83d\udd34" : "\ud83d\udfe0";
 
   const embed = buildIssueEmbed({
+    appBase,
     title: `${emoji} ${payload.priority} Issue Created`,
     issueId: payload.id,
     issueTitle: payload.title,
@@ -146,6 +150,7 @@ async function notifyIssueCreated(
 
 async function notifyIssueCompleted(
   integrationId: string,
+  appBase: string,
   settings: Record<string, boolean>,
   payload: Record<string, any>,
 ): Promise<void> {
@@ -158,6 +163,7 @@ async function notifyIssueCompleted(
   if (urls.length === 0) return;
 
   const embed = buildIssueEmbed({
+    appBase,
     title: "\u2705 Issue Completed",
     issueId: payload.id,
     issueTitle: payload.title,
@@ -173,6 +179,7 @@ async function notifyIssueCompleted(
 
 async function notifyIssueAssigned(
   integrationId: string,
+  appBase: string,
   settings: Record<string, boolean>,
   payload: Record<string, any>,
 ): Promise<void> {
@@ -190,6 +197,7 @@ async function notifyIssueAssigned(
     DISCORD_EMBED_COLORS.info;
 
   const embed = buildIssueEmbed({
+    appBase,
     title: "\ud83d\udc64 Issue Assigned",
     issueId: payload.id,
     issueTitle: payload.title,
@@ -206,6 +214,7 @@ async function notifyIssueAssigned(
 
 async function notifyStatusChanged(
   integrationId: string,
+  appBase: string,
   _settings: Record<string, boolean>,
   payload: Record<string, any>,
 ): Promise<void> {
@@ -217,6 +226,7 @@ async function notifyStatusChanged(
   if (urls.length === 0) return;
 
   const embed = buildIssueEmbed({
+    appBase,
     title: "\ud83d\udd04 Status Changed",
     issueId: payload.id,
     issueTitle: payload.title,
@@ -233,6 +243,7 @@ async function notifyStatusChanged(
 
 async function notifyCycleEvent(
   integrationId: string,
+  appBase: string,
   settings: Record<string, boolean>,
   type: "started" | "completed",
   payload: Record<string, any>,
@@ -275,6 +286,7 @@ async function notifyCycleEvent(
 
 async function notifyProjectCompleted(
   integrationId: string,
+  appBase: string,
   _settings: Record<string, boolean>,
   payload: Record<string, any>,
 ): Promise<void> {
@@ -294,7 +306,7 @@ async function notifyProjectCompleted(
     ],
     footer: { text: "Trussen" },
     timestamp: new Date().toISOString(),
-    url: `${env.FRONTEND_URL}/projects/${payload.id}`,
+    url: `${appBase}/projects/${payload.id}`,
   };
 
   await Promise.all(urls.map((url) => discordPost(url, [embed])));
