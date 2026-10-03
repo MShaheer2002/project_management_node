@@ -291,14 +291,14 @@ export const revokeInvitation: RequestHandler = async (req, res, next) => {
 };
 
 /**
- * GET /invitations/resolve?t=<rawToken>
+ * POST /invitations/resolve { token }
  * PUBLIC — no auth required.
  * Returns invite metadata (workspace name, role, invited email) so the
  * frontend can show "You've been invited to Acme Corp" before sign-in.
  */
 export const resolveInvitation: RequestHandler = async (req, res, next) => {
   try {
-    const result = await invitationService.resolveInvitation(req.query.t as string);
+    const result = await invitationService.resolveInvitation(req.body.token);
     sendSuccess(res, 200, result);
   } catch (error) {
     next(error);

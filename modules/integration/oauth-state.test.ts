@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createOAuthState, verifyOAuthState } from "./oauth-state.js";
+import { createAiSetupTicket, createOAuthState, isValidAiSetupTicket, verifyOAuthState } from "./oauth-state.js";
 
 const CODE = "GITHUB_OAUTH_FAILED";
 const decode = (state: string) => JSON.parse(Buffer.from(state, "base64url").toString());
@@ -36,4 +36,22 @@ test("an expired state is rejected", () => {
   } finally {
     Date.now = original;
   }
+});
+
+test("an AI setup ticket only works for the user and client it was issued to (FE-N-03)", () => {
+  const ticket = createAiSetupTicket("u-1", "client-a");
+  assert.equal(isValidAiSetupTicket(ticket, "u-1", "client-a"), true);
+  assert.equal(isValidAiSetupTicket(ticket, "u-2", "client-a"), false);
+  assert.equal(isValidAiSetupTicket(ticket, "u-1", "client-attacker"), false);
+
+  const { payload, sig } = decode(ticket);
+  const forged = encode({ payload: payload.replace("client-a", "client-attacker"), sig });
+  assert.equal(isValidAiSetupTicket(forged, "u-1", "client-attacker"), false);
+
+  const expiredPayload = JSON.stringify({ ...JSON.parse(payload), exp: Date.now() - 1 });
+  assert.equal(isValidAiSetupTicket(encode({ payload: expiredPayload, sig }), "u-1", "client-a"), false);
+
+  // An integration state can't stand in for a ticket, and junk never throws.
+  assert.equal(isValidAiSetupTicket(createOAuthState("ws-1", "u-1"), "u-1", "client-a"), false);
+  assert.equal(isValidAiSetupTicket("not-a-ticket", "u-1", "client-a"), false);
 });

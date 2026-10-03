@@ -5,7 +5,7 @@
  * because they are accessed by invitees who may not be workspace members yet.
  *
  * Routes:
- *   GET  /invitations/resolve?t=<token>  — Public. Validate token, return invite metadata.
+ *   POST /invitations/resolve            — Public. Validate token, return invite metadata.
  *   POST /invitations/accept             — Authenticated. Accept invite (email-bound).
  */
 
@@ -23,7 +23,8 @@ const router = Router();
 
 // Resolve invite — PUBLIC (no auth), rate limited to prevent brute-force
 // Returns: { workspaceName, role, invitedEmail } so the UI can show context before sign-in
-router.get(
+// Token in body (not URL) so it stays out of logs and proxies (H-FE-09)
+router.post(
   "/resolve",
   strictRateLimiter,
   validate(resolveInvitationSchema),

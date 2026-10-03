@@ -14,6 +14,7 @@ import {
 } from "./ai-connection.catalog.js";
 import type { AiConnectionClientInput, CreateAiConnectionInput } from "./ai-connection.schemas.js";
 import { ADMIN_SCOPE, DEFAULT_OAUTH_SCOPES } from "./ai-connection.scopes.js";
+import { isValidAiSetupTicket } from "../integration/oauth-state.js";
 import {
   AiConnectionAuthType,
   AiConnectionClient,
@@ -1011,11 +1012,22 @@ export async function completeOAuthSetup(
   userRole: WorkspaceRole,
   input: {
     clientId: string;
+    ticket: string;
     name: string;
     primaryClient?: AiConnectionClientInput;
     scopes: string[];
   },
 ) {
+  // Only a link the MCP server issued to this user for this client may bind
+  // it, so a crafted /connect-ai?clientId=<attacker app> does nothing (FE-N-03).
+  if (!isValidAiSetupTicket(input.ticket, userId, input.clientId)) {
+    throw new AppError(
+      400,
+      ERROR_CODES.AI_CONNECTION_SETUP_LINK_INVALID,
+      "This setup link has expired. Connect again from your AI app.",
+    );
+  }
+
   const primaryClient = input.primaryClient ?? "generic_mcp";
   const isAdmin = userRole === "OWNER" || userRole === "ADMIN";
 
