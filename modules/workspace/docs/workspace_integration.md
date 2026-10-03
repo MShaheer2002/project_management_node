@@ -102,7 +102,7 @@ Routes that already have the workspace ID in the URL path (like `/workspaces/:wo
 - `POST /workspaces` — creating a workspace (none exists yet)
 - `GET /workspaces` — listing workspaces (user might have zero)
 - `GET /workspaces/check-slug/:slug` — availability check during onboarding
-- `GET /invitations/resolve?t=<token>` — public, no auth, no workspace
+- `POST /invitations/resolve` (body `{ token }`) — public, no auth, no workspace
 - `POST /invitations/accept` — authenticated but no workspace context (user is joining one)
 
 ---
@@ -306,7 +306,7 @@ The email shows: "**John Doe** invited you to join **Acme Corp** as a **Member**
 
 When invitee clicks the link, the frontend `/invite` page:
 1. Reads `token` from the URL query string
-2. Calls `GET /invitations/resolve?t=<token>` (public, no auth needed)
+2. Calls `POST /invitations/resolve` (body `{ token }`) (public, no auth needed)
 3. Receives: `{ workspaceName, workspaceLogo, role, teamName, departmentName, invitedEmail }`
 4. Displays the invitation context, for example:
    - "You've been invited to **Acme Corp**"
@@ -385,7 +385,7 @@ Admins can view all invitations (pending, accepted, expired, revoked) via `GET /
 ```
 `teamId` is required — every invitee must be assigned to a team. `departmentId` is optional.
 
-**`GET /invitations/resolve?t=<token>` (resolve invite) — response:**
+**`POST /invitations/resolve` (body `{ token }`) (resolve invite) — response:**
 ```
 { workspaceId, workspaceName, workspaceSlug, workspaceLogo, role, teamName, departmentName, invitedEmail }
 ```
@@ -404,7 +404,7 @@ Creates WorkspaceMembership + TeamMembership + DepartmentMembership (if applicab
 | `POST` | `/workspaces` | Create workspace + default team (onboarding) |
 | `GET` | `/workspaces` | List user's workspaces (determines onboarding vs dashboard) |
 | `GET` | `/workspaces/check-slug/:slug` | Check slug availability (onboarding form) |
-| `GET` | `/invitations/resolve?t=<token>` | Validate invite token (public, no auth) |
+| `POST` | `/invitations/resolve` (body `{ token }`) | Validate invite token (public, no auth) |
 | `POST` | `/invitations/accept` | Accept invite — creates workspace + team + dept memberships |
 
 ### Workspace Context from URL Param

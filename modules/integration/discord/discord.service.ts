@@ -155,6 +155,14 @@ export async function connectDiscord(
 
 // ─── Webhook CRUD ───────────────────────────────────────────────────────────
 
+/**
+ * A webhook URL is a credential: anyone holding it can post to the channel.
+ * Responses carry only a masked id; the full URL stays server side (H-FE-08).
+ */
+function toPublicWebhook<T extends { url: string }>(webhook: T): T {
+  return { ...webhook, url: maskWebhookUrl(webhook.url) };
+}
+
 /** Add a new webhook routing row. */
 export async function addWebhook(
   workspaceId: string,
@@ -175,7 +183,7 @@ export async function addWebhook(
     },
   });
 
-  return webhook;
+  return toPublicWebhook(webhook);
 }
 
 /** Remove a webhook routing row. */
@@ -198,10 +206,11 @@ export async function removeWebhook(workspaceId: string, webhookDbId: string) {
 
 /** List all webhook rows for this integration. */
 export async function getWebhooks(integrationId: string) {
-  return prisma.integrationWebhook.findMany({
+  const webhooks = await prisma.integrationWebhook.findMany({
     where: { integrationId },
     orderBy: { id: "asc" },
   });
+  return webhooks.map(toPublicWebhook);
 }
 
 // ─── Webhook Resolution ────────────────────────────────────────────────────

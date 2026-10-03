@@ -5,7 +5,7 @@
  * (assignment, mention, due date approaching).
  */
 
-import { env } from "../../../config/env.js";
+import { workspaceAppBase } from "../../../shared/utils/workspace-url.js";
 import {
   findConnectedIntegration,
   getSettings,
@@ -93,7 +93,7 @@ export async function dmIssueAssigned(
   const settings = await getSettings(integration.id);
   if (!settings.dmOnAssignment) return;
 
-  const issueUrl = `${env.FRONTEND_URL}/issues/${issue.id}`;
+  const issueUrl = `${await workspaceAppBase(workspaceId)}/issues/${issue.id}`;
   await slackDm(integration.accessToken, assigneeEmail, {
     text: `:pushpin: You were assigned <${issueUrl}|${issue.id}> "${issue.title}" by ${issue.assignedByName} (${issue.priority})`,
   });
@@ -118,7 +118,7 @@ export async function dmMentioned(
   const settings = await getSettings(integration.id);
   if (!settings.dmOnMention) return;
 
-  const issueUrl = `${env.FRONTEND_URL}/issues/${mention.issueId}`;
+  const issueUrl = `${await workspaceAppBase(workspaceId)}/issues/${mention.issueId}`;
   await slackDm(integration.accessToken, mentionedEmail, {
     text: `:speech_balloon: ${mention.mentionedByName} mentioned you in <${issueUrl}|${mention.issueId}>:\n> ${mention.commentExcerpt}`,
   });
@@ -143,7 +143,7 @@ export async function dmDueDateApproaching(
   const settings = await getSettings(integration.id);
   if (!settings.dmOnDueDateApproaching) return;
 
-  const issueUrl = `${env.FRONTEND_URL}/issues/${issue.id}`;
+  const issueUrl = `${await workspaceAppBase(workspaceId)}/issues/${issue.id}`;
   await slackDm(integration.accessToken, assigneeEmail, {
     text: `:alarm_clock: <${issueUrl}|${issue.id}> "${issue.title}" is due ${issue.dueDate} \u2014 status: ${issue.status}`,
   });

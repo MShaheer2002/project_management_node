@@ -477,6 +477,7 @@ function buildIssueWhere(workspaceId: string, workspaceRole: WorkspaceRole, user
   return {
     workspaceId,
     ...(query.status ? { status: query.status } : {}),
+    ...(query.completed === "true" ? { completedAt: { not: null } } : {}),
     ...(query.priority ? { priority: priorityToDb[query.priority] ?? "MEDIUM" } : {}),
     ...(query.type ? { type: typeToDb[query.type] ?? "TASK" } : {}),
     ...(query.assigneeId ? { assigneeId: query.assigneeId } : {}),

@@ -207,10 +207,10 @@ export const listWorkspaceMembersSchema = {
   }),
 };
 
-/** GET /invitations/resolve?t=<token> — Resolve an invite token (public) */
+/** POST /invitations/resolve — Resolve an invite token (public) */
 export const resolveInvitationSchema = {
-  query: z.object({
-    t: z.string().min(1, "Token is required"),
+  body: z.object({
+    token: z.string().min(1, "Token is required"),
   }),
 };
 

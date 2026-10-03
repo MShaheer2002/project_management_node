@@ -34,9 +34,10 @@ export const callback: RequestHandler = async (req, res, next) => {
     await slackService.handleSlackCallback(code as string, state as string);
     res.redirect(await oauthReturnUrl(oauthStateWorkspaceId(state), `/integrations?provider=slack&status=connected`));
   } catch (error) {
-    const message = error instanceof AppError ? error.message : "Connection failed";
+    // A code, never text: the page maps it to its own words, so a crafted link can't put a sentence in our UI (FE-06).
+    const code = error instanceof AppError ? error.code : "CONNECTION_FAILED";
     // Back to the workspace the flow started in — the bare domain may open a different one.
-    res.redirect(await oauthReturnUrl(oauthStateWorkspaceId(req.query.state), `/integrations?provider=slack&status=error&message=${encodeURIComponent(message)}`));
+    res.redirect(await oauthReturnUrl(oauthStateWorkspaceId(req.query.state), `/integrations?provider=slack&status=error&code=${encodeURIComponent(code)}`));
   }
 };
 

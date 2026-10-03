@@ -57,6 +57,7 @@ export const aiConnectionSessionListQuerySchema = {
 export const completeOAuthSetupSchema = {
   body: z.object({
     clientId: z.string().trim().min(1, "Missing OAuth client ID"),
+    ticket: z.string().trim().min(1, "Missing setup ticket").max(2000),
     name: z
       .string()
       .trim()
