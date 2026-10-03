@@ -109,3 +109,40 @@ export function verifyOAuthState(
 
   return { workspaceId, userId, mode: mode ?? null };
 }
+
+const AI_SETUP_TICKET_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Ticket for the /connect-ai setup link (FE-N-03). The MCP server only issues
+ * one after Clerk verified an OAuth token for this user and client, so a
+ * crafted link carrying someone else's clientId can't bind a workspace to it.
+ * `purpose` keeps it from being swapped with an integration state.
+ */
+export function createAiSetupTicket(userId: string, clientId: string): string {
+  const payload = JSON.stringify({
+    purpose: "ai-setup",
+    userId,
+    clientId,
+    exp: Date.now() + AI_SETUP_TICKET_TTL_MS,
+  });
+  return Buffer.from(JSON.stringify({ payload, sig: sign(payload) })).toString("base64url");
+}
+
+export function isValidAiSetupTicket(ticket: string, userId: string, clientId: string): boolean {
+  try {
+    const { payload, sig } = JSON.parse(Buffer.from(ticket, "base64url").toString());
+    if (typeof payload !== "string" || typeof sig !== "string") return false;
+    const expected = sign(payload);
+    if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return false;
+    const data = JSON.parse(payload);
+    return (
+      data.purpose === "ai-setup" &&
+      data.userId === userId &&
+      data.clientId === clientId &&
+      typeof data.exp === "number" &&
+      Date.now() < data.exp
+    );
+  } catch {
+    return false;
+  }
+}

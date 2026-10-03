@@ -14,6 +14,7 @@ import type { AiConnectionClientInput } from "../modules/ai-connection/ai-connec
 import { AiConnectionStatus } from "../app/generated/prisma/client.js";
 import { AppError } from "../shared/utils/api-error.js";
 import { ERROR_CODES } from "../shared/errors/error-codes.js";
+import { createAiSetupTicket } from "../modules/integration/oauth-state.js";
 
 export type McpSessionContext = {
   workspaceId: string;
@@ -188,6 +189,8 @@ export async function authenticateMcpOAuthToken(req: Request, token: string): Pr
   if (!connection) {
     const setupUrl = new URL("/connect-ai", env.FRONTEND_URL);
     setupUrl.searchParams.set("clientId", clientId);
+    // Proves this link came from us for this user and client (FE-N-03).
+    setupUrl.searchParams.set("ticket", createAiSetupTicket(clerkUserId, clientId));
 
     return {
       workspaceId: "",

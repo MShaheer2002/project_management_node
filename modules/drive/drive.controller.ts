@@ -72,16 +72,14 @@ export const callback: RequestHandler = async (req, res) => {
   try {
     // Case 1: User denied consent — Google sends ?error=access_denied
     if (query.error) {
-      const message = query.error === "access_denied"
-        ? "You denied access to Google Drive"
-        : (query.error_description as string) || query.error;
-      await back(`status=error&message=${encodeURIComponent(message as string)}`);
+      // Codes, never text: the page maps them to its own words (FE-06).
+      await back(`status=error&code=${query.error === "access_denied" ? "ACCESS_DENIED" : "CONNECTION_FAILED"}`);
       return;
     }
 
     // Case 2: Missing code or state (should not happen, but guard)
     if (!query.code || !query.state) {
-      await back(`status=error&message=${encodeURIComponent("Missing authorization parameters")}`);
+      await back("status=error&code=CONNECTION_FAILED");
       return;
     }
 
@@ -89,8 +87,8 @@ export const callback: RequestHandler = async (req, res) => {
     await driveService.handleCallback(query.code as string, query.state as string);
     await back("status=connected");
   } catch (error) {
-    const message = error instanceof AppError ? error.message : "Connection failed";
-    await back(`status=error&message=${encodeURIComponent(message)}`);
+    const code = error instanceof AppError ? error.code : "CONNECTION_FAILED";
+    await back(`status=error&code=${encodeURIComponent(code)}`);
   }
 };
 

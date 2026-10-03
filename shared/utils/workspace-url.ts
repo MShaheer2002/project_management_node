@@ -24,3 +24,11 @@ export async function oauthReturnUrl(workspaceId: string | null, path: string) {
     : null;
   return workspace ? workspaceAppUrl(workspace.slug, path) : new URL(path, env.FRONTEND_URL).toString();
 }
+
+/**
+ * A workspace's own app address with no trailing slash, e.g. https://acme.trussen.app,
+ * for links in Slack and Discord messages. Falls back to the bare app.
+ */
+export async function workspaceAppBase(workspaceId: string) {
+  return (await oauthReturnUrl(workspaceId, "/")).replace(/\/$/, "");
+}

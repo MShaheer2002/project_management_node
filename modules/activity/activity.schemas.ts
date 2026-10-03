@@ -1,6 +1,6 @@
 import { z } from "zod/v4";
 
-const scopeSchema = z.enum(["workspace", "project", "team", "issue", "cycle"]);
+const scopeSchema = z.enum(["workspace", "project", "team", "department", "issue", "cycle"]);
 const entityTypeSchema = z.enum(["workspace", "project", "team", "issue", "comment", "label", "member", "cycle", "template"]);
 
 export const listActivitySchema = {
