@@ -8,6 +8,8 @@
  * start this and the hourly run still happens exactly once.
  */
 import { Worker } from "bullmq";
+import { purgeExpiredAssistMessages } from "../ai/ai.assist-memory.js";
+import { purgeOldAssistAnswers } from "../ai/ai.assist-insights.js";
 
 import { env } from "../../config/env.js";
 import { getQueue } from "../../infra/queue/queues.js";
@@ -69,6 +71,9 @@ async function startWorker() {
       if (result.reminders > 0 || result.purged > 0) {
         console.log(`[Workspace lifecycle] sent ${result.reminders} reminder(s), purged ${result.purged} workspace(s)`);
       }
+      // Same hourly tick: AI Assistance chats older than 24 hours, answer log older than 90 days.
+      await purgeExpiredAssistMessages();
+      await purgeOldAssistAnswers();
     },
     {
       connection: connection as any,

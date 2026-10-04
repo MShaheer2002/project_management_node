@@ -355,6 +355,8 @@ enum AiConnectionSessionStatus {
 /// The `id` field IS the Clerk user_id (e.g., "user_2x..."), NOT a UUID.
 model User {
   id           String    @id // Clerk user_id — set by webhook, not auto-generated
+  aiAssistMessages AiAssistMessage[]
+  aiAssistAnswers  AiAssistAnswer[]
   email        String    @unique
   name         String
   avatar       String?
@@ -440,6 +442,8 @@ model User {
 /// The `issueCounter` is atomically incremented per workspace to generate issue numbers.
 model Workspace {
   id           String @id @default(uuid())
+  aiAssistMessages AiAssistMessage[]
+  aiAssistAnswers  AiAssistAnswer[]
   name         String // Display name (e.g., "Acme Corp")
   slug         String @unique // URL slug (e.g., "acme-corp") — must be globally unique
   logo         String? // URL to workspace logo
@@ -2195,4 +2199,92 @@ model WorkspaceDriveConnection {
   connectedBy User      @relation(fields: [connectedById], references: [id], onDelete: Cascade)
 
   @@index([connectedById])
+}
+
+/// One section of a help article (content/help/*.md), indexed for AI Assistance
+/// and the Help page search. Global, not per workspace: help is the same for
+/// everyone, and visibility is filtered by `roles` at query time.
+/// Rows are written by modules/help/help.index.ts at startup; never edit by hand.
+model HelpChunk {
+  id           String                       @id // "<articleId>#<section ordinal>"
+  articleId    String
+  ordinal      Int
+  sectionTitle String
+  roles        String[]
+  plans        String[]
+  /// Section text with its article context (title, category, summary) in front.
+  content      String                       @db.Text
+  contentHash  String
+  /// Filled from `content` with to_tsvector('english', …) on write.
+  searchVector Unsupported("tsvector")?
+  /// Null until embedded; keyword search still works without it.
+  embedding    Unsupported("vector(1536)")?
+  model        String?
+  updatedAt    DateTime                     @updatedAt
+
+  @@index([articleId])
+  // Created in migration 20261003000000_help_chunks. Declared here so Prisma
+  // doesn't try to drop them: keyword search (GIN) and meaning search (HNSW,
+  // which Prisma can't express, so it appears as a plain index on `embedding`).
+  @@index([searchVector], type: Gin, map: "HelpChunk_searchVector_idx")
+  @@index([embedding], map: "HelpChunk_embedding_idx")
+}
+
+/// AI Assistance (help bubble) chat memory, per person per workspace.
+/// Kept 24 hours: enough for follow-up questions and switching devices, short
+/// enough that it isn't a long-term record of what people asked.
+/// Written and pruned by modules/ai/ai.assist-memory.ts.
+model AiAssistMessage {
+  id          String   @id @default(uuid())
+  /// Insertion order. Timestamps can tie within a millisecond; this can't.
+  seq         BigInt   @default(autoincrement())
+  workspaceId String
+  userId      String
+  role        String   // "user" | "assistant"
+  /// The question, or the assistant's answer text (what the model sees as history).
+  content     String   @db.Text
+  /// Assistant only: the full structured reply, so the bubble can redraw it.
+  payload     Json?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, userId, seq])
+  @@index([createdAt])
+}
+
+/// One AI Assistance answer, kept 90 days to improve the help articles: what
+/// was asked (with emails, phone numbers and links masked), what kind of answer
+/// it got, which articles it used, and the asker's feedback.
+/// Staff insights (modules/ai/ai.assist-insights.ts) read this WITHOUT
+/// workspaceId or userId; those exist only for deletion and so only the asker
+/// can rate their own answer.
+model AiAssistAnswer {
+  id               String    @id @default(uuid())
+  workspaceId      String
+  userId           String
+  /// Masked question text, at most 1,000 characters.
+  question         String    @db.Text
+  /// instant | grounded | not_sure | unavailable
+  kind             String
+  /// Articles the answer used, or for not_sure/unavailable the closest ones.
+  articleIds       String[]
+  route            String?
+  model            String?
+  latencyMs        Int?
+  /// up | down
+  rating           String?
+  /// wrong | unclear | not_helpful | other (thumbs down only)
+  ratingReason     String?
+  ratingComment    String?   @db.Text
+  ratedAt          DateTime?
+  createdAt        DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([kind, createdAt])
+  @@index([rating, createdAt])
 }

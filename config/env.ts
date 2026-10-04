@@ -43,6 +43,14 @@ const envSchema = z.object({
     .enum(["development", "staging", "production"])
     .default("development"),
   FRONTEND_URL: z.string().url().default("http://localhost:3000"),
+  // Where AI Assistance sends people when it can't answer. Shown to users.
+  SUPPORT_EMAIL: z.string().email().default("support@trussen.app"),
+  // Trussen staff who may see AI Assistance insights (questions asked across all
+  // workspaces, anonymized). Comma separated emails; empty means nobody.
+  HELP_INSIGHTS_STAFF_EMAILS: z
+    .string()
+    .default("")
+    .transform((value) => value.split(",").map((email) => email.trim().toLowerCase()).filter(Boolean)),
   BACKEND_URL: z.preprocess(emptyStringToUndefined, z.string().url().optional()),
 
   // Stripe — workspace billing
@@ -87,6 +95,8 @@ const envSchema = z.object({
 
   // OpenRouter — AI gateway (Phase 20)
   OPENROUTER_API_KEY: z.preprocess(emptyStringToUndefined, z.string().optional()),
+  // OpenRouter-compatible API base. Override for a gateway/proxy, or a local fake in tests.
+  OPENROUTER_BASE_URL: z.string().url().default("https://openrouter.ai/api/v1"),
 
   // AI Models — Issue Creator (Phase 20A)
   AI_ISSUE_MODEL_DEFAULT: z.preprocess(emptyStringToUndefined, z.string().optional()),

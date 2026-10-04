@@ -6,6 +6,8 @@
  */
 
 import type { RequestHandler } from "express";
+import { AiCallAbortedError } from "./ai.tool-runtime.js";
+import { AppError } from "../../shared/utils/api-error.js";
 import * as aiService from "./ai.service.js";
 import * as aiAssist from "./ai.assist.js";
 import * as aiConversation from "./ai.conversation.js";
@@ -14,6 +16,9 @@ import * as aiUsage from "./ai.usage.js";
 import * as aiSuggestions from "./ai.suggestions.js";
 import { sendSuccess } from "../../shared/utils/api-response.js";
 import { listAvailableModels } from "./ai.provider.js";
+import { getAiAvailability } from "./ai.access.js";
+import { clearAssistHistory, getAssistHistory } from "./ai.assist-memory.js";
+import { rateAssistAnswer } from "./ai.assist-insights.js";
 import type {
   AcceptSuggestionInput,
   AiUsageQuery,
@@ -89,6 +94,100 @@ export const getModels: RequestHandler = async (_req, res, next) => {
   try {
     const models = listAvailableModels();
     sendSuccess(res, 200, models);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /ai/availability — Which AI features this workspace's plan includes (any member)
+ */
+export const availability: RequestHandler = async (req, res, next) => {
+  try {
+    sendSuccess(res, 200, await getAiAvailability(req.workspace!.id));
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * POST /ai/assist/stream — AI Assistance as Server-Sent Events.
+ *
+ * Events: `status`, `meta`, `delta` (answer text in pieces), then `done` with
+ * the complete answer, or `error` with { code, message }. Closing the request
+ * stops the model.
+ */
+export const assistStream: RequestHandler = async (req, res) => {
+  const abortController = new AbortController();
+  req.on("close", () => abortController.abort());
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  const send = (type: string, data: unknown) => {
+    if (!res.writableEnded) res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const body = req.body as AssistInput;
+    await aiAssist.assist(
+      { ...body, userId: req.user!.id, workspaceId: req.workspace!.id, userRole: req.workspace!.role },
+      { emit: (event) => send(event.type, event.data), signal: abortController.signal },
+    );
+  } catch (error) {
+    if (!(error instanceof AiCallAbortedError)) {
+      // Plan, quota and provider errors arrive after the stream started, so they go out as an event.
+      send("error", {
+        code: error instanceof AppError ? error.code : "AI_ASSIST_FAILED",
+        message: error instanceof AppError ? error.message : "AI Assistance failed",
+      });
+    }
+  } finally {
+    if (!res.writableEnded) res.end();
+  }
+};
+
+/**
+ * POST /ai/assist/answers/:id/feedback — thumbs up or down, by the person who asked
+ */
+export const assistFeedback: RequestHandler = async (req, res, next) => {
+  try {
+    const { rating, reason, comment } = req.body as { rating: "up" | "down"; reason?: "wrong" | "unclear" | "not_helpful" | "other"; comment?: string };
+    await rateAssistAnswer({
+      answerId: req.params.id as string,
+      workspaceId: req.workspace!.id,
+      userId: req.user!.id,
+      rating,
+      reason,
+      comment,
+    });
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * GET /ai/assist/history — this person's help chat from the last 24 hours
+ */
+export const assistHistory: RequestHandler = async (req, res, next) => {
+  try {
+    sendSuccess(res, 200, { messages: await getAssistHistory(req.workspace!.id, req.user!.id) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * DELETE /ai/assist/history — clear this person's help chat
+ */
+export const clearAssistHistoryHandler: RequestHandler = async (req, res, next) => {
+  try {
+    await clearAssistHistory(req.workspace!.id, req.user!.id);
+    res.status(204).send();
   } catch (error) {
     next(error);
   }

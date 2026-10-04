@@ -22,6 +22,7 @@ import { env } from "../config/env.js";
 import { prisma } from "../shared/utils/prisma.js";
 import { initializeSocket } from "../socket/index.js";
 import { startWorkspaceLifecycleWorker, stopWorkspaceLifecycleWorker } from "../modules/workspace/workspace-lifecycle.worker.js";
+import { initHelpArticles, syncHelpSearchIndex } from "../modules/help/help.service.js";
 
 // ─── Start Server ────────────────────────────────────────────────────────────
 
@@ -30,6 +31,13 @@ async function start() {
     // Verify database connection before accepting any requests
     await prisma.$queryRaw`SELECT 1`;
     console.log("✅ Database connected");
+
+    // Help articles are checked here so a broken one fails the deploy, not a user's request.
+    console.log(`✅ Help articles loaded (${initHelpArticles()})`);
+    // Index in the background: search falls back to keywords until it finishes.
+    void syncHelpSearchIndex()
+      .then((sync) => console.log(`✅ Help search index ${sync.skipped ? "synced by another instance" : `synced (${sync.written} changed, ${sync.deleted} removed, ${sync.embedded} embedded${sync.embedFailed ? `, ${sync.embedFailed} not embedded` : ""})`}`))
+      .catch((error) => console.error("⚠️ Help search index sync failed; help search uses what is already indexed:", error));
 
     // Start the HTTP server
     const httpServer = createServer(app);

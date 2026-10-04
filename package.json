@@ -18,7 +18,9 @@
     "worker:dev": "tsx workers/ai-background.worker.ts",
     "backfill:embeddings": "tsx workers/embedding-backfill.ts",
     "backfill:integration-tokens": "tsx workers/encrypt-integration-tokens.ts",
-    "backfill:user-emails": "tsx workers/resync-user-emails.ts"
+    "backfill:user-emails": "tsx workers/resync-user-emails.ts",
+    "help:reindex": "tsx workers/help-reindex.ts",
+    "help:eval": "tsx workers/help-eval.ts"
   },
   "repository": {
     "type": "git",

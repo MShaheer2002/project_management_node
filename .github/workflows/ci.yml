@@ -1,0 +1,114 @@
+# Backend CI.
+#   test         every push and PR: unit tests (no database, no AI) and the build.
+#                (modules/ai/ai.search.test.ts skips itself here: it needs a local
+#                dev database with the TRU workspace's data.)
+#   help-search  every push and PR: AI Assistance search quality against a real
+#                Postgres + pgvector (keyword only, no AI key, no cost).
+#   help-answers nightly and on demand: the AI Assistance evaluation set through
+#                the real model. Needs the OPENROUTER_API_KEY repository secret.
+#                Its report is kept as a downloadable artifact.
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC
+  workflow_dispatch:
+
+# Placeholders so config/env.ts validates. None of these are real credentials,
+# and no job talks to Clerk, Stripe, Resend or AWS.
+env:
+  NODE_ENV: development # config/env.ts allows development | staging | production
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/trussen_ci
+  CLERK_PUBLISHABLE_KEY: pk_test_ci_placeholder
+  CLERK_SECRET_KEY: sk_test_ci_placeholder
+  CLERK_WEBHOOK_SECRET: whsec_ci_placeholder
+  RESEND_API_KEY: re_ci_placeholder
+  STRIPE_SECRET_KEY: sk_test_ci_placeholder
+  STRIPE_WEBHOOK_SECRET: whsec_ci_placeholder
+  STRIPE_STANDARD_MONTHLY_PRICE_ID: price_ci_standard
+  STRIPE_PREMIUM_MONTHLY_PRICE_ID: price_ci_premium
+  AWS_ACCESS_KEY_ID: ci-placeholder
+  AWS_SECRET_ACCESS_KEY: ci-placeholder
+  AWS_REGION: us-east-1
+  AWS_S3_BUCKET: ci-placeholder
+  AWS_S3_PUBLIC_BASE_URL: https://ci-placeholder.s3.us-east-1.amazonaws.com
+  ENCRYPTION_KEY: ci-placeholder-encryption-key-0123456789abcdef
+  GOOGLE_CLIENT_ID: ci-placeholder.apps.googleusercontent.com
+  GOOGLE_CLIENT_SECRET: ci-placeholder
+
+jobs:
+  test:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm test
+      - run: npm run build
+
+  help-search:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: trussen_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+      - run: npm run help:eval -- --json help-search-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: help-search-report
+          path: help-search-report.json
+
+  help-answers:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: trussen_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+      - run: npm run help:eval -- --answers --json help-answers-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: help-answers-report
+          path: help-answers-report.json
