@@ -249,6 +249,7 @@ export const ERROR_CODES = {
 
   // ─── AI Connection OAuth (Phase 22) ─────────────────────────────────────
   AI_CONNECTION_OAUTH_SETUP_REQUIRED: "AI_CONNECTION_OAUTH_SETUP_REQUIRED",
+  AI_CONNECTION_SETUP_LINK_INVALID: "AI_CONNECTION_SETUP_LINK_INVALID",
 } as const;
 
 // Type-safe error code type (union of all values)

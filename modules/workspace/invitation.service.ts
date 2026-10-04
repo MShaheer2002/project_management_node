@@ -29,7 +29,7 @@ import { createNotification } from "../notification/notification.service.js";
 import { publicWorkspaceLogo } from "./workspace-logo.js";
 
 /** Invitations expire after 7 days */
-const INVITE_EXPIRY_DAYS = 7;
+export const INVITE_EXPIRY_DAYS = 7;
 
 /**
  * Create and send a workspace invitation.

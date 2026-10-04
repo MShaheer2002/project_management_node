@@ -5,7 +5,7 @@
  * based on settings and channel routing rules.
  */
 
-import { env } from "../../../config/env.js";
+import { workspaceAppBase } from "../../../shared/utils/workspace-url.js";
 import {
   findConnectedIntegration,
   getSettings,
@@ -68,27 +68,29 @@ export async function handleEvent(workspaceId: string, event: IntegrationEvent):
   if (!integration?.accessToken) return;
 
   const settings = await getSettings(integration.id);
+  // Links open in this workspace's own app, not whichever one the browser used last.
+  const appBase = await workspaceAppBase(workspaceId);
 
   switch (event.type) {
     case "issue.created":
       if (!settings.notifyOnIssueCreatedUrgent) return;
-      await notifyIssueCreated(integration.accessToken, integration.id, event.payload as any);
+      await notifyIssueCreated(integration.accessToken, integration.id, appBase, event.payload as any);
       break;
     case "issue.completed":
       if (!settings.notifyOnIssueCompleted) return;
-      await notifyIssueCompleted(integration.accessToken, integration.id, event.payload as any);
+      await notifyIssueCompleted(integration.accessToken, integration.id, appBase, event.payload as any);
       break;
     case "issue.assigned":
       if (!settings.notifyOnIssueAssigned) return;
-      await notifyIssueAssigned(integration.accessToken, integration.id, event.payload as any);
+      await notifyIssueAssigned(integration.accessToken, integration.id, appBase, event.payload as any);
       break;
     case "cycle.started":
       if (!settings.notifyOnCycleStarted) return;
-      await notifyCycleEvent(integration.accessToken, integration.id, "started", event.payload as any);
+      await notifyCycleEvent(integration.accessToken, integration.id, appBase, "started", event.payload as any);
       break;
     case "cycle.completed":
       if (!settings.notifyOnCycleCompleted) return;
-      await notifyCycleEvent(integration.accessToken, integration.id, "completed", event.payload as any);
+      await notifyCycleEvent(integration.accessToken, integration.id, appBase, "completed", event.payload as any);
       break;
     case "project.completed":
       return;
@@ -103,6 +105,7 @@ export async function handleEvent(workspaceId: string, event: IntegrationEvent):
 export async function notifyIssueCreated(
   token: string,
   integrationId: string,
+  appBase: string,
   issue: {
     id: string;
     title: string;
@@ -137,7 +140,7 @@ export async function notifyIssueCreated(
       { label: "Project", value: issue.projectName ?? "\u2014" },
       { label: "Created by", value: issue.creatorName },
     ],
-    frontendUrl: env.FRONTEND_URL,
+    frontendUrl: appBase,
   });
 
   await Promise.all(channels.map((ch) => slackPost(token, ch, message)));
@@ -149,6 +152,7 @@ export async function notifyIssueCreated(
 export async function notifyIssueCompleted(
   token: string,
   integrationId: string,
+  appBase: string,
   issue: {
     id: string;
     title: string;
@@ -173,7 +177,7 @@ export async function notifyIssueCompleted(
       { label: "Completed by", value: issue.completedByName },
       ...(issue.projectName ? [{ label: "Project", value: issue.projectName }] : []),
     ],
-    frontendUrl: env.FRONTEND_URL,
+    frontendUrl: appBase,
   });
 
   await Promise.all(channels.map((ch) => slackPost(token, ch, message)));
@@ -185,6 +189,7 @@ export async function notifyIssueCompleted(
 export async function notifyIssueAssigned(
   token: string,
   integrationId: string,
+  appBase: string,
   issue: {
     id: string;
     title: string;
@@ -213,7 +218,7 @@ export async function notifyIssueAssigned(
       { label: "Assigned by", value: issue.assignedByName },
       { label: "Priority", value: issue.priority },
     ],
-    frontendUrl: env.FRONTEND_URL,
+    frontendUrl: appBase,
   });
 
   await Promise.all(channels.map((ch) => slackPost(token, ch, message)));
@@ -225,6 +230,7 @@ export async function notifyIssueAssigned(
 export async function notifyCycleEvent(
   token: string,
   integrationId: string,
+  appBase: string,
   type: "started" | "completed",
   event: {
     cycleName: string;
@@ -258,7 +264,7 @@ export async function notifyCycleEvent(
     title,
     cycleName: event.cycleName,
     fields,
-    frontendUrl: env.FRONTEND_URL,
+    frontendUrl: appBase,
   });
 
   await Promise.all(channels.map((ch) => slackPost(token, ch, message)));

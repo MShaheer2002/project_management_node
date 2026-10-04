@@ -1,4 +1,4 @@
-import { filterVisibleActivityRows, type Viewer } from "../../shared/utils/visibility.js";
+import { filterVisibleActivityRows, isWorkspaceAdmin, type Viewer } from "../../shared/utils/visibility.js";
 import type { WorkspaceRole } from "../../app/generated/prisma/client.js";
 
 import { ERROR_CODES } from "../../shared/errors/error-codes.js";
@@ -59,7 +59,7 @@ function mapActivity(item: any) {
   };
 }
 
-async function assertScopeInWorkspace(workspaceId: string, scope: string, scopeId: string) {
+async function assertScopeInWorkspace(workspaceId: string, scope: string, scopeId: string, viewer: Viewer) {
   if (scope === "project") {
     const project = await prisma.project.findFirst({ where: { id: scopeId, workspaceId }, select: { id: true } });
     if (!project) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Project not found");
@@ -68,6 +68,21 @@ async function assertScopeInWorkspace(workspaceId: string, scope: string, scopeI
   if (scope === "team") {
     const team = await prisma.team.findFirst({ where: { id: scopeId, workspaceId }, select: { id: true } });
     if (!team) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Team not found");
+    return;
+  }
+  if (scope === "department") {
+    // Same rule as the department pages: a private department's feed is for its head, members and admins.
+    const department = await prisma.department.findFirst({
+      where: {
+        id: scopeId,
+        workspaceId,
+        ...(isWorkspaceAdmin(viewer.role)
+          ? {}
+          : { OR: [{ visibility: "PUBLIC" }, { headId: viewer.userId }, { memberships: { some: { userId: viewer.userId } } }] }),
+      },
+      select: { id: true },
+    });
+    if (!department) throw new AppError(404, ERROR_CODES.NOT_FOUND, "Department not found");
     return;
   }
   if (scope === "issue") {
@@ -91,12 +106,12 @@ export async function listActivity(workspaceId: string, viewer: Viewer, query: L
   const limit = clampListLimit(query.limit, 50);
   const scope = query.scope ?? "workspace";
 
-  if ((scope === "project" || scope === "team" || scope === "issue" || scope === "cycle") && !query.scopeId) {
-    throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "scopeId is required for project, team, issue, and cycle scopes");
+  if (scope !== "workspace" && !query.scopeId) {
+    throw new AppError(422, ERROR_CODES.VALIDATION_ERROR, "scopeId is required for project, team, department, issue, and cycle scopes");
   }
 
   if (query.scopeId && scope !== "workspace") {
-    await assertScopeInWorkspace(workspaceId, scope, query.scopeId);
+    await assertScopeInWorkspace(workspaceId, scope, query.scopeId, viewer);
   }
 
   const types = parseCsv(query.types);
@@ -136,6 +151,12 @@ export async function listActivity(workspaceId: string, viewer: Viewer, query: L
     where.OR = [
       { targetType: "TEAM", targetId: query.scopeId },
       { metadata: { path: ["teamId"], equals: query.scopeId } },
+    ];
+  } else if (scope === "department" && query.scopeId) {
+    // The department's own events, not the whole workspace feed (B-FE-13).
+    where.OR = [
+      { targetType: "DEPARTMENT", targetId: query.scopeId },
+      { metadata: { path: ["departmentId"], equals: query.scopeId } },
     ];
   }
 

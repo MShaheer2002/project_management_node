@@ -21,9 +21,9 @@ const PRORATION_NOTICE =
   "Seat changes during the billing period may create prorated charges or credits on the current or next invoice.";
 
 const GIGABYTE = 1024 * 1024 * 1024;
-const FREE_PLAN_MEMBER_CAP = 10;
-const FREE_PLAN_TEAM_CAP = 2;
-const FREE_PLAN_ALLOWED_INTEGRATIONS: IntegrationProvider[] = ["SLACK"];
+export const FREE_PLAN_MEMBER_CAP = 10;
+export const FREE_PLAN_TEAM_CAP = 2;
+export const FREE_PLAN_ALLOWED_INTEGRATIONS: IntegrationProvider[] = ["SLACK"];
 
 function toSubscriptionPlan(plan: CreateSubscriptionInput["plan"] | ChangePlanInput["plan"]): SubscriptionPlan {
   return plan === "standard" ? "STANDARD" : "PREMIUM";
@@ -40,7 +40,7 @@ function getPriceIdForPlan(plan: SubscriptionPlan) {
   }
 }
 
-function getEntitlements(plan: SubscriptionPlan) {
+export function getEntitlements(plan: SubscriptionPlan) {
   switch (plan) {
     case "FREE":
       return {
@@ -558,7 +558,7 @@ export async function assertWorkspaceAccessAllowed(workspaceId: string, userId: 
   }
 }
 
-async function getAccessPlanForWorkspace(workspaceId: string): Promise<SubscriptionPlan> {
+export async function getAccessPlanForWorkspace(workspaceId: string): Promise<SubscriptionPlan> {
   const subscription = await prisma.subscription.findUnique({
     where: { workspaceId },
     select: { plan: true, status: true },

@@ -64,6 +64,7 @@ import integrationRoutes from "../modules/integration/integration\.routes\.js";
 import webhookRoutes from "../modules/integration/webhooks/webhook.routes.js";
 import driveRoutes from "../modules/drive/drive.routes.js";
 import aiRoutes from "../modules/ai/ai.routes.js";
+import helpRoutes from "../modules/help/help.routes.js";
 import mcpHttpRoutes from "../mcp/mcp.http.routes.js";
 
 // ─── Create Express App ──────────────────────────────────────────────────────
@@ -211,6 +212,7 @@ app.use("/integrations", integrationRoutes);
 app.use("/webhooks", webhookRoutes);
 app.use("/me/drive", driveRoutes);
 app.use("/ai", aiRoutes);
+app.use("/help", helpRoutes);
 
 // ─── Error Handling (must be LAST in the stack) ──────────────────────────────
 

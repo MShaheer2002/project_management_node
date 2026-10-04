@@ -27,6 +27,7 @@ import {
   acceptSuggestionSchema,
   aiUsageQuerySchema,
   assistSchema,
+  assistFeedbackSchema,
   chatSchema,
   conversationParamsSchema,
   dismissSuggestionSchema,
@@ -65,7 +66,36 @@ router.get(
   controller.getModels,
 );
 
+router.get(
+  "/availability",
+  authenticate,
+  requireWorkspace,
+  controller.availability,
+);
+
 // ── Phase 20B: Trussen AI Chat ──────────────────────────────────────────────
+
+router.post(
+  "/assist/answers/:id/feedback",
+  authenticate,
+  validate(assistFeedbackSchema),
+  requireWorkspace,
+  controller.assistFeedback,
+);
+
+router.get(
+  "/assist/history",
+  authenticate,
+  requireWorkspace,
+  controller.assistHistory,
+);
+
+router.delete(
+  "/assist/history",
+  authenticate,
+  requireWorkspace,
+  controller.clearAssistHistoryHandler,
+);
 
 router.post(
   "/assist",
@@ -76,6 +106,18 @@ router.post(
   strictRateLimiter,
   validate(assistSchema),
   controller.assist,
+);
+
+// Same as /assist, streamed (Server-Sent Events). Same limits.
+router.post(
+  "/assist/stream",
+  authenticate,
+  requireWorkspace,
+  aiAssistWorkspaceRateLimiter,
+  aiAssistUserRateLimiter,
+  strictRateLimiter,
+  validate(assistSchema),
+  controller.assistStream,
 );
 
 router.post(

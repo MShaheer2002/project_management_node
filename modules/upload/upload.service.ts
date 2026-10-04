@@ -37,7 +37,7 @@ const documentContentTypes = new Set([
   "text/plain",
 ]);
 
-const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+export const DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
 
 function normalizeContentType(contentType: string) {
   return contentType.trim().toLowerCase();

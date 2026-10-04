@@ -78,6 +78,8 @@ export const listIssuesSchema = {
     teamId: z.string().uuid().optional(),
     departmentId: z.string().uuid().optional(),
     creatorId: z.string().min(1).optional(),
+    // Issues in any final status, whichever workflow they follow (B-FE-08).
+    completed: z.enum(["true"]).optional(),
     view: z.enum(["full", "compact"]).optional(),
   }),
 };

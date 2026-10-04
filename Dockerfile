@@ -36,6 +36,9 @@ RUN npm ci --omit=dev
 # doc for why that doesn't need a separate copy step).
 COPY --from=build /app/dist ./dist
 
+# Help articles are Markdown read at runtime (modules/help); tsc doesn't copy them into dist.
+COPY --from=build /app/content ./content
+
 # Needed for the Pre-Deploy Job's `prisma migrate deploy` to run from this
 # same image — the schema/migrations, and prisma.config.ts (which the
 # Prisma CLI reads directly; it's never compiled by tsc).

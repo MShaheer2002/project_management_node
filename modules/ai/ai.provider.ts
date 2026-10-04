@@ -238,7 +238,7 @@ async function callModel(
 
   let response: Response;
   try {
-    response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${env.OPENROUTER_API_KEY}`,
@@ -368,6 +368,168 @@ export async function callAI(
   throw lastError ?? new AppError(502, ERROR_CODES.AI_PROVIDER_ERROR, "All AI models are currently unavailable. Please try again in a moment.");
 }
 
+// ─── Streaming ───────────────────────────────────────────────────────────────
+
+const STREAM_IDLE_TIMEOUT_MS = 30_000;
+const STREAM_TOTAL_TIMEOUT_MS = 120_000;
+
+export interface AiStreamResult extends AiCallResult {
+  /** True when `onText` asked to stop before the model finished. */
+  stopped: boolean;
+}
+
+/**
+ * Like callAI, but hands text to `onText` as the model writes it. Return
+ * `false` from `onText` to stop the model early (its tokens stop costing money).
+ *
+ * Falls back to the next model only before any text was received: once part of
+ * an answer has been shown, switching models mid-sentence would be worse than
+ * failing. Times out after 30 s of silence or 2 minutes in total.
+ */
+/**
+ * A stream stopped early never receives the provider's usage chunk. Estimate
+ * (about 4 characters per token) so stopped answers still count toward the
+ * plan's daily limits instead of being free.
+ */
+function estimateUsage(messages: AiMessage[], output: string) {
+  const inputTokens = Math.ceil(messages.reduce((sum, message) => sum + message.content.length, 0) / 4);
+  const outputTokens = Math.ceil(output.length / 4);
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+}
+
+export async function streamAI(
+  messages: AiMessage[],
+  options: AiCallOptions,
+  onText: (text: string) => boolean | void,
+): Promise<AiStreamResult> {
+  if (!env.OPENROUTER_API_KEY) {
+    throw new AppError(500, ERROR_CODES.AI_NOT_CONFIGURED, "AI is not configured — OPENROUTER_API_KEY is missing");
+  }
+  if (options.signal?.aborted) throw new AiCallAbortedError();
+
+  const primaryModel = options.model ?? DEFAULT_AI_MODEL;
+  const maxTokens = options.maxTokens ?? TASK_MAX_TOKENS[options.taskType ?? ""] ?? 1024;
+  const temperature = Math.max(0, Math.min(1, options.temperature ?? 0.3));
+  let lastError: AppError | null = null;
+
+  for (const model of fallbackChainForPrimary(primaryModel)) {
+    const controller = new AbortController();
+    let abortedByCaller = false;
+    let timedOut = false;
+    const onCallerAbort = () => {
+      abortedByCaller = true;
+      controller.abort();
+    };
+    options.signal?.addEventListener("abort", onCallerAbort, { once: true });
+    const totalTimer = setTimeout(() => { timedOut = true; controller.abort(); }, STREAM_TOTAL_TIMEOUT_MS);
+    let idleTimer = setTimeout(() => { timedOut = true; controller.abort(); }, STREAM_IDLE_TIMEOUT_MS);
+    const resetIdle = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { timedOut = true; controller.abort(); }, STREAM_IDLE_TIMEOUT_MS);
+    };
+    const cleanup = () => {
+      clearTimeout(totalTimer);
+      clearTimeout(idleTimer);
+      options.signal?.removeEventListener("abort", onCallerAbort);
+    };
+
+    let content = "";
+    let stopped = false;
+    let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+
+    try {
+      const response = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": env.FRONTEND_URL,
+          "X-Title": "Trussen",
+        },
+        body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature, stream: true, usage: { include: true } }),
+        signal: controller.signal,
+      });
+
+      if (response.status === 429 || !response.ok || !response.body) {
+        const errorBody = await safeParseJson<{ error?: { message?: string } }>(response);
+        lastError = new AppError(
+          response.status === 429 ? 429 : 502,
+          response.status === 429 ? ERROR_CODES.AI_RATE_LIMITED : ERROR_CODES.AI_PROVIDER_ERROR,
+          errorBody.error?.message || `Model ${model} returned HTTP ${response.status}`,
+        );
+        cleanup();
+        continue; // Nothing shown yet: the next model can take over.
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      reading: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        resetIdle();
+        buffer += decoder.decode(value, { stream: true });
+
+        let newline: number;
+        while ((newline = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line.startsWith("data:")) continue; // SSE comments like ": OPENROUTER PROCESSING"
+          const data = line.slice(5).trim();
+          if (data === "[DONE]") break reading;
+
+          let chunk: {
+            choices?: Array<{ delta?: { content?: string } }>;
+            usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+            error?: { message?: string };
+          };
+          try {
+            chunk = JSON.parse(data);
+          } catch {
+            continue;
+          }
+          if (chunk.error) throw new AppError(502, ERROR_CODES.AI_PROVIDER_ERROR, chunk.error.message || "AI provider error");
+          if (chunk.usage) {
+            usage = {
+              inputTokens: chunk.usage.prompt_tokens ?? 0,
+              outputTokens: chunk.usage.completion_tokens ?? 0,
+              totalTokens: chunk.usage.total_tokens ?? 0,
+            };
+          }
+          const text = chunk.choices?.[0]?.delta?.content;
+          if (text) {
+            content += text;
+            if (onText(text) === false) {
+              stopped = true;
+              controller.abort();
+              break reading;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      cleanup();
+      if (stopped) return { content, model, usage: usage.totalTokens > 0 ? usage : estimateUsage(messages, content), stopped };
+      if (abortedByCaller) throw new AiCallAbortedError();
+      const failure = error instanceof AppError
+        ? error
+        : new AppError(timedOut ? 504 : 502, ERROR_CODES.AI_PROVIDER_ERROR, timedOut ? "AI request timed out. Please try again." : "Failed to reach AI provider");
+      if (content) throw failure; // Part of the answer was already handed out.
+      lastError = failure;
+      continue;
+    }
+
+    cleanup();
+    if (!content && !stopped) {
+      lastError = new AppError(502, ERROR_CODES.AI_PROVIDER_ERROR, "AI returned an empty response");
+      continue;
+    }
+    return { content, model, usage: usage.totalTokens > 0 ? usage : estimateUsage(messages, content), stopped };
+  }
+
+  throw lastError ?? new AppError(502, ERROR_CODES.AI_PROVIDER_ERROR, "All AI models are currently unavailable. Please try again in a moment.");
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 async function safeParseJson<T>(response: Response): Promise<T> {
@@ -405,7 +567,7 @@ export async function createEmbedding(
 
   let response: Response;
   try {
-    response = await fetch("https://openrouter.ai/api/v1/embeddings", {
+    response = await fetch(`${env.OPENROUTER_BASE_URL}/embeddings`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${env.OPENROUTER_API_KEY}`,

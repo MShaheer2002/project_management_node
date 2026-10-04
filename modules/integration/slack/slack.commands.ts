@@ -8,7 +8,7 @@
  */
 
 import { prisma } from "../../../shared/utils/prisma.js";
-import { env } from "../../../config/env.js";
+import { workspaceAppBase } from "../../../shared/utils/workspace-url.js";
 import { getSettings } from "../integration.service.js";
 import { decryptSecretOrLegacy } from "../../../shared/utils/secret-box.js";
 import { visibleIssueWhere, type Viewer } from "../../../shared/utils/visibility.js";
@@ -197,7 +197,7 @@ export async function handleCreateCommand(workspaceId: string, actorId: string, 
     },
   });
 
-  const issueUrl = `${env.FRONTEND_URL}/issues/${issueId}`;
+  const issueUrl = `${await workspaceAppBase(workspaceId)}/issues/${issueId}`;
   return ephemeralResponse(
     `:white_check_mark: Issue created\n<${issueUrl}|${issueId}> ${title}\nPriority: ${priority} \u00b7 Project: ${project.name}`,
   );
@@ -229,7 +229,7 @@ export async function handleStatusCommand(workspaceId: string, viewer: Viewer, a
     return ephemeralResponse(`:x: Issue \`${issueRef}\` not found.`);
   }
 
-  const issueUrl = `${env.FRONTEND_URL}/issues/${issue.id}`;
+  const issueUrl = `${await workspaceAppBase(workspaceId)}/issues/${issue.id}`;
   const statusEmoji: Record<string, string> = {
     BACKLOG: ":clipboard:",
     TODO: ":memo:",
@@ -273,9 +273,10 @@ export async function handleMyIssuesCommand(workspaceId: string, actorId: string
     LOW: ":white_circle:",
   };
 
+  const appBase = await workspaceAppBase(workspaceId);
   const lines = issues.map((i) => {
     const emoji = priorityEmoji[i.priority] ?? ":grey_question:";
-    const url = `${env.FRONTEND_URL}/issues/${i.id}`;
+    const url = `${appBase}/issues/${i.id}`;
     return `${emoji} <${url}|${i.id}> ${escapeSlackText(i.title)} \u2014 _${i.status}_`;
   });
 

@@ -41,7 +41,7 @@ test("Slack formatting characters are left alone deliberately", () => {
 });
 
 test("a Discord markdown link in an issue title is neutralised (F-30)", () => {
-  const embed = buildIssueEmbed({
+  const embed = buildIssueEmbed({ appBase: "https://acme.trussen.app",
     title: "Issue created", issueId: "ACME-1", issueTitle: DISCORD_PAYLOAD,
     color: 1, fields: [{ name: "Project", value: DISCORD_PAYLOAD }],
   });
@@ -52,7 +52,7 @@ test("a Discord markdown link in an issue title is neutralised (F-30)", () => {
 test("Discord escaping never leaves a dangling backslash at the truncation point", () => {
   // Truncating after escaping could cut a "\\x" pair in half and escape the
   // ellipsis instead. Escaping happens after truncation for this reason.
-  const embed = buildIssueEmbed({
+  const embed = buildIssueEmbed({ appBase: "https://acme.trussen.app",
     title: "t", issueId: "ACME-1", issueTitle: "[".repeat(400),
     color: 1, fields: [],
   });
